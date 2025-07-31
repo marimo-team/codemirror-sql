@@ -5,6 +5,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     watch: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json", "html"],
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/__tests__/**", "src/debug.ts"],
+    },
   },
   base: "/codemirror-sql/",
 });

@@ -1,18 +1,35 @@
 import { Parser } from "node-sql-parser";
 
+/**
+ * Represents a SQL parsing error with location information
+ */
 export interface SqlParseError {
+  /** Error message describing the issue */
   message: string;
+  /** Line number where the error occurred (1-indexed) */
   line: number;
+  /** Column number where the error occurred (1-indexed) */
   column: number;
+  /** Severity level of the error */
   severity: "error" | "warning";
 }
 
+/**
+ * Result of parsing a SQL statement
+ */
 export interface SqlParseResult {
+  /** Whether parsing was successful */
   success: boolean;
+  /** Array of parsing errors, if any */
   errors: SqlParseError[];
+  /** The parsed AST if successful */
   ast?: unknown;
 }
 
+/**
+ * A SQL parser wrapper around node-sql-parser with enhanced error handling
+ * and validation capabilities for CodeMirror integration.
+ */
 export class SqlParser {
   private parser: Parser;
 

@@ -186,7 +186,7 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
         pos: start,
         end,
         above: true,
-        create(view: EditorView) {
+        create(_view: EditorView) {
           const dom = document.createElement("div");
           dom.className = "cm-sql-hover-tooltip";
           dom.innerHTML = tooltipContent!;
@@ -270,8 +270,6 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
         }
       }
       break;
-
-    case "namespace":
     default:
       html += `<div class="sql-hover-description">Namespace${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
       if (pathStr) {

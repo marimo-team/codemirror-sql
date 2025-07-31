@@ -1,8 +1,7 @@
-import { SQLDialect, StandardSQL, sql } from "@codemirror/lang-sql";
+import { StandardSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
-import type { SqlKeywordInfo } from "../src/sql/hover.js";
 
 // Default SQL content for the demo
 const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!

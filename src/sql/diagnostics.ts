@@ -5,11 +5,19 @@ import { type SqlParseError, SqlParser } from "./parser.js";
 
 const DEFAULT_DELAY = 750;
 
+/**
+ * Configuration options for the SQL linter
+ */
 export interface SqlLinterConfig {
+  /** Delay in milliseconds before running validation (default: 750) */
   delay?: number;
+  /** Custom SQL parser instance to use for validation */
   parser?: SqlParser;
 }
 
+/**
+ * Converts a SQL parse error to a CodeMirror diagnostic
+ */
 function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnostic {
   const lineStart = doc.line(error.line).from;
   const from = lineStart + Math.max(0, error.column - 1);
@@ -24,6 +32,22 @@ function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnos
   };
 }
 
+/**
+ * Creates a SQL linter extension that validates SQL syntax and reports errors
+ *
+ * @param config Configuration options for the linter
+ * @returns A CodeMirror linter extension
+ *
+ * @example
+ * ```ts
+ * import { sqlLinter } from '@marimo-team/codemirror-sql';
+ *
+ * const linter = sqlLinter({
+ *   delay: 500, // 500ms delay before validation
+ *   parser: new SqlParser() // custom parser instance
+ * });
+ * ```
+ */
 export function sqlLinter(config: SqlLinterConfig = {}) {
   const parser = config.parser || new SqlParser();
 

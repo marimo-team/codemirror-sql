@@ -233,7 +233,7 @@ describe("Hover Integration Tests", () => {
     });
 
     it("should handle very long paths gracefully", () => {
-      const longPath = "a.".repeat(20) + "final";
+      const longPath = `${"a.".repeat(20)}final`;
       expect(() => {
         resolveNamespaceItem(testNamespace, longPath);
       }).not.toThrow();

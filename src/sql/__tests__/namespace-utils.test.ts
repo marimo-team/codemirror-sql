@@ -7,7 +7,6 @@ import {
   isArrayNamespace,
   isObjectNamespace,
   isSelfChildrenNamespace,
-  type ResolvedNamespaceItem,
   resolveNamespaceItem,
   traverseNamespacePath,
 } from "../namespace-utils.js";

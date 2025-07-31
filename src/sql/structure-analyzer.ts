@@ -1,6 +1,9 @@
 import type { EditorState } from "@codemirror/state";
 import { SqlParser } from "./parser.js";
 
+/**
+ * Represents a SQL statement with position information
+ */
 export interface SqlStatement {
   /** Start position of the statement in the document */
   from: number;
@@ -18,6 +21,10 @@ export interface SqlStatement {
   isValid: boolean;
 }
 
+/**
+ * Analyzes SQL documents to extract statement boundaries and information
+ * for use with gutter markers and other SQL-aware features.
+ */
 export class SqlStructureAnalyzer {
   private parser: SqlParser;
   private cache = new Map<string, SqlStatement[]>();
