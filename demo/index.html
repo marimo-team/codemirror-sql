@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codemirror-sql demo</title>
+    <meta name="description" content="A CodeMirror SQL extension with diagnostics" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <main class="max-w-4xl mx-auto px-4 py-8">
+      <h1 class="text-4xl font-bold mb-4">
+        <a href="https://github.com/marimo-team/codemirror-sql" class="text-blue-600 hover:text-blue-800"
+          >codemirror-sql</a
+        >
+      </h1>
+      <p class="mb-2">by <a href="https://marimo.io/" class="text-blue-600 hover:text-blue-800">marimo</a></p>
+      <p class="mb-6 text-gray-700">
+        A CodeMirror extension for SQL with real-time syntax validation and error diagnostics using
+        <a href="https://www.npmjs.com/package/node-sql-parser" class="text-blue-600 hover:text-blue-800">node-sql-parser</a>.
+      </p>
+      
+      <div class="grid gap-8">
+        <section>
+          <h2 class="text-2xl font-bold mb-4">SQL Editor with Diagnostics</h2>
+          <p class="mb-4 text-gray-600">
+            Try typing invalid SQL syntax to see real-time error highlighting and messages.
+          </p>
+          <div class="border rounded-lg bg-white shadow-sm">
+            <div id="sql-editor" class="min-h-[400px] overflow-y-auto"></div>
+          </div>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-bold mb-4">Example Queries</h2>
+          <p class="mb-4 text-gray-600">Click any example to load it into the editor:</p>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="space-y-2">
+              <h3 class="font-semibold text-lg">Valid Queries</h3>
+              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
+                <code class="text-sm">SELECT * FROM users WHERE active = true</code>
+              </button>
+              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
+                <code class="text-sm">SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id</code>
+              </button>
+              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
+                <code class="text-sm">INSERT INTO products (name, price) VALUES ('Laptop', 999.99)</code>
+              </button>
+            </div>
+            <div class="space-y-2">
+              <h3 class="font-semibold text-lg">Invalid Queries (will show errors)</h3>
+              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
+                <code class="text-sm">SELECT * FROM</code>
+              </button>
+              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
+                <code class="text-sm">SELECT * FORM users</code>
+              </button>
+              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
+                <code class="text-sm">INSERT INTO VALUES (1, 2, 3)</code>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-bold mb-4">Features</h2>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">Real-time Validation</h3>
+              <p class="text-sm text-gray-700">SQL syntax is validated as you type with a configurable delay (750ms default).</p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">Error Highlighting</h3>
+              <p class="text-sm text-gray-700">Syntax errors are highlighted with red underlines and detailed error messages.</p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">Multiple SQL Dialects</h3>
+              <p class="text-sm text-gray-700">Supports MySQL, PostgreSQL, MariaDB, and SQLite syntax validation.</p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">TypeScript Support</h3>
+              <p class="text-sm text-gray-700">Full TypeScript support with comprehensive type definitions.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>
