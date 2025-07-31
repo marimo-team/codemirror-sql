@@ -1,10 +1,16 @@
-import { sql } from "@codemirror/lang-sql";
+import { SQLDialect, StandardSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
+import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
+import type { SqlKeywordInfo } from "../src/sql/hover.js";
 
 // Default SQL content for the demo
 const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
 -- Try editing the queries below to see real-time validation
+
+WITH cte_name AS (
+  SELECT * FROM users
+)
 
 -- Valid queries (no errors):
 SELECT id, name, email
@@ -46,23 +52,91 @@ WHERE order_date >= '2024-01-01'
 ORDER BY total_amount DESC;
 `;
 
+const schema = {
+  // Users table
+  users: ["id", "name", "email", "active", "status", "created_at", "updated_at", "profile_id"],
+  // Posts table
+  posts: [
+    "id",
+    "title",
+    "content",
+    "user_id",
+    "published",
+    "created_at",
+    "updated_at",
+    "category_id",
+  ],
+  // Orders table
+  orders: [
+    "id",
+    "customer_id",
+    "order_date",
+    "total_amount",
+    "status",
+    "shipping_address",
+    "created_at",
+  ],
+  // Customers table (additional example)
+  customers: ["id", "first_name", "last_name", "email", "phone", "address", "city", "country"],
+  // Categories table
+  categories: ["id", "name", "description", "parent_id"],
+};
+
 let editor: EditorView;
+
+const completionKindStyles = {
+  borderRadius: "4px",
+  padding: "2px 4px",
+  marginRight: "4px",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: "12px",
+  height: "12px",
+};
+
+const dialect = StandardSQL;
 
 // Initialize the SQL editor
 function initializeEditor() {
   const extensions = [
     basicSetup,
     EditorView.lineWrapping,
-    sql(), // SQL language support
+    sql({
+      dialect: dialect,
+      // Example schema for autocomplete
+      schema: schema,
+      // Enable uppercase keywords for more traditional SQL style
+      upperCaseKeywords: true,
+    }),
     sqlExtension({
-      // Our custom SQL extension with diagnostics and structure analysis
-      delay: 250, // Delay before running validation
-      enableStructureAnalysis: true, // Enable gutter markers for SQL expressions
-      enableGutterMarkers: true, // Show vertical bars in gutter
-      backgroundColor: "#3b82f6", // Blue for current statement
-      errorBackgroundColor: "#ef4444", // Red for invalid statements
-      hideWhenNotFocused: true, // Hide gutter when editor loses focus
-      // unfocusedOpacity: 0.1, // Alternative: set low opacity instead of hiding
+      // Linter extension configuration
+      linterConfig: {
+        delay: 250, // Delay before running validation
+      },
+
+      // Gutter extension configuration
+      gutterConfig: {
+        backgroundColor: "#3b82f6", // Blue for current statement
+        errorBackgroundColor: "#ef4444", // Red for invalid statements
+        hideWhenNotFocused: true, // Hide gutter when editor loses focus
+      },
+      // Hover extension configuration
+      enableHover: true, // Enable hover tooltips
+      hoverConfig: {
+        schema: schema, // Use the same schema as autocomplete
+        hoverTime: 300, // 300ms hover delay
+        enableKeywords: true, // Show keyword information
+        enableTables: true, // Show table information
+        enableColumns: true, // Show column information
+        keywords: async () => {
+          const keywords = await import("../src/data/common-keywords.json");
+          return keywords.default.keywords;
+        },
+      },
+    }),
+    dialect.language.data.of({
+      autocomplete: cteCompletionSource,
     }),
     // Custom theme for better SQL editing
     EditorView.theme({
@@ -93,6 +167,39 @@ function initializeEditor() {
         border: "1px solid #fecaca",
         color: "#dc2626",
         fontSize: "13px",
+      },
+      // Completion kind backgrounds
+      ".cm-completionIcon-keyword": {
+        backgroundColor: "#e0e7ff", // indigo-100
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-variable": {
+        backgroundColor: "#fef9c3", // yellow-100
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-property": {
+        backgroundColor: "#bbf7d0", // green-100
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-function": {
+        backgroundColor: "#bae6fd", // sky-100
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-class": {
+        backgroundColor: "#fbcfe8", // pink-100
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-constant": {
+        backgroundColor: "#fde68a", // amber-200
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-type": {
+        backgroundColor: "#ddd6fe", // violet-200
+        ...completionKindStyles,
+      },
+      ".cm-completionIcon-text": {
+        backgroundColor: "#f3f4f6", // gray-100
+        ...completionKindStyles,
       },
     }),
   ];

@@ -8,7 +8,10 @@ describe("index.ts exports", () => {
       [
         "SqlParser",
         "SqlStructureAnalyzer",
+        "cteCompletionSource",
         "sqlExtension",
+        "sqlHover",
+        "sqlHoverTheme",
         "sqlLinter",
         "sqlStructureGutter",
       ]

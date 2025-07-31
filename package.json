@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@marimo-team/codemirror-sql",
-  "version": "0.2.2",
+  "version": "0.1.0",
   "publishConfig": {
     "access": "public"
   },
@@ -46,7 +46,8 @@
     "vitest": "^3.0.5"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/data"
   ],
   "exports": {
     "./package.json": "./package.json",
@@ -55,7 +56,8 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
-    }
+    },
+    "./data/common-keywords.json": "./src/data/common-keywords.json"
   },
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -72,6 +74,7 @@
   },
   "dependencies": {
     "@codemirror/lint": "^6.0.0",
+    "@codemirror/autocomplete": "^6.0.0",
     "node-sql-parser": "^5.3.10"
   }
 }

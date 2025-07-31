@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@codemirror/autocomplete':
+        specifier: ^6.0.0
+        version: 6.18.4
       '@codemirror/lint':
         specifier: ^6.0.0
         version: 6.8.5

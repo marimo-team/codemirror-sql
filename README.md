@@ -4,10 +4,10 @@ A CodeMirror extension for SQL linting and visual gutter indicators.
 
 ## Features
 
-### SQL Linting
-
-- **Syntax Validation**: Real-time syntax validation with detailed error messages
-- **Statement Recognition**: Supports SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, USE, and other SQL statements
+- ⚡ **Real-time validation** - SQL syntax checking as you type with detailed error messages
+- 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
+- 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
+- 🔮 **CTE autocomplete** - Auto-complete support for CTEs
 
 ## Installation
 
@@ -19,22 +19,48 @@ pnpm add @marimo-team/codemirror-sql
 
 ## Usage
 
-### Basic SQL Extension
+### Basic Setup
 
 ```ts
-import { sqlExtension } from '@marimo-team/codemirror-sql';
-import { EditorView } from '@codemirror/view';
+import { sql, StandardSQL } from '@codemirror/lang-sql';
+import { basicSetup, EditorView } from 'codemirror';
+import { sqlExtension, cteCompletionSource } from '@marimo-team/codemirror-sql';
 
-const view = new EditorView({
+const schema = {
+  users: ["id", "name", "email", "active"],
+  posts: ["id", "title", "content", "user_id"]
+};
+
+const editor = new EditorView({
+  doc: "SELECT * FROM users WHERE active = true",
   extensions: [
-    sqlExtension({
-      delay: 250, // Delay before running validation
-      enableStructureAnalysis: true, // Enable gutter markers for SQL expressions
-      enableGutterMarkers: true, // Show vertical bars in gutter
-      backgroundColor: "#3b82f6", // Blue for current statement
-      errorBackgroundColor: "#ef4444", // Red for invalid statements
-      hideWhenNotFocused: true, // Hide gutter when editor loses focus
+    basicSetup,
+    sql({
+      dialect: StandardSQL,
+      schema: schema,
+      upperCaseKeywords: true
     }),
+    StandardSQL.language.data.of({
+      autocomplete: cteCompletionSource,
+    }),
+    sqlExtension({
+      linterConfig: {
+        delay: 250 // Validation delay in ms
+      },
+      gutterConfig: {
+        backgroundColor: "#3b82f6", // Current statement color
+        errorBackgroundColor: "#ef4444", // Error highlight color
+        hideWhenNotFocused: true
+      },
+      enableHover: true,
+      hoverConfig: {
+        schema: schema,
+        hoverTime: 300,
+        enableKeywords: true,
+        enableTables: true,
+        enableColumns: true
+      }
+    })
   ],
   parent: document.querySelector('#editor')
 });
