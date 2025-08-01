@@ -570,6 +570,7 @@ describe("edge cases and error handling", () => {
 
   it("should handle circular references without infinite loops", () => {
     // Create a namespace with potential circular reference
+    // biome-ignore lint/suspicious/noExplicitAny: Mock SQLNamespace
     const circularNamespace: any = {
       parent: {
         child: null,
@@ -588,7 +589,11 @@ describe("performance and memory", () => {
     // Create a large namespace
     const largeNamespace: SQLNamespace = {};
     for (let i = 0; i < 1000; i++) {
-      (largeNamespace as any)[`table_${i}`] = [`col1_${i}`, `col2_${i}`, `col3_${i}`];
+      (largeNamespace as Record<string, string[]>)[`table_${i}`] = [
+        `col1_${i}`,
+        `col2_${i}`,
+        `col3_${i}`,
+      ];
     }
 
     const startTime = performance.now();

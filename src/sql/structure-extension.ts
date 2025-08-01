@@ -162,7 +162,7 @@ function createSqlGutterMarkers(
   return markers;
 }
 
-function createUpdateListener(analyzer: SqlStructureAnalyzer) {
+function createUpdateListener(analyzer: SqlStructureAnalyzer): Extension {
   return EditorView.updateListener.of((update: ViewUpdate) => {
     // Update on document changes, selection changes, or focus changes
     if (!update.docChanged && !update.selectionSet && !update.focusChanged) {
@@ -229,7 +229,7 @@ function createSqlGutter(config: SqlGutterConfig): Extension {
  * based on cursor position. Highlights the current statement and shows dimmed
  * indicators for other statements.
  */
-export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension {
+export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension[] {
   const analyzer = new SqlStructureAnalyzer();
 
   return [

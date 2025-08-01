@@ -74,11 +74,11 @@ export class SqlParser {
       const lineMatch = message.match(/line (\d+)/i);
       const columnMatch = message.match(/column (\d+)/i);
 
-      if (lineMatch) {
-        line = parseInt(lineMatch[1]!, 10);
+      if (lineMatch?.[1]) {
+        line = parseInt(lineMatch[1], 10);
       }
-      if (columnMatch) {
-        column = parseInt(columnMatch[1]!, 10);
+      if (columnMatch?.[1]) {
+        column = parseInt(columnMatch[1], 10);
       }
     }
 

@@ -47,7 +47,7 @@ export interface SqlExtensionConfig {
  * });
  * ```
  */
-export function sqlExtension(config: SqlExtensionConfig = {}): Extension {
+export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
   const extensions: Extension[] = [];
   const {
     enableLinting = true,
