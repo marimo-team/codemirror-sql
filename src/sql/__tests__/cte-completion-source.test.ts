@@ -3,6 +3,15 @@ import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { cteCompletionSource } from "../cte-completion-source.js";
 
+// Helper function to handle both sync and async completion results
+async function getCompletionResult(context: CompletionContext) {
+  const result = cteCompletionSource(context);
+  if (result instanceof Promise) {
+    return await result;
+  }
+  return result;
+}
+
 // Helper function to create a mock completion context
 function createMockContext(doc: string, pos: number, explicit = false): CompletionContext {
   const state = EditorState.create({ doc });
@@ -45,14 +54,14 @@ function createMockContext(doc: string, pos: number, explicit = false): Completi
 
 describe("cteCompletionSource", () => {
   describe("basic CTE detection", () => {
-    it("should detect single CTE", () => {
+    it("should detect single CTE", async () => {
       const sql = `WITH user_stats AS (
         SELECT id, name FROM users
       )
       SELECT * FROM user_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
@@ -61,14 +70,14 @@ describe("cteCompletionSource", () => {
       expect(result?.options[0].info).toBe("Common Table Expression: user_stats");
     });
 
-    it("should detect multiple CTEs", () => {
+    it("should detect multiple CTEs", async () => {
       const sql = `WITH
         user_stats AS (SELECT id, name FROM users),
         post_counts AS (SELECT user_id, COUNT(*) as count FROM posts GROUP BY user_id)
       SELECT * FROM `;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(2);
@@ -77,7 +86,7 @@ describe("cteCompletionSource", () => {
       expect(labels).toEqual(["post_counts", "user_stats"]);
     });
 
-    it("should detect RECURSIVE CTEs", () => {
+    it("should detect RECURSIVE CTEs", async () => {
       const sql = `WITH RECURSIVE category_tree AS (
         SELECT id, name, parent_id FROM categories WHERE parent_id IS NULL
         UNION ALL
@@ -88,7 +97,7 @@ describe("cteCompletionSource", () => {
       SELECT * FROM category_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
@@ -97,40 +106,40 @@ describe("cteCompletionSource", () => {
   });
 
   describe("CTE name patterns", () => {
-    it("should handle CTEs with underscores", () => {
+    it("should handle CTEs with underscores", async () => {
       const sql = `WITH user_activity_stats AS (
         SELECT * FROM users
       )
       SELECT * FROM user_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options[0].label).toBe("user_activity_stats");
     });
 
-    it("should handle CTEs with numbers", () => {
+    it("should handle CTEs with numbers", async () => {
       const sql = `WITH stats2024 AS (
         SELECT * FROM users
       )
       SELECT * FROM stats`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options[0].label).toBe("stats2024");
     });
 
-    it("should handle case-insensitive WITH keyword", () => {
+    it("should handle case-insensitive WITH keyword", async () => {
       const sql = `with user_data as (
         select * from users
       )
       select * from user_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options[0].label).toBe("user_data");
@@ -138,7 +147,7 @@ describe("cteCompletionSource", () => {
   });
 
   describe("complex SQL scenarios", () => {
-    it("should detect CTEs in nested queries", () => {
+    it("should detect CTEs in nested queries", async () => {
       const sql = `WITH outer_cte AS (
         WITH inner_cte AS (SELECT id FROM users)
         SELECT * FROM inner_cte
@@ -146,7 +155,7 @@ describe("cteCompletionSource", () => {
       SELECT * FROM `;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(2);
@@ -155,7 +164,7 @@ describe("cteCompletionSource", () => {
       expect(labels).toEqual(["inner_cte", "outer_cte"]);
     });
 
-    it("should handle CTEs with complex subqueries", () => {
+    it("should handle CTEs with complex subqueries", async () => {
       const sql = `WITH filtered_users AS (
         SELECT u.id, u.name
         FROM users u
@@ -167,13 +176,13 @@ describe("cteCompletionSource", () => {
       SELECT * FROM filtered_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options[0].label).toBe("filtered_users");
     });
 
-    it("should handle multiple WITH clauses in different statements", () => {
+    it("should handle multiple WITH clauses in different statements", async () => {
       const sql = `WITH first_cte AS (SELECT 1)
       SELECT * FROM first_cte;
 
@@ -181,7 +190,7 @@ describe("cteCompletionSource", () => {
       SELECT * FROM `;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(2);
@@ -192,41 +201,41 @@ describe("cteCompletionSource", () => {
   });
 
   describe("edge cases", () => {
-    it("should return null when no CTEs are present", () => {
+    it("should return null when no CTEs are present", async () => {
       const sql = "SELECT * FROM users WHERE id = 1";
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeNull();
     });
 
-    it("should return null when not in explicit mode and no word being typed", () => {
+    it("should return null when not in explicit mode and no word being typed", async () => {
       const sql = `WITH user_stats AS (SELECT * FROM users)
       SELECT * FROM `;
 
       const context = createMockContext(sql, sql.length, false); // explicit = false
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeNull();
     });
 
-    it("should handle incomplete CTEs gracefully", () => {
+    it("should handle incomplete CTEs gracefully", async () => {
       const sql = "WITH incomplete_cte AS SELECT * FROM users";
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeNull();
     });
 
-    it("should handle empty document", () => {
+    it("should handle empty document", async () => {
       const sql = "";
       const context = createMockContext(sql, 0, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeNull();
     });
 
-    it("should deduplicate CTE names", () => {
+    it("should deduplicate CTE names", async () => {
       const sql = `WITH user_stats AS (SELECT * FROM users)
       SELECT * FROM user_stats
       UNION ALL
@@ -234,7 +243,7 @@ describe("cteCompletionSource", () => {
       SELECT * FROM `;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
@@ -243,24 +252,24 @@ describe("cteCompletionSource", () => {
   });
 
   describe("completion context", () => {
-    it("should respect word boundaries", () => {
+    it("should respect word boundaries", async () => {
       const sql = `WITH user_stats AS (SELECT * FROM users)
       SELECT * FROM user_st`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       expect(result?.from).toBe(sql.lastIndexOf("user_st"));
       expect(result?.options[0].label).toBe("user_stats");
     });
 
-    it("should provide correct completion metadata", () => {
+    it("should provide correct completion metadata", async () => {
       const sql = `WITH my_cte AS (SELECT * FROM users)
       SELECT * FROM my_`;
 
       const context = createMockContext(sql, sql.length, true);
-      const result = cteCompletionSource(context);
+      const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
       const completion = result?.options[0];

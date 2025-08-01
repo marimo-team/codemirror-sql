@@ -189,7 +189,7 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
         create(_view: EditorView) {
           const dom = document.createElement("div");
           dom.className = "cm-sql-hover-tooltip";
-          dom.innerHTML = tooltipContent!;
+          dom.innerHTML = tooltipContent;
           return { dom };
         },
       };

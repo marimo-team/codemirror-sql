@@ -402,13 +402,14 @@ describe("Custom Tooltip Renderers", () => {
       expect(result?.semanticType).toBe("table");
 
       // Verify data structure for namespace renderer
+      expect(result).toBeTruthy();
       const namespaceData = {
-        item: result!,
+        item: result,
         word: "users",
         resolvedSchema: mockSchema,
       };
 
-      expect(namespaceData.item.semanticType).toBe("table");
+      expect(namespaceData.item?.semanticType).toBe("table");
       expect(namespaceData.word).toBe("users");
       expect(namespaceData.resolvedSchema).toBe(mockSchema);
     });
@@ -435,13 +436,13 @@ describe("Custom Tooltip Renderers", () => {
 
       // Verify this would be passed to table renderer
       const tableData = {
-        item: result!,
+        item: result,
         word: "users",
         resolvedSchema: mockSchema,
       };
 
-      expect(tableData.item.completion?.label).toBe("users");
-      expect(tableData.item.namespace).toBeDefined();
+      expect(tableData.item?.completion?.label).toBe("users");
+      expect(tableData.item?.namespace).toBeDefined();
     });
   });
 
@@ -466,13 +467,13 @@ describe("Custom Tooltip Renderers", () => {
 
       // Verify data structure for column renderer
       const columnData = {
-        item: result!,
+        item: result,
         word: "id",
         resolvedSchema: mockSchema,
       };
 
-      expect(columnData.item.completion?.label).toBe("id");
-      expect(columnData.item.semanticType).toBe("column");
+      expect(columnData.item?.completion?.label).toBe("id");
+      expect(columnData.item?.semanticType).toBe("column");
     });
   });
 

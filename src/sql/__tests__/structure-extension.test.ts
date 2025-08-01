@@ -15,7 +15,7 @@ const _createMockView = (content: string, hasFocus = true) => {
     state,
     hasFocus,
     dispatch: () => {},
-  } as any as EditorView;
+  } as EditorView;
 };
 
 describe("sqlStructureGutter", () => {

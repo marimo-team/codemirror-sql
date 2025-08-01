@@ -40,8 +40,9 @@ export class SqlStructureAnalyzer {
     const content = state.doc.toString();
     const cacheKey = this.generateCacheKey(content);
 
-    if (this.cache.has(cacheKey)) {
-      return this.cache.get(cacheKey)!;
+    const existingValue = this.cache.get(cacheKey);
+    if (existingValue) {
+      return existingValue;
     }
 
     const statements = this.extractStatements(content, state);

@@ -2,6 +2,7 @@ import { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { sqlLinter } from "../diagnostics.js";
+import type { SqlParser } from "../parser.js";
 
 // Mock EditorView
 const _createMockView = (content: string) => {
@@ -26,7 +27,7 @@ describe("sqlLinter", () => {
     const mockParser = {
       validateSql: vi.fn(() => []),
       parseSql: vi.fn(() => ({ statements: [] })),
-    } as any;
+    } as unknown as SqlParser;
 
     const linter = sqlLinter({ parser: mockParser });
     expect(linter).toBeDefined();
