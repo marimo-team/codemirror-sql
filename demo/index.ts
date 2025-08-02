@@ -1,7 +1,10 @@
+import { acceptCompletion } from "@codemirror/autocomplete";
 import { StandardSQL, sql } from "@codemirror/lang-sql";
+import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
+import { tableTooltipRenderer } from "./customRenderers.js";
 
 // Default SQL content for the demo
 const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
@@ -96,11 +99,43 @@ const completionKindStyles = {
 
 const dialect = StandardSQL;
 
+const defaultKeymap = [
+  {
+    key: "Tab",
+    run: (view: EditorView) => {
+      // Try to accept completion first
+      if (acceptCompletion(view)) {
+        return true;
+      }
+      // In production, you can use @codemirror/commands.indentWithTab instead of custom logic
+      // If no completion to accept, insert a tab character
+      const { state } = view;
+      const { selection } = state;
+      if (selection.main.empty) {
+        // Insert tab at cursor position
+        view.dispatch({
+          changes: {
+            from: selection.main.from,
+            insert: "\t",
+          },
+          selection: {
+            anchor: selection.main.from + 1,
+            head: selection.main.from + 1,
+          },
+        });
+        return true;
+      }
+      return false;
+    },
+  },
+];
+
 // Initialize the SQL editor
 function initializeEditor() {
   const extensions = [
     basicSetup,
     EditorView.lineWrapping,
+    keymap.of(defaultKeymap),
     sql({
       dialect: dialect,
       // Example schema for autocomplete
@@ -131,6 +166,10 @@ function initializeEditor() {
         keywords: async () => {
           const keywords = await import("../src/data/common-keywords.json");
           return keywords.default.keywords;
+        },
+        tooltipRenderers: {
+          // Custom renderer for tables
+          table: tableTooltipRenderer,
         },
       },
     }),
