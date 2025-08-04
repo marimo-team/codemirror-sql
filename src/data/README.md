@@ -4,7 +4,7 @@ This directory contains the SQL keywords for the different dialects. Keywords ar
 
 ## Structure
 
-Refer to `SqlKeywordInfo` type
+By default, we use the `SqlKeywordInfo` type to define the keywords.
 
 ```json
 {
