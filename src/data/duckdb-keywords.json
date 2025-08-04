@@ -316,7 +316,7 @@
         "example": "to_microseconds(5)"
     },
     "to_millennia": {
-        "description": "Construct a millenium interval",
+        "description": "Construct a millennium interval",
         "example": "to_millennia(1)"
     },
     "to_milliseconds": {
