@@ -129,8 +129,8 @@ function initializeEditor() {
         enableTables: true, // Show table information
         enableColumns: true, // Show column information
         keywords: async () => {
-          const keywords = await import("../src/data/common-keywords.json");
-          return keywords.default.keywords;
+          const keywords = await import("../src/data/duckdb-keywords.json");
+          return keywords.default;
         },
       },
     }),

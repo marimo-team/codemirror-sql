@@ -1,16 +1,21 @@
-# Generating SQL Dialects and Keywords
+# SQL Keywords
 
-Dialects enable CodeMirror to provide SQL syntax highlighting.
+This directory contains the SQL keywords for the different dialects. Keywords are stored here so they can be lazily loaded.
 
-Keywords allow CodeMirror to offer SQL autocompletion and display hover tooltips.
+## Structure
 
-| Database | How to Run Spec Script                  |
-| -------- | --------------------------------------- |
-| DuckDB   | `python src/data/duckdb/spec_duckdb.py` |
+Refer to `SqlKeywordInfo` type
 
-> 💡 **Tip:** Update the script path to match your target SQL dialect.  
-> Running the script will automatically generate the keywords and types for the corresponding `*.ts` dialect file.
-
-> 🚀 **Quick Start:**  
-> To open and run the script interactively in marimo, use:  
-> `uvx marimo edit <path-to-script>`
+```json
+{
+  "keyword": {
+    "description": "Description of the keyword",
+    "syntax": "Syntax of the keyword",
+    "example": "Example of the keyword",
+    "metadata": {
+      "tag1": "value1",
+      "tag2": "value2"
+    }
+  }
+}
+```
