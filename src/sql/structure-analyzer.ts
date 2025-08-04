@@ -1,5 +1,5 @@
 import type { EditorState } from "@codemirror/state";
-import { SqlParser } from "./parser.js";
+import type { SqlParser } from "./types.js";
 
 /**
  * Represents a SQL statement with position information
@@ -29,8 +29,8 @@ export class SqlStructureAnalyzer {
   private parser: SqlParser;
   private cache = new Map<string, SqlStatement[]>();
 
-  constructor() {
-    this.parser = new SqlParser();
+  constructor(parser: SqlParser) {
+    this.parser = parser;
   }
 
   /**
@@ -111,7 +111,7 @@ export class SqlStructureAnalyzer {
       }
 
       // Parse the statement to determine validity and type (use stripped content)
-      const parseResult = await this.parser.parse(strippedContent);
+      const parseResult = await this.parser.parse(strippedContent, { state });
       const type = this.determineStatementType(strippedContent);
 
       // Remove trailing semicolon from content for cleaner display
