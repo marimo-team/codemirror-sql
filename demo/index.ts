@@ -1,10 +1,10 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { StandardSQL, sql } from "@codemirror/lang-sql";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
-import { tableTooltipRenderer } from "./customRenderers.js";
+import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
 
 // Default SQL content for the demo
 const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
@@ -54,7 +54,7 @@ WHERE order_date >= '2024-01-01'
 ORDER BY total_amount DESC;
 `;
 
-const schema = {
+const schema: Record<Schema, string[]> = {
   // Users table
   users: ["id", "name", "email", "active", "status", "created_at", "updated_at", "profile_id"],
   // Posts table
@@ -97,7 +97,7 @@ const completionKindStyles = {
   height: "12px",
 };
 
-const dialect = StandardSQL;
+const dialect = PostgreSQL;
 
 const defaultKeymap = [
   {
