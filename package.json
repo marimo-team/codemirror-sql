@@ -44,7 +44,7 @@
   },
   "files": [
     "dist",
-    "src/data"
+    "src/data/*.json"
   ],
   "exports": {
     "./package.json": "./package.json",
@@ -54,7 +54,8 @@
         "default": "./dist/index.js"
       }
     },
-    "./data/common-keywords.json": "./src/data/common-keywords.json"
+    "./data/common-keywords.json": "./src/data/common-keywords.json",
+    "./data/duckdb-keywords.json": "./src/data/duckdb-keywords.json"
   },
   "types": "./dist/index.d.ts",
   "type": "module",
