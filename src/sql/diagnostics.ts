@@ -61,7 +61,7 @@ export function sqlLinter(config: SqlLinterConfig = {}): Extension {
         return [];
       }
 
-    const errors = await parser.validateSql(sql, { state: view.state });
+      const errors = await parser.validateSql(sql, { state: view.state });
 
       return errors.map((error) => convertToCodeMirrorDiagnostic(error, doc));
     },

@@ -6,7 +6,7 @@ describe("index.ts exports", () => {
     const sortedExports = Object.keys(exports).sort();
     expect(sortedExports).toMatchInlineSnapshot(`
       [
-        "SqlParser",
+        "NodeSqlParser",
         "SqlStructureAnalyzer",
         "cteCompletionSource",
         "sqlExtension",
