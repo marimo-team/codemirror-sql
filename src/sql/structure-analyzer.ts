@@ -1,5 +1,5 @@
 import type { EditorState } from "@codemirror/state";
-import { SqlParser } from "./parser.js";
+import type { SqlParser } from "./parser.js";
 
 /**
  * Represents a SQL statement with position information
@@ -29,8 +29,8 @@ export class SqlStructureAnalyzer {
   private parser: SqlParser;
   private cache = new Map<string, SqlStatement[]>();
 
-  constructor() {
-    this.parser = new SqlParser();
+  constructor(parser: SqlParser) {
+    this.parser = parser;
   }
 
   /**

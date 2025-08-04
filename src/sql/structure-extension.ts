@@ -1,5 +1,6 @@
 import { type Extension, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, GutterMarker, gutter, type ViewUpdate } from "@codemirror/view";
+import type { SqlParser } from "./parser.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
 
 export interface SqlGutterConfig {
@@ -229,8 +230,8 @@ function createSqlGutter(config: SqlGutterConfig): Extension {
  * based on cursor position. Highlights the current statement and shows dimmed
  * indicators for other statements.
  */
-export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension[] {
-  const analyzer = new SqlStructureAnalyzer();
+export function sqlStructureGutter(parser: SqlParser, config: SqlGutterConfig = {}): Extension[] {
+  const analyzer = new SqlStructureAnalyzer(parser);
 
   return [
     sqlGutterStateField,

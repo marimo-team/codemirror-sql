@@ -2,7 +2,9 @@ import { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { sqlLinter } from "../diagnostics.js";
-import type { SqlParser } from "../parser.js";
+import { SqlParser } from "../parser.js";
+
+const defaultParser = new SqlParser({ dialect: "PostgresQL" });
 
 // Mock EditorView
 const _createMockView = (content: string) => {
@@ -14,12 +16,12 @@ const _createMockView = (content: string) => {
 
 describe("sqlLinter", () => {
   it("should create a linter extension", () => {
-    const linter = sqlLinter();
+    const linter = sqlLinter(defaultParser);
     expect(linter).toBeDefined();
   });
 
   it("should accept configuration with custom delay", () => {
-    const linter = sqlLinter({ delay: 1000 });
+    const linter = sqlLinter(defaultParser, { delay: 1000 });
     expect(linter).toBeDefined();
   });
 
@@ -29,22 +31,17 @@ describe("sqlLinter", () => {
       parseSql: vi.fn(() => ({ statements: [] })),
     } as unknown as SqlParser;
 
-    const linter = sqlLinter({ parser: mockParser });
+    const linter = sqlLinter(mockParser);
     expect(linter).toBeDefined();
   });
 
   it("should use default delay when no delay provided", () => {
-    const linter = sqlLinter();
+    const linter = sqlLinter(defaultParser);
     expect(linter).toBeDefined();
   });
 
   it("should use custom delay when provided", () => {
-    const linter = sqlLinter({ delay: 500 });
-    expect(linter).toBeDefined();
-  });
-
-  it("should use default parser when no parser provided", () => {
-    const linter = sqlLinter();
+    const linter = sqlLinter(defaultParser, { delay: 500 });
     expect(linter).toBeDefined();
   });
 });

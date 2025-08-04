@@ -44,6 +44,7 @@ const editor = new EditorView({
       autocomplete: cteCompletionSource,
     }),
     sqlExtension({
+      sqlParser: new SqlParser({ dialect: "MySQL" }),
       linterConfig: {
         delay: 250 // Validation delay in ms
       },

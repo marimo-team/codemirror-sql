@@ -2,6 +2,7 @@ import { StandardSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
+import { SqlParser } from "../src/sql/parser.js";
 
 // Default SQL content for the demo
 const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
@@ -109,6 +110,9 @@ function initializeEditor() {
       upperCaseKeywords: true,
     }),
     sqlExtension({
+      // Parser definition
+      sqlParser: new SqlParser({ dialect: "PostgresQL" }),
+
       // Linter extension configuration
       linterConfig: {
         delay: 250, // Delay before running validation

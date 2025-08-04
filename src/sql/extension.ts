@@ -1,12 +1,20 @@
 import type { Extension } from "@codemirror/state";
 import { type SqlLinterConfig, sqlLinter } from "./diagnostics.js";
 import { type SqlHoverConfig, sqlHover, sqlHoverTheme } from "./hover.js";
+import { SqlParser } from "./parser.js";
 import { type SqlGutterConfig, sqlStructureGutter } from "./structure-extension.js";
 
 /**
  * Configuration options for the SQL extension
  */
 export interface SqlExtensionConfig {
+  /**
+   * The SQL parser used for linting and gutter markers.
+   * If not provided, a default PostgreSQL parser is created.
+   * The parser instance is shared across the extension.
+   */
+  sqlParser?: SqlParser;
+
   /** Whether to enable SQL linting (default: true) */
   enableLinting?: boolean;
   /** Configuration for the SQL linter */
@@ -53,17 +61,22 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
     enableLinting = true,
     enableGutterMarkers = true,
     enableHover = true,
+    sqlParser,
     linterConfig,
     gutterConfig,
     hoverConfig,
   } = config;
 
-  if (enableLinting) {
-    extensions.push(sqlLinter(linterConfig));
-  }
+  if (enableLinting || enableGutterMarkers) {
+    const parser = sqlParser ?? new SqlParser({ dialect: "PostgresQL" });
 
-  if (enableGutterMarkers) {
-    extensions.push(sqlStructureGutter(gutterConfig));
+    if (enableLinting) {
+      extensions.push(sqlLinter(parser, linterConfig));
+    }
+
+    if (enableGutterMarkers) {
+      extensions.push(sqlStructureGutter(parser, gutterConfig));
+    }
   }
 
   if (enableHover) {

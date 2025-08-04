@@ -1,5 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { beforeEach, describe, expect, it } from "vitest";
+import { SqlParser } from "../parser.js";
 import { SqlStructureAnalyzer } from "../structure-analyzer.js";
 
 describe("SqlStructureAnalyzer", () => {
@@ -7,7 +8,8 @@ describe("SqlStructureAnalyzer", () => {
   let state: EditorState;
 
   beforeEach(() => {
-    analyzer = new SqlStructureAnalyzer();
+    const parser = new SqlParser({ dialect: "PostgresQL" });
+    analyzer = new SqlStructureAnalyzer(parser);
   });
 
   const createState = (content: string) => {

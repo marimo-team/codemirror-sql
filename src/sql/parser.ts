@@ -26,20 +26,44 @@ export interface SqlParseResult {
   ast?: unknown;
 }
 
+// https://github.com/taozhi8833998/node-sql-parser?tab=readme-ov-file#supported-database-sql-syntax
+export type SupportedDialects =
+  | "Athena"
+  | "BigQuery"
+  | "DB2"
+  | "Hive"
+  | "MariaDB"
+  | "MySQL"
+  | "PostgresQL"
+  | "Redshift"
+  | "Sqlite"
+  | "TransactSQL"
+  | "FlinkSQL"
+  | "Snowflake"
+  | "Noql";
+
+export interface SqlParserConfig {
+  /** The database dialect to use for parsing */
+  dialect: SupportedDialects;
+}
+
 /**
  * A SQL parser wrapper around node-sql-parser with enhanced error handling
  * and validation capabilities for CodeMirror integration.
  */
 export class SqlParser {
   private parser: Parser;
+  private dialect: SupportedDialects;
 
-  constructor() {
+  constructor(config: SqlParserConfig) {
     this.parser = new Parser();
+    this.dialect = config.dialect;
   }
 
   parse(sql: string): SqlParseResult {
     try {
-      const ast = this.parser.astify(sql);
+      const dialect = this.dialect;
+      const ast = this.parser.astify(sql, { database: dialect });
 
       return {
         success: true,

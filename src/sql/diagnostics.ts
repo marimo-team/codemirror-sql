@@ -1,7 +1,7 @@
 import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { type SqlParseError, SqlParser } from "./parser.js";
+import type { SqlParseError, SqlParser } from "./parser.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -11,8 +11,6 @@ const DEFAULT_DELAY = 750;
 export interface SqlLinterConfig {
   /** Delay in milliseconds before running validation (default: 750) */
   delay?: number;
-  /** Custom SQL parser instance to use for validation */
-  parser?: SqlParser;
 }
 
 /**
@@ -48,9 +46,7 @@ function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnos
  * });
  * ```
  */
-export function sqlLinter(config: SqlLinterConfig = {}) {
-  const parser = config.parser || new SqlParser();
-
+export function sqlLinter(parser: SqlParser, config: SqlLinterConfig = {}) {
   return linter(
     (view: EditorView): Diagnostic[] => {
       const doc = view.state.doc;
@@ -65,7 +61,7 @@ export function sqlLinter(config: SqlLinterConfig = {}) {
       return errors.map((error) => convertToCodeMirrorDiagnostic(error, doc));
     },
     {
-      delay: config.delay || DEFAULT_DELAY,
+      delay: config.delay ?? DEFAULT_DELAY,
     },
   );
 }

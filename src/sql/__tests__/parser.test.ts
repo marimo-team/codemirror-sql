@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SqlParser } from "../parser.js";
 
 describe("SqlParser", () => {
-  const parser = new SqlParser();
+  const parser = new SqlParser({ dialect: "PostgresQL" });
 
   describe("parse", () => {
     it("should parse valid SQL successfully", () => {
@@ -65,5 +65,23 @@ describe("SqlParser", () => {
       expect(errors[0]).toHaveProperty("column");
       expect(errors[0]).toHaveProperty("severity");
     });
+  });
+});
+
+describe("Dialects", () => {
+  it("should parse valid SQL based on dialect", () => {
+    const sql = "SELECT * FROM table_function();";
+
+    const parser = new SqlParser({ dialect: "PostgresQL" });
+    const result = parser.parse(sql);
+    expect(result.success).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.ast).toBeDefined();
+
+    // MySQL does not support calling functions as tables
+    const mysqlParser = new SqlParser({ dialect: "MySQL" });
+    const mysqlResult = mysqlParser.parse(sql);
+    expect(mysqlResult.success).toBe(false);
+    expect(mysqlResult.errors).toHaveLength(1);
   });
 });
