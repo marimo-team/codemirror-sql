@@ -1,36 +1,37 @@
+import type { EditorState } from "@codemirror/state";
+import type { Option } from "node-sql-parser";
 import { lazy } from "../utils.js";
+import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
-/**
- * Represents a SQL parsing error with location information
- */
-export interface SqlParseError {
-  /** Error message describing the issue */
-  message: string;
-  /** Line number where the error occurred (1-indexed) */
-  line: number;
-  /** Column number where the error occurred (1-indexed) */
-  column: number;
-  /** Severity level of the error */
-  severity: "error" | "warning";
-}
-
-/**
- * Result of parsing a SQL statement
- */
-export interface SqlParseResult {
-  /** Whether parsing was successful */
-  success: boolean;
-  /** Array of parsing errors, if any */
-  errors: SqlParseError[];
-  /** The parsed AST if successful */
-  ast?: unknown;
+interface NodeSqlParserOptions {
+  getParserOptions?: (state: EditorState) => Option;
 }
 
 /**
  * A SQL parser wrapper around node-sql-parser with enhanced error handling
  * and validation capabilities for CodeMirror integration.
+ *
+ * @example Custom dialect
+ * ```ts
+ * import { NodeSqlParser } from "@marimo-team/codemirror-sql";
+ *
+ * const myParser = new NodeSqlParser({
+ *   getParserOptions: (state) => ({
+ *     dialect: getDialect(state),
+ *     parseOptions: {
+ *       includeLocations: true,
+ *     },
+ *   }),
+ * });
+ * ```
  */
-export class SqlParser {
+export class NodeSqlParser implements SqlParser {
+  private opts: NodeSqlParserOptions;
+
+  constructor(opts: NodeSqlParserOptions = {}) {
+    this.opts = opts;
+  }
+
   /**
    * Lazy import of the node-sql-parser package and create a new Parser instance.
    */
@@ -39,10 +40,11 @@ export class SqlParser {
     return new Parser();
   });
 
-  async parse(sql: string): Promise<SqlParseResult> {
+  async parse(sql: string, opts: { state: EditorState }): Promise<SqlParseResult> {
     try {
+      const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
-      const ast = parser.astify(sql);
+      const ast = parser.astify(sql, parserOptions);
 
       return {
         success: true,
@@ -102,8 +104,8 @@ export class SqlParser {
       .trim();
   }
 
-  async validateSql(sql: string): Promise<SqlParseError[]> {
-    const result = await this.parse(sql);
+  async validateSql(sql: string, opts: { state: EditorState }): Promise<SqlParseError[]> {
+    const result = await this.parse(sql, opts);
     return result.errors;
   }
 }

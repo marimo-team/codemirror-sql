@@ -1,6 +1,8 @@
 import { type Extension, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, GutterMarker, gutter, type ViewUpdate } from "@codemirror/view";
+import { NodeSqlParser } from "./parser.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlParser } from "./types.js";
 
 export interface SqlGutterConfig {
   /** Background color for the current statement indicator */
@@ -21,6 +23,8 @@ export interface SqlGutterConfig {
   hideWhenNotFocused?: boolean;
   /** Opacity when editor is not focused (overrides hideWhenNotFocused if set) */
   unfocusedOpacity?: number;
+  /** Custom SQL parser instance to use for analysis */
+  parser?: SqlParser;
 }
 
 interface SqlGutterState {
@@ -230,7 +234,8 @@ function createSqlGutter(config: SqlGutterConfig): Extension {
  * indicators for other statements.
  */
 export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension[] {
-  const analyzer = new SqlStructureAnalyzer();
+  const parser = config.parser || new NodeSqlParser();
+  const analyzer = new SqlStructureAnalyzer(parser);
 
   return [
     sqlGutterStateField,

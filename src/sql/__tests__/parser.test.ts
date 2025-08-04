@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SqlParser } from "../parser.js";
+import { NodeSqlParser } from "../parser.js";
 
 describe("SqlParser", () => {
-  const parser = new SqlParser();
+  const parser = new NodeSqlParser();
 
   describe("parse", () => {
     it("should parse valid SQL successfully", async () => {

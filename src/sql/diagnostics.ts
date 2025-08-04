@@ -1,7 +1,8 @@
 import { type Diagnostic, linter } from "@codemirror/lint";
-import type { Text } from "@codemirror/state";
+import type { Extension, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { type SqlParseError, SqlParser } from "./parser.js";
+import { NodeSqlParser } from "./parser.js";
+import type { SqlParseError, SqlParser } from "./types.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -48,8 +49,8 @@ function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnos
  * });
  * ```
  */
-export function sqlLinter(config: SqlLinterConfig = {}) {
-  const parser = config.parser || new SqlParser();
+export function sqlLinter(config: SqlLinterConfig = {}): Extension {
+  const parser = config.parser || new NodeSqlParser();
 
   return linter(
     async (view: EditorView): Promise<Diagnostic[]> => {
@@ -60,7 +61,7 @@ export function sqlLinter(config: SqlLinterConfig = {}) {
         return [];
       }
 
-      const errors = await parser.validateSql(sql);
+    const errors = await parser.validateSql(sql, { state: view.state });
 
       return errors.map((error) => convertToCodeMirrorDiagnostic(error, doc));
     },
