@@ -36,7 +36,7 @@ export class SqlStructureAnalyzer {
   /**
    * Analyzes the document and extracts all SQL statements
    */
-  analyzeDocument(state: EditorState): SqlStatement[] {
+  async analyzeDocument(state: EditorState): Promise<SqlStatement[]> {
     const content = state.doc.toString();
     const cacheKey = this.generateCacheKey(content);
 
@@ -45,7 +45,7 @@ export class SqlStructureAnalyzer {
       return existingValue;
     }
 
-    const statements = this.extractStatements(content, state);
+    const statements = await this.extractStatements(content, state);
     this.cache.set(cacheKey, statements);
 
     // Keep cache size reasonable
@@ -62,22 +62,26 @@ export class SqlStructureAnalyzer {
   /**
    * Gets the SQL statement at a specific cursor position
    */
-  getStatementAtPosition(state: EditorState, position: number): SqlStatement | null {
-    const statements = this.analyzeDocument(state);
+  async getStatementAtPosition(state: EditorState, position: number): Promise<SqlStatement | null> {
+    const statements = await this.analyzeDocument(state);
     return statements.find((stmt) => position >= stmt.from && position <= stmt.to) || null;
   }
 
   /**
    * Gets all SQL statements that intersect with a selection range
    */
-  getStatementsInRange(state: EditorState, from: number, to: number): SqlStatement[] {
-    const statements = this.analyzeDocument(state);
+  async getStatementsInRange(
+    state: EditorState,
+    from: number,
+    to: number,
+  ): Promise<SqlStatement[]> {
+    const statements = await this.analyzeDocument(state);
     return statements.filter(
       (stmt) => stmt.from <= to && stmt.to >= from, // Statements that overlap with the range
     );
   }
 
-  private extractStatements(content: string, state: EditorState): SqlStatement[] {
+  private async extractStatements(content: string, state: EditorState): Promise<SqlStatement[]> {
     const statements: SqlStatement[] = [];
 
     // Split content by semicolons to find potential statement boundaries
@@ -107,7 +111,7 @@ export class SqlStructureAnalyzer {
       }
 
       // Parse the statement to determine validity and type (use stripped content)
-      const parseResult = this.parser.parse(strippedContent);
+      const parseResult = await this.parser.parse(strippedContent);
       const type = this.determineStatementType(strippedContent);
 
       // Remove trailing semicolon from content for cleaner display

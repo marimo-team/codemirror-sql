@@ -1,4 +1,4 @@
-import { Parser } from "node-sql-parser";
+import { lazy } from "../utils.js";
 
 /**
  * Represents a SQL parsing error with location information
@@ -31,15 +31,18 @@ export interface SqlParseResult {
  * and validation capabilities for CodeMirror integration.
  */
 export class SqlParser {
-  private parser: Parser;
+  /**
+   * Lazy import of the node-sql-parser package and create a new Parser instance.
+   */
+  private getParser = lazy(async () => {
+    const { Parser } = await import("node-sql-parser");
+    return new Parser();
+  });
 
-  constructor() {
-    this.parser = new Parser();
-  }
-
-  parse(sql: string): SqlParseResult {
+  async parse(sql: string): Promise<SqlParseResult> {
     try {
-      const ast = this.parser.astify(sql);
+      const parser = await this.getParser();
+      const ast = parser.astify(sql);
 
       return {
         success: true,
@@ -99,8 +102,8 @@ export class SqlParser {
       .trim();
   }
 
-  validateSql(sql: string): SqlParseError[] {
-    const result = this.parse(sql);
+  async validateSql(sql: string): Promise<SqlParseError[]> {
+    const result = await this.parse(sql);
     return result.errors;
   }
 }

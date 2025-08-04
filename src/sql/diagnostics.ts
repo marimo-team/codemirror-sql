@@ -52,7 +52,7 @@ export function sqlLinter(config: SqlLinterConfig = {}) {
   const parser = config.parser || new SqlParser();
 
   return linter(
-    (view: EditorView): Diagnostic[] => {
+    async (view: EditorView): Promise<Diagnostic[]> => {
       const doc = view.state.doc;
       const sql = doc.toString();
 
@@ -60,7 +60,7 @@ export function sqlLinter(config: SqlLinterConfig = {}) {
         return [];
       }
 
-      const errors = parser.validateSql(sql);
+      const errors = await parser.validateSql(sql);
 
       return errors.map((error) => convertToCodeMirrorDiagnostic(error, doc));
     },

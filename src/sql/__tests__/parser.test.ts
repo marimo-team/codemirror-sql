@@ -5,16 +5,16 @@ describe("SqlParser", () => {
   const parser = new SqlParser();
 
   describe("parse", () => {
-    it("should parse valid SQL successfully", () => {
+    it("should parse valid SQL successfully", async () => {
       const sql = "SELECT * FROM users WHERE id = 1";
-      const result = parser.parse(sql);
+      const result = await parser.parse(sql);
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
       expect(result.ast).toBeDefined();
     });
 
-    it("should handle complex queries", () => {
+    it("should handle complex queries", async () => {
       const sql = `
         SELECT u.name, p.title
         FROM users u
@@ -22,15 +22,15 @@ describe("SqlParser", () => {
         WHERE u.active = true
         ORDER BY p.created_at DESC
       `;
-      const result = parser.parse(sql);
+      const result = await parser.parse(sql);
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
     });
 
-    it("should return errors for invalid SQL", () => {
+    it("should return errors for invalid SQL", async () => {
       const sql = "SELECT * FROM";
-      const result = parser.parse(sql);
+      const result = await parser.parse(sql);
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
@@ -38,9 +38,9 @@ describe("SqlParser", () => {
       expect(result.errors[0].message).toBeTruthy();
     });
 
-    it("should return errors for syntax errors", () => {
+    it("should return errors for syntax errors", async () => {
       const sql = "SELECT * FORM users";
-      const result = parser.parse(sql);
+      const result = await parser.parse(sql);
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
@@ -48,16 +48,16 @@ describe("SqlParser", () => {
   });
 
   describe("validateSql", () => {
-    it("should return empty array for valid SQL", () => {
+    it("should return empty array for valid SQL", async () => {
       const sql = "SELECT 1";
-      const errors = parser.validateSql(sql);
+      const errors = await parser.validateSql(sql);
 
       expect(errors).toHaveLength(0);
     });
 
-    it("should return errors for invalid SQL", () => {
+    it("should return errors for invalid SQL", async () => {
       const sql = "SELECT * FROM WHERE";
-      const errors = parser.validateSql(sql);
+      const errors = await parser.validateSql(sql);
 
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0]).toHaveProperty("message");

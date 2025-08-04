@@ -163,7 +163,7 @@ function createSqlGutterMarkers(
 }
 
 function createUpdateListener(analyzer: SqlStructureAnalyzer): Extension {
-  return EditorView.updateListener.of((update: ViewUpdate) => {
+  return EditorView.updateListener.of(async (update: ViewUpdate) => {
     // Update on document changes, selection changes, or focus changes
     if (!update.docChanged && !update.selectionSet && !update.focusChanged) {
       return;
@@ -174,8 +174,8 @@ function createUpdateListener(analyzer: SqlStructureAnalyzer): Extension {
     const cursorPosition = main.head;
 
     // Analyze the document for SQL statements
-    const allStatements = analyzer.analyzeDocument(state);
-    const currentStatement = analyzer.getStatementAtPosition(state, cursorPosition);
+    const allStatements = await analyzer.analyzeDocument(state);
+    const currentStatement = await analyzer.getStatementAtPosition(state, cursorPosition);
 
     const newState: SqlGutterState = {
       currentStatement,
