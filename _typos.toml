@@ -1,0 +1,3 @@
+[default]
+# Use typos:ignore-next-line to ignore the next line in the codebase
+extend-ignore-re = ["(#|//)\\s*typos:ignore-next-line\\n.*"]

@@ -277,11 +277,13 @@ export const DuckDBKeywords: Record<string, SqlKeywordInfo> = {
     example: "generate_series(2, 5, 3)",
   },
   histogram: {
+    // # typos:ignore-next-line
     description: "Returns a LIST of STRUCTs with the fields bucket and count.",
     example: "histogram(A)",
   },
   histogram_exact: {
     description:
+      // # typos:ignore-next-line
       "Returns a LIST of STRUCTs with the fields bucket and count matching the buckets exactly.",
     example: "histogram_exact(A, [0, 1, 2])",
   },
@@ -302,6 +304,7 @@ export const DuckDBKeywords: Record<string, SqlKeywordInfo> = {
     example: "string_split('hello-world', '-')",
   },
   struct_concat: {
+    // # typos:ignore-next-line
     description: "Merge the multiple STRUCTs into a single STRUCT.",
     example: "struct_concat(struct_pack(i := 4), struct_pack(s := 'string'))",
   },
@@ -366,7 +369,7 @@ export const DuckDBKeywords: Record<string, SqlKeywordInfo> = {
     example: "to_microseconds(5)",
   },
   to_millennia: {
-    description: "Construct a millenium interval",
+    description: "Construct a millennium interval",
     example: "to_millennia(1)",
   },
   to_milliseconds: {
