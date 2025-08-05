@@ -1,3 +1,5 @@
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as exports from "../index";
 
@@ -16,5 +18,18 @@ describe("index.ts exports", () => {
         "sqlStructureGutter",
       ]
     `);
+  });
+});
+
+describe("keywords", async () => {
+  it("should have the correct structure, keywords.keywords should be an object", async () => {
+    const dataDir = join(__dirname, "../data");
+    const files = await readdir(dataDir);
+    const keywordFiles = files.filter((file) => file.endsWith("-keywords.json"));
+
+    for (const file of keywordFiles) {
+      const keywords = await import(`../data/${file}`);
+      expect(typeof keywords.keywords).toBe("object");
+    }
   });
 });
