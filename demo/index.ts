@@ -174,7 +174,7 @@ function initializeEditor() {
     keymap.of(defaultKeymap),
     databaseField,
     sql({
-      dialect: PostgreSQL,
+      dialect: dialect,
       // Example schema for autocomplete
       schema: schema,
       // Enable uppercase keywords for more traditional SQL style
