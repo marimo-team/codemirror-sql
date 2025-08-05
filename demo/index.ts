@@ -1,13 +1,12 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { keywordCompletionSource, MariaSQL, PostgreSQL, SQLite, sql } from "@codemirror/lang-sql";
-import { type EditorState, Facet, StateEffect, StateField } from "@codemirror/state";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { type EditorState, StateEffect, StateField } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { NodeSqlParser } from "../src/index.js";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
 import { DefaultSqlTooltipRenders } from "../src/sql/hover.js";
-import { NodeSqlParser } from "../src/sql/parser.js";
 import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
 
 // Default SQL content for the demo
@@ -165,14 +164,6 @@ function initializeEditor() {
     getParserOptions: (state: EditorState) => {
       return {
         database: getDialect(state),
-      };
-    },
-  });
-
-  const parser = new NodeSqlParser({
-    getParserOptions: (_state: EditorState) => {
-      return {
-        database: "PostgreSQL",
       };
     },
     schema: schema,
