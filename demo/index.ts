@@ -1,9 +1,11 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { keywordCompletionSource, PostgreSQL, sql } from "@codemirror/lang-sql";
 import { keymap } from "@codemirror/view";
+
 import { basicSetup, EditorView } from "codemirror";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
+import { DefaultSqlTooltipRenders } from "../src/sql/hover.js";
 import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
 
 // Default SQL content for the demo
@@ -130,6 +132,19 @@ const defaultKeymap = [
   },
 ];
 
+// e.g. lazily load keyword docs
+const getKeywordDocs = async () => {
+  // For compatibility with Vite and other bundlers, `import` returns a JS module and not a JSON object
+  // So we need to nest the keywords under a json key to access them,
+  // otherwise a keyword can conflict with a JS reserved keyword (e.g. `default` or `with`)
+  const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
+  const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
+  return {
+    ...keywords.default.keywords,
+    ...duckdbKeywords.default.keywords,
+  };
+};
+
 // Initialize the SQL editor
 function initializeEditor() {
   const extensions = [
@@ -142,6 +157,26 @@ function initializeEditor() {
       schema: schema,
       // Enable uppercase keywords for more traditional SQL style
       upperCaseKeywords: true,
+      keywordCompletion: (label, type) => {
+        // console.log("label", label, type);
+        return {
+          label,
+          keyword: label,
+          info: async () => {
+            const dom = document.createElement("div");
+            const keywordDocs = await getKeywordDocs();
+            const description = keywordDocs[label.toLocaleLowerCase()];
+            if (!description) {
+              return null;
+            }
+            dom.innerHTML = DefaultSqlTooltipRenders.keyword({
+              keyword: label,
+              info: description,
+            });
+            return dom;
+          },
+        };
+      },
     }),
     sqlExtension({
       // Linter extension configuration
@@ -164,8 +199,8 @@ function initializeEditor() {
         enableTables: true, // Show table information
         enableColumns: true, // Show column information
         keywords: async () => {
-          const keywords = await import("../src/data/duckdb-keywords.json");
-          return keywords.default;
+          const keywords = await getKeywordDocs();
+          return keywords;
         },
         tooltipRenderers: {
           // Custom renderer for tables
