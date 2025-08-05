@@ -1,5 +1,5 @@
 import type { SQLDialect, SQLNamespace } from "@codemirror/lang-sql";
-import type { Extension } from "@codemirror/state";
+import type { EditorState, Extension } from "@codemirror/state";
 import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import { debug } from "../debug.js";
 import {
@@ -7,6 +7,8 @@ import {
   type ResolvedNamespaceItem,
   resolveNamespaceItem,
 } from "./namespace-utils.js";
+import type { QueryContext } from "./parser/types.js";
+import { NodeSqlParser } from "./parser.js";
 
 /**
  * SQL schema information for hover tooltips
@@ -45,6 +47,14 @@ export interface NamespaceTooltipData {
 }
 
 /**
+ * Data passed to non-existent column tooltip renderers
+ */
+export interface NonExistentColumnData {
+  columnName: string;
+  currentTable?: string;
+}
+
+/**
  * Configuration for SQL hover tooltips
  */
 export interface SqlHoverConfig {
@@ -66,6 +76,8 @@ export interface SqlHoverConfig {
   enableColumns?: boolean;
   /** Enable fuzzy search for namespace items (default: false) */
   enableFuzzySearch?: boolean;
+  /** Enable context-aware column validation (default: true) */
+  enableContextValidation?: boolean;
   /** Custom tooltip renderers for different item types */
   tooltipRenderers?: {
     /** Custom renderer for SQL keywords */
@@ -80,7 +92,7 @@ export interface SqlHoverConfig {
 }
 
 /**
- * Creates a hover tooltip extension for SQL
+ * Creates a hover tooltip extension for SQL with enhanced context awareness
  */
 export function sqlHover(config: SqlHoverConfig = {}): Extension {
   const {
@@ -91,6 +103,7 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
     enableTables = true,
     enableColumns = true,
     enableFuzzySearch = true,
+    enableContextValidation = true,
     tooltipRenderers = {},
   } = config;
 
@@ -125,58 +138,25 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
 
       const resolvedSchema = typeof schema === "function" ? schema(view) : schema;
 
-      let tooltipContent: string | null = null;
-
       debug(`hover word: '${word}'`);
 
-      // Implement preference order:
-      // 1. Look in keywords if it exists
-      // 2. Look for it in SQLNamespace as is
-      // 3. If neither, look in SQLNamespace and try to guess (fuzzy match)
+      // Get current query context using AST parsing
+      const queryContext = enableContextValidation
+        ? await getQueryContextFromAST(view.state.doc.toString(), view.state)
+        : null;
 
-      // Step 1: If no namespace match, try keywords
-      if (!tooltipContent && enableKeywords && resolvedKeywords[word]) {
-        debug("keywordResult", word, resolvedKeywords[word]);
-        const keywordData: KeywordTooltipData = { keyword: word, info: resolvedKeywords[word] };
-        tooltipContent = tooltipRenderers.keyword
-          ? tooltipRenderers.keyword(keywordData)
-          : createKeywordTooltip(keywordData);
-      }
-
-      // Step 2: Try to resolve directly in SQLNamespace
-      if (!tooltipContent && (enableTables || enableColumns) && resolvedSchema) {
-        const namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
-          enableFuzzySearch,
-        });
-        if (namespaceResult) {
-          debug("namespaceResult", word, namespaceResult);
-          const namespaceData: NamespaceTooltipData = {
-            item: namespaceResult,
-            word,
-            resolvedSchema,
-          };
-
-          // Use custom renderer based on semantic type, fallback to default
-          const { semanticType } = namespaceResult;
-          if (semanticType === "table" && tooltipRenderers.table) {
-            tooltipContent = tooltipRenderers.table(namespaceData);
-          } else if (semanticType === "column" && tooltipRenderers.column) {
-            tooltipContent = tooltipRenderers.column(namespaceData);
-          } else if (
-            (semanticType === "database" ||
-              semanticType === "schema" ||
-              semanticType === "namespace") &&
-            tooltipRenderers.namespace
-          ) {
-            tooltipContent = tooltipRenderers.namespace(namespaceData);
-          } else {
-            // Fallback to default renderer
-            tooltipContent = createNamespaceTooltip(namespaceResult);
-          }
-        }
-      }
-
-      // Step 3: Fuzzy matching is handled by resolveNamespaceItem if enableFuzzySearch is true
+      // Try to create tooltip content using the new rendering system
+      const tooltipContent = await createTooltipContent({
+        word,
+        resolvedSchema,
+        resolvedKeywords,
+        queryContext,
+        enableKeywords,
+        enableTables,
+        enableColumns,
+        enableFuzzySearch,
+        tooltipRenderers,
+      });
 
       if (!tooltipContent) {
         return null;
@@ -196,6 +176,166 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
     },
     { hoverTime },
   );
+}
+
+/**
+ * Gets query context using AST parsing
+ * Pulls tables, columns, and aliases from the AST
+ */
+async function getQueryContextFromAST(
+  sql: string,
+  state: EditorState,
+): Promise<QueryContext | null> {
+  try {
+    const parser = new NodeSqlParser();
+    const result = await parser.parse(sql, { state });
+
+    if (result.success && result.ast) {
+      return await parser.extractContext(result.ast);
+    }
+
+    return null;
+  } catch (error) {
+    debug("Error getting query context from AST:", error);
+    return null;
+  }
+}
+
+/**
+ * Creates tooltip content using the new rendering system
+ */
+async function createTooltipContent(params: {
+  word: string;
+  resolvedSchema: SQLNamespace;
+  resolvedKeywords: Record<string, SqlKeywordInfo>;
+  queryContext: QueryContext | null;
+  enableKeywords: boolean;
+  enableTables: boolean;
+  enableColumns: boolean;
+  enableFuzzySearch: boolean;
+  tooltipRenderers: SqlHoverConfig["tooltipRenderers"];
+}): Promise<string | null> {
+  const {
+    word,
+    resolvedSchema,
+    resolvedKeywords,
+    queryContext,
+    enableKeywords,
+    enableTables,
+    enableColumns,
+    enableFuzzySearch,
+    tooltipRenderers,
+  } = params;
+
+  // Step 1: Try keyword tooltip
+  if (enableKeywords && resolvedKeywords[word]) {
+    debug("keywordResult", word, resolvedKeywords[word]);
+    const keywordData: KeywordTooltipData = { keyword: word, info: resolvedKeywords[word] };
+    return tooltipRenderers?.keyword
+      ? tooltipRenderers.keyword(keywordData)
+      : createKeywordTooltip(keywordData);
+  }
+
+  // Step 2: Try namespace tooltip
+  if ((enableTables || enableColumns) && resolvedSchema) {
+    const namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
+      enableFuzzySearch,
+    });
+
+    if (namespaceResult) {
+      debug("namespaceResult", word, namespaceResult);
+      return createNamespaceTooltipContent({
+        namespaceResult,
+        word,
+        resolvedSchema,
+        queryContext,
+        tooltipRenderers,
+      });
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Creates namespace tooltip content with context awareness
+ */
+function createNamespaceTooltipContent(params: {
+  namespaceResult: ResolvedNamespaceItem;
+  word: string;
+  resolvedSchema: SQLNamespace;
+  queryContext: QueryContext | null;
+  tooltipRenderers: SqlHoverConfig["tooltipRenderers"];
+}): string {
+  const { namespaceResult, word, resolvedSchema, queryContext, tooltipRenderers } = params;
+  const namespaceData: NamespaceTooltipData = {
+    item: namespaceResult,
+    word,
+    resolvedSchema,
+  };
+
+  // Handle column-specific logic with context awareness
+  if (namespaceResult.semanticType === "column" && queryContext?.primaryTable) {
+    return createColumnTooltipWithContext({
+      namespaceData,
+      queryContext,
+      tooltipRenderers,
+    });
+  }
+
+  // Handle other semantic types
+  return createGenericNamespaceTooltip({
+    namespaceData,
+    tooltipRenderers,
+  });
+}
+
+/**
+ * Creates column tooltip with context awareness
+ */
+function createColumnTooltipWithContext(params: {
+  namespaceData: NamespaceTooltipData;
+  queryContext: QueryContext;
+  tooltipRenderers: SqlHoverConfig["tooltipRenderers"];
+}): string {
+  const { namespaceData, queryContext, tooltipRenderers } = params;
+  const { word, resolvedSchema } = namespaceData;
+  const { primaryTable } = queryContext;
+
+  // Debug logging
+  console.log("Hover debug - word:", word);
+  console.log("Hover debug - primaryTable:", primaryTable);
+  console.log("Hover debug - resolvedSchema:", resolvedSchema);
+
+  // Column exists in current table - use normal column renderer
+  return tooltipRenderers?.column
+    ? tooltipRenderers.column(namespaceData)
+    : createNamespaceTooltip(namespaceData.item);
+}
+
+/**
+ * Creates generic namespace tooltip
+ */
+function createGenericNamespaceTooltip(params: {
+  namespaceData: NamespaceTooltipData;
+  tooltipRenderers: SqlHoverConfig["tooltipRenderers"];
+}): string {
+  const { namespaceData, tooltipRenderers } = params;
+  const { semanticType } = namespaceData.item;
+
+  if (semanticType === "table" && tooltipRenderers?.table) {
+    return tooltipRenderers.table(namespaceData);
+  } else if (semanticType === "column" && tooltipRenderers?.column) {
+    return tooltipRenderers.column(namespaceData);
+  } else if (
+    (semanticType === "database" || semanticType === "schema" || semanticType === "namespace") &&
+    tooltipRenderers?.namespace
+  ) {
+    return tooltipRenderers.namespace(namespaceData);
+  }
+
+  // Fallback to default renderer
+  return createNamespaceTooltip(namespaceData.item);
 }
 
 /**
@@ -427,7 +567,7 @@ export const DefaultSqlTooltipRenders = {
 };
 
 /**
- * Default CSS styles for hover tooltips
+ * Default CSS styles for hover tooltips with enhanced styling for warnings and errors
  */
 export const sqlHoverTheme = (): Extension =>
   EditorView.theme({
@@ -489,6 +629,16 @@ export const sqlHoverTheme = (): Extension =>
       color: "#6b7280",
       fontSize: "12px",
     },
+    ".cm-sql-hover-tooltip .sql-hover-other-tables": {
+      marginBottom: "4px",
+      color: "#374151",
+    },
+    ".cm-sql-hover-tooltip .sql-hover-suggestion": {
+      marginBottom: "4px",
+      color: "#059669",
+      fontSize: "12px",
+      fontStyle: "italic",
+    },
     ".cm-sql-hover-tooltip code": {
       backgroundColor: "#f9fafb",
       padding: "1px 4px",
@@ -504,6 +654,22 @@ export const sqlHoverTheme = (): Extension =>
     ".cm-sql-hover-tooltip em": {
       fontStyle: "italic",
       color: "#6b7280",
+    },
+    // Warning styles for columns in other tables
+    ".cm-sql-hover-tooltip.sql-hover-column-warning": {
+      borderColor: "#f59e0b",
+      backgroundColor: "#fffbeb",
+    },
+    ".cm-sql-hover-tooltip.sql-hover-column-warning .sql-hover-description": {
+      color: "#92400e",
+    },
+    // Error styles for non-existent columns
+    ".cm-sql-hover-tooltip.sql-hover-column-error": {
+      borderColor: "#ef4444",
+      backgroundColor: "#fef2f2",
+    },
+    ".cm-sql-hover-tooltip.sql-hover-column-error .sql-hover-description": {
+      color: "#991b1b",
     },
     // Dark theme support
     ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip": {
@@ -539,6 +705,12 @@ export const sqlHoverTheme = (): Extension =>
     ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-children": {
       color: "#9ca3af",
     },
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-other-tables": {
+      color: "#d1d5db",
+    },
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-suggestion": {
+      color: "#10b981",
+    },
     ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip code": {
       backgroundColor: "#374151",
       color: "#f3f4f6",
@@ -549,4 +721,22 @@ export const sqlHoverTheme = (): Extension =>
     ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip em": {
       color: "#9ca3af",
     },
+    // Dark theme warning styles
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip.sql-hover-column-warning": {
+      borderColor: "#f59e0b",
+      backgroundColor: "#451a03",
+    },
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip.sql-hover-column-warning .sql-hover-description":
+      {
+        color: "#fbbf24",
+      },
+    // Dark theme error styles
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip.sql-hover-column-error": {
+      borderColor: "#ef4444",
+      backgroundColor: "#450a0a",
+    },
+    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip.sql-hover-column-error .sql-hover-description":
+      {
+        color: "#fca5a5",
+      },
   });

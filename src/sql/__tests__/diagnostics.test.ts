@@ -2,7 +2,7 @@ import { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { sqlLinter } from "../diagnostics.js";
-import type { SqlParser } from "../parser.js";
+import type { SqlParser } from "../types.js";
 
 // Mock EditorView
 const _createMockView = (content: string) => {
