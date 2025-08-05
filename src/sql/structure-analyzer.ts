@@ -114,6 +114,10 @@ export class SqlStructureAnalyzer {
       const parseResult = await this.parser.parse(strippedContent, { state });
       const type = this.determineStatementType(strippedContent);
 
+      // Validate the statement to check for both syntax and schema errors
+      const validationErrors = await this.parser.validateSql(strippedContent, { state });
+      const isValid = parseResult.success && validationErrors.length === 0;
+
       // Remove trailing semicolon from content for cleaner display
       const cleanContent = strippedContent.endsWith(";")
         ? strippedContent.slice(0, -1).trim()
@@ -126,7 +130,7 @@ export class SqlStructureAnalyzer {
         lineTo: toLine.number,
         content: cleanContent,
         type,
-        isValid: parseResult.success,
+        isValid,
       });
 
       currentPosition += part.length;

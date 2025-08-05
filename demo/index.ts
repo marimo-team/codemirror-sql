@@ -7,6 +7,7 @@ import { NodeSqlParser } from "../src/index.js";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
 import { DefaultSqlTooltipRenders } from "../src/sql/hover.js";
+import { NodeSqlParser } from "../src/sql/parser.js";
 import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
 
 // Default SQL content for the demo
@@ -166,6 +167,15 @@ function initializeEditor() {
         database: getDialect(state),
       };
     },
+  });
+
+  const parser = new NodeSqlParser({
+    getParserOptions: (_state: EditorState) => {
+      return {
+        database: "PostgreSQL",
+      };
+    },
+    schema: schema,
   });
 
   const extensions = [

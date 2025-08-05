@@ -331,4 +331,257 @@ WHERE u.active = true
       });
     });
   });
+
+  describe("error detection and validation", () => {
+    it("should detect syntax errors in statements", async () => {
+      state = createState("SELECT * FROM;");
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+      expect(statements[0].type).toBe("select");
+    });
+
+    it("should detect missing table name errors", async () => {
+      state = createState("SELECT * FROM;");
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect typo errors in keywords", async () => {
+      state = createState("SELECT * FORM users;");
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect missing table name in INSERT", async () => {
+      state = createState("INSERT INTO VALUES (1, 2);");
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+      expect(statements[0].type).toBe("insert");
+    });
+
+    it("should detect missing table name in UPDATE", async () => {
+      state = createState("UPDATE SET name = 'test';");
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+      expect(statements[0].type).toBe("update");
+    });
+
+    it("should detect invalid column references", async () => {
+      // Create analyzer with schema to detect column validation errors
+      const schema = {
+        users: ["id", "name", "email", "active"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT invalid_column FROM users;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect invalid table references", async () => {
+      // Create analyzer with schema to detect table validation errors
+      const schema = {
+        users: ["id", "name", "email", "active"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT * FROM non_existent_table;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should handle mixed valid and invalid statements", async () => {
+      state = createState(`
+        SELECT * FROM users; -- Valid
+        SELECT * FROM; -- Invalid
+        INSERT INTO users (name) VALUES ('John'); -- Valid
+        UPDATE SET name = 'test'; -- Invalid
+      `);
+      const statements = await analyzer.analyzeDocument(state);
+
+      expect(statements).toHaveLength(4);
+      expect(statements[0].isValid).toBe(true);
+      expect(statements[1].isValid).toBe(false);
+      expect(statements[2].isValid).toBe(true);
+      expect(statements[3].isValid).toBe(false);
+    });
+
+    it("should detect errors in complex multi-line statements", async () => {
+      // Create analyzer with schema to detect column validation errors
+      const schema = {
+        users: ["id", "name", "email", "active"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState(`
+        SELECT u.id,
+               u.name,
+               u.email
+        FROM users u
+        WHERE u.active = true
+          AND u.invalid_column > 100;
+      `);
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+      expect(statements[0].lineFrom).toBeGreaterThan(0);
+      expect(statements[0].lineTo).toBeGreaterThan(statements[0].lineFrom);
+    });
+
+    it("should detect errors in subqueries", async () => {
+      // Create analyzer with schema to detect table validation errors
+      const schema = {
+        orders: ["customer_id", "order_date", "total_amount"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState(`
+        SELECT customer_id,
+               order_date,
+               total_amount
+        FROM orders
+        WHERE order_date >= '2024-01-01'
+          AND total_amount > (
+            SELECT AVG(total_amount) * 0.8
+            FROM non_existent_table
+            WHERE YEAR(order_date) = 2024
+          );
+      `);
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect errors in JOIN clauses", async () => {
+      // Create analyzer with schema to detect table validation errors
+      const schema = {
+        users: ["id", "name"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState(`
+        SELECT u.name, p.title
+        FROM users u
+        JOIN posts p ON u.id = p.user_id
+        JOIN non_existent_table n ON p.id = n.post_id;
+      `);
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect errors in CTE statements", async () => {
+      // Create analyzer with schema to detect table validation errors
+      const schema = {
+        users: ["id", "name"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState(`
+        WITH cte_name AS (
+          SELECT * FROM non_existent_table
+        )
+        SELECT * FROM cte_name;
+      `);
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should handle valid statements with schema validation", async () => {
+      // Create analyzer with schema
+      const schema = {
+        users: ["id", "name", "email", "active"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT id, name, email FROM users WHERE active = true;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(true);
+    });
+
+    it("should detect schema validation errors", async () => {
+      // Create analyzer with schema
+      const schema = {
+        users: ["id", "name", "email", "active"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT invalid_column FROM users;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should detect missing table errors in schema validation", async () => {
+      // Create analyzer with schema
+      const schema = {
+        users: ["id", "name", "email", "active"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT * FROM non_existent_table;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+
+    it("should handle qualified column references with schema validation", async () => {
+      // Create analyzer with schema
+      const schema = {
+        users: ["id", "name", "email", "active"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState(
+        "SELECT u.id, u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id;",
+      );
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(true);
+    });
+
+    it("should detect errors in qualified column references", async () => {
+      // Create analyzer with schema
+      const schema = {
+        users: ["id", "name", "email", "active"],
+        posts: ["id", "title", "user_id"],
+      };
+      const analyzerWithSchema = new SqlStructureAnalyzer(new NodeSqlParser({ schema }));
+
+      state = createState("SELECT u.invalid_column FROM users u;");
+      const statements = await analyzerWithSchema.analyzeDocument(state);
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0].isValid).toBe(false);
+    });
+  });
 });

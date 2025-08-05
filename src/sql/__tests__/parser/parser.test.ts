@@ -1,6 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { NodeSqlParser } from "../parser.js";
+import { NodeSqlParser } from "../../parser.js";
 
 describe("SqlParser", () => {
   const parser = new NodeSqlParser();
@@ -108,6 +108,34 @@ describe("SqlParser", () => {
       expect(errors[0]).toHaveProperty("line");
       expect(errors[0]).toHaveProperty("column");
       expect(errors[0]).toHaveProperty("severity");
+    });
+
+    it("should handle table aliases correctly", async () => {
+      const schema = {
+        users: ["id", "name", "email"],
+      };
+
+      const parserWithSchema = new NodeSqlParser({ schema });
+      const sql = "SELECT u.name FROM users as u";
+      const errors = await parserWithSchema.validateSql(sql, { state });
+
+      // Should not have any errors since 'users' table exists and has 'name' column
+      expect(errors).toHaveLength(0);
+    });
+
+    it("should detect missing columns in aliased tables", async () => {
+      const schema = {
+        users: ["id", "name", "email"],
+      };
+
+      const parserWithSchema = new NodeSqlParser({ schema });
+      const sql = "SELECT u.nonexistent FROM users as u";
+      const errors = await parserWithSchema.validateSql(sql, { state });
+
+      expect(errors.length).toBeGreaterThan(0);
+      expect(
+        errors.some((error) => error.message.includes("Column 'nonexistent' does not exist")),
+      ).toBe(true);
     });
   });
 });

@@ -1,6 +1,7 @@
 import { EditorState, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
+import { NodeSqlParser } from "../parser.js";
 import { sqlStructureGutter } from "../structure-extension.js";
 
 // Mock EditorView
@@ -68,6 +69,39 @@ describe("sqlStructureGutter", () => {
 
   it("should work with minimal configuration", () => {
     const config = { width: 2 };
+    const extensions = sqlStructureGutter(config);
+    expect(extensions.length).toBe(4);
+  });
+
+  it("should handle error configuration", () => {
+    const config = {
+      errorBackgroundColor: "#ff0000",
+      showInvalid: true,
+    };
+    const extensions = sqlStructureGutter(config);
+    expect(extensions.length).toBe(4);
+  });
+
+  it("should handle error gutter with custom parser", () => {
+    const config = {
+      errorBackgroundColor: "#ef4444",
+      showInvalid: true,
+      parser: new NodeSqlParser(),
+    };
+    const extensions = sqlStructureGutter(config);
+    expect(extensions.length).toBe(4);
+  });
+
+  it("should handle gutter with schema validation", () => {
+    const schema = {
+      users: ["id", "name", "email"],
+      posts: ["id", "title", "user_id"],
+    };
+    const config = {
+      errorBackgroundColor: "#ef4444",
+      showInvalid: true,
+      parser: new NodeSqlParser({ schema }),
+    };
     const extensions = sqlStructureGutter(config);
     expect(extensions.length).toBe(4);
   });
