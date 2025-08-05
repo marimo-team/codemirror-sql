@@ -1,8 +1,9 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { keywordCompletionSource, PostgreSQL, sql } from "@codemirror/lang-sql";
+import { keywordCompletionSource, MariaSQL, PostgreSQL, SQLite, sql } from "@codemirror/lang-sql";
+import { type EditorState, Facet, StateEffect, StateField } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
-
 import { basicSetup, EditorView } from "codemirror";
+import { NodeSqlParser } from "../src/index.js";
 import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
 import { sqlExtension } from "../src/sql/extension.js";
 import { DefaultSqlTooltipRenders } from "../src/sql/hover.js";
@@ -134,9 +135,6 @@ const defaultKeymap = [
 
 // e.g. lazily load keyword docs
 const getKeywordDocs = async () => {
-  // For compatibility with Vite and other bundlers, `import` returns a JS module and not a JSON object
-  // So we need to nest the keywords under a json key to access them,
-  // otherwise a keyword can conflict with a JS reserved keyword (e.g. `default` or `with`)
   const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
   const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
   return {
@@ -145,20 +143,43 @@ const getKeywordDocs = async () => {
   };
 };
 
+const setDatabase = StateEffect.define<string>();
+
+const databaseField = StateField.define({
+  create: () => "PostgreSQL",
+  update: (prevValue, transaction) => {
+    for (const effect of transaction.effects) {
+      if (effect.is(setDatabase)) {
+        return effect.value;
+      }
+    }
+    return prevValue;
+  },
+});
+
 // Initialize the SQL editor
 function initializeEditor() {
+  // Use the same parser for linter and gutter
+  const parser = new NodeSqlParser({
+    getParserOptions: (state: EditorState) => {
+      return {
+        database: getDialect(state),
+      };
+    },
+  });
+
   const extensions = [
     basicSetup,
     EditorView.lineWrapping,
     keymap.of(defaultKeymap),
+    databaseField,
     sql({
       dialect: dialect,
       // Example schema for autocomplete
       schema: schema,
       // Enable uppercase keywords for more traditional SQL style
       upperCaseKeywords: true,
-      keywordCompletion: (label, type) => {
-        // console.log("label", label, type);
+      keywordCompletion: (label, _type) => {
         return {
           label,
           keyword: label,
@@ -182,6 +203,7 @@ function initializeEditor() {
       // Linter extension configuration
       linterConfig: {
         delay: 250, // Delay before running validation
+        parser,
       },
 
       // Gutter extension configuration
@@ -189,6 +211,7 @@ function initializeEditor() {
         backgroundColor: "#3b82f6", // Blue for current statement
         errorBackgroundColor: "#ef4444", // Red for invalid statements
         hideWhenNotFocused: true, // Hide gutter when editor loses focus
+        parser,
       },
       // Hover extension configuration
       enableHover: true, // Enable hover tooltips
@@ -310,10 +333,27 @@ function setupExampleButtons() {
   });
 }
 
+function getDialect(state: EditorState): string {
+  return state.field(databaseField);
+}
+
+function setupDialectSelect() {
+  const select = document.querySelector("#dialect-select");
+  if (select) {
+    select.addEventListener("change", (e) => {
+      const value = (e.target as HTMLSelectElement).value;
+      editor.dispatch({
+        effects: [setDatabase.of(value)],
+      });
+    });
+  }
+}
+
 // Initialize everything when the page loads
 document.addEventListener("DOMContentLoaded", () => {
   initializeEditor();
   setupExampleButtons();
+  setupDialectSelect();
 
   console.log("SQL Editor Demo initialized!");
   console.log("Features:");
