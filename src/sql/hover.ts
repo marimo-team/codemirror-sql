@@ -7,7 +7,8 @@ import {
   type ResolvedNamespaceItem,
   resolveNamespaceItem,
 } from "./namespace-utils.js";
-import { NodeSqlParser, type QueryContext } from "./parser.js";
+import type { QueryContext } from "./parser/types.js";
+import { NodeSqlParser } from "./parser.js";
 
 /**
  * SQL schema information for hover tooltips
@@ -87,8 +88,6 @@ export interface SqlHoverConfig {
     table?: (data: NamespaceTooltipData) => string;
     /** Custom renderer for column items */
     column?: (data: NamespaceTooltipData) => string;
-    /** Custom renderer for non-existent columns */
-    nonExistentColumn?: (data: NonExistentColumnData) => string;
   };
 }
 
@@ -308,27 +307,6 @@ function createColumnTooltipWithContext(params: {
   console.log("Hover debug - primaryTable:", primaryTable);
   console.log("Hover debug - resolvedSchema:", resolvedSchema);
 
-  // Create a parser instance to use its schema validation methods
-  const parser = new NodeSqlParser();
-
-  // Check if column exists in current table
-  const columnExistsInCurrentTable =
-    primaryTable && parser.columnExists(resolvedSchema, primaryTable, word);
-
-  console.log("Hover debug - columnExistsInCurrentTable:", columnExistsInCurrentTable);
-
-  if (!columnExistsInCurrentTable) {
-    // Column doesn't exist in current table - show error
-    const nonExistentData: NonExistentColumnData = {
-      columnName: word,
-      currentTable: primaryTable,
-    };
-
-    return tooltipRenderers?.nonExistentColumn
-      ? tooltipRenderers.nonExistentColumn(nonExistentData)
-      : createNonExistentColumnTooltip(nonExistentData);
-  }
-
   // Column exists in current table - use normal column renderer
   return tooltipRenderers?.column
     ? tooltipRenderers.column(namespaceData)
@@ -358,25 +336,6 @@ function createGenericNamespaceTooltip(params: {
 
   // Fallback to default renderer
   return createNamespaceTooltip(namespaceData.item);
-}
-
-/**
- * Creates HTML content for non-existent columns
- */
-function createNonExistentColumnTooltip(data: NonExistentColumnData): string {
-  const { columnName, currentTable } = data;
-
-  let html = `<div class="sql-hover-column-error">`;
-  html += `<div class="sql-hover-header"><strong>${columnName}</strong> <span class="sql-hover-type">column</span></div>`;
-  html += `<div class="sql-hover-description">❌ Column not found`;
-  if (currentTable) {
-    html += ` in table <code>${currentTable}</code>`;
-  }
-  html += `</div>`;
-  html += `<div class="sql-hover-suggestion">Check column name spelling or verify table schema</div>`;
-  html += `</div>`;
-
-  return html;
 }
 
 /**

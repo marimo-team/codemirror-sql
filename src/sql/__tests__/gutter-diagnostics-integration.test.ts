@@ -1,5 +1,4 @@
 import { EditorState, Text } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
 import { beforeEach, describe, expect, it } from "vitest";
 import { sqlLinter } from "../diagnostics.js";
 import { NodeSqlParser } from "../parser.js";
