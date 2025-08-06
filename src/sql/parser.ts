@@ -1,11 +1,15 @@
 import type { EditorState } from "@codemirror/state";
-import type { Option } from "node-sql-parser";
+import type { AST, Option } from "node-sql-parser";
 import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
 interface NodeSqlParserOptions {
   getParserOptions?: (state: EditorState) => Option;
+}
+
+interface NodeSqlParserResult extends SqlParseResult {
+  ast?: AST | AST[];
 }
 
 /**
@@ -41,7 +45,7 @@ export class NodeSqlParser implements SqlParser {
     return new Parser();
   });
 
-  async parse(sql: string, opts: { state: EditorState }): Promise<SqlParseResult> {
+  async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
     try {
       const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
@@ -152,5 +156,45 @@ export class NodeSqlParser implements SqlParser {
   async validateSql(sql: string, opts: { state: EditorState }): Promise<SqlParseError[]> {
     const result = await this.parse(sql, opts);
     return result.errors;
+  }
+
+  /**
+   * Extracts table references from a SQL query using node-sql-parser
+   * @param sql The SQL query to analyze
+   * @returns Array of table names referenced in the query
+   */
+  async extractTableReferences(sql: string): Promise<string[]> {
+    try {
+      const parser = await this.getParser();
+      const tableList = parser.tableList(sql);
+      // Clean up table names - node-sql-parser returns format like "select::null::users"
+      return tableList.map((table) => {
+        const parts = table.split("::");
+        return parts[parts.length - 1] || table;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Extracts column references from a SQL query using node-sql-parser
+   * @param sql The SQL query to analyze
+   * @returns Array of column names referenced in the query
+   */
+  async extractColumnReferences(sql: string): Promise<string[]> {
+    try {
+      const parser = await this.getParser();
+      const columnList = parser.columnList(sql);
+
+      // Clean up column names - node-sql-parser returns format like "select::null::users"
+      const cleanColumnList = columnList.map((column) => {
+        const parts = column.split("::");
+        return parts[parts.length - 1] || column;
+      });
+      return cleanColumnList;
+    } catch {
+      return [];
+    }
   }
 }
