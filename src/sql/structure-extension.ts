@@ -149,6 +149,12 @@ function createSqlGutterMarkers(
       // Add marker to each line of the statement
       for (let lineNum = statement.lineFrom; lineNum <= statement.lineTo; lineNum++) {
         try {
+          // Check if line number is within valid bounds
+          if (lineNum < 1 || lineNum > view.state.doc.lines) {
+            // Skip stale line numbers silently - this is expected when text is deleted
+            continue;
+          }
+
           const line = view.state.doc.line(lineNum);
           markers = markers.update({
             add: [marker.range(line.from)],

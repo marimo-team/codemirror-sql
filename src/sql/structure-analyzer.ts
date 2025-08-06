@@ -28,6 +28,7 @@ export interface SqlStatement {
 export class SqlStructureAnalyzer {
   private parser: SqlParser;
   private cache = new Map<string, SqlStatement[]>();
+  private readonly MAX_CACHE_SIZE = 10;
 
   constructor(parser: SqlParser) {
     this.parser = parser;
@@ -40,16 +41,17 @@ export class SqlStructureAnalyzer {
     const content = state.doc.toString();
     const cacheKey = this.generateCacheKey(content);
 
-    const existingValue = this.cache.get(cacheKey);
-    if (existingValue) {
-      return existingValue;
+    // Check cache
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
 
     const statements = await this.extractStatements(content, state);
     this.cache.set(cacheKey, statements);
 
     // Keep cache size reasonable
-    if (this.cache.size > 10) {
+    if (this.cache.size > this.MAX_CACHE_SIZE) {
       const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);
