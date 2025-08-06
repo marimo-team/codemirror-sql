@@ -1,5 +1,5 @@
 import type { EditorState } from "@codemirror/state";
-import type { AST, Option } from "node-sql-parser";
+import type { AST, Option, Parser } from "node-sql-parser";
 import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
@@ -32,6 +32,7 @@ interface NodeSqlParserResult extends SqlParseResult {
  */
 export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
+  private parser: Parser | null = null;
 
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
@@ -41,8 +42,12 @@ export class NodeSqlParser implements SqlParser {
    * Lazy import of the node-sql-parser package and create a new Parser instance.
    */
   private getParser = lazy(async () => {
+    if (this.parser) {
+      return this.parser;
+    }
     const { Parser } = await import("node-sql-parser");
-    return new Parser();
+    this.parser = new Parser();
+    return this.parser;
   });
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
@@ -168,7 +173,7 @@ export class NodeSqlParser implements SqlParser {
       const parser = await this.getParser();
       const tableList = parser.tableList(sql);
       // Clean up table names - node-sql-parser returns format like "select::null::users"
-      return tableList.map((table) => {
+      return tableList.map((table: string) => {
         const parts = table.split("::");
         return parts[parts.length - 1] || table;
       });
@@ -188,7 +193,7 @@ export class NodeSqlParser implements SqlParser {
       const columnList = parser.columnList(sql);
 
       // Clean up column names - node-sql-parser returns format like "select::null::users"
-      const cleanColumnList = columnList.map((column) => {
+      const cleanColumnList = columnList.map((column: string) => {
         const parts = column.split("::");
         return parts[parts.length - 1] || column;
       });
