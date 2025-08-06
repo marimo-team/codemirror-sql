@@ -82,7 +82,7 @@ export class NodeSqlParser implements SqlParser {
   private async parseWithDuckDBSupport(
     sql: string,
     parserOptions: Option,
-  ): Promise<SqlParseResult> {
+  ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
 
     // If the query starts with "from", it's DuckDB-specific syntax
@@ -92,7 +92,6 @@ export class NodeSqlParser implements SqlParser {
       return {
         success: true,
         errors: [],
-        ast: null,
       };
     }
 
