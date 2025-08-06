@@ -1,6 +1,6 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { keywordCompletionSource, MariaSQL, PostgreSQL, SQLite, sql } from "@codemirror/lang-sql";
-import { type EditorState, Facet, StateEffect, StateField } from "@codemirror/state";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { type EditorState, StateEffect, StateField } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { NodeSqlParser } from "../src/index.js";

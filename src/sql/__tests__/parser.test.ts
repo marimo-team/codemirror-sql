@@ -110,4 +110,80 @@ describe("SqlParser", () => {
       expect(errors[0]).toHaveProperty("severity");
     });
   });
+
+  describe("DuckDB dialect support", () => {
+    it("should accept DuckDB-specific syntax without parsing", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "from nyc.rideshare select * limit 100",
+      });
+
+      const result = await duckdbParser.parse("from nyc.rideshare select * limit 100", { state });
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.ast).toBeNull();
+    });
+
+    it("should still parse standard SQL with DuckDB dialect", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "SELECT * FROM users WHERE id = 1",
+      });
+
+      const result = await duckdbParser.parse("SELECT * FROM users WHERE id = 1", { state });
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it("should accept complex DuckDB queries without parsing", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
+      });
+
+      const result = await duckdbParser.parse(
+        "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
+        { state },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.ast).toBeNull();
+    });
+
+    it("should accept DuckDB queries with semicolons without parsing", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "from posts select title, name;",
+      });
+
+      const result = await duckdbParser.parse("from posts select title, name;", { state });
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.ast).toBeNull();
+    });
+  });
 });
