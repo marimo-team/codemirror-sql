@@ -1,5 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import type { Option } from "node-sql-parser";
+import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
@@ -78,6 +79,7 @@ export class NodeSqlParser implements SqlParser {
     // If the query starts with "from", it's DuckDB-specific syntax
     // Just return success without parsing to avoid errors
     if (sql.trim().toLowerCase().startsWith("from")) {
+      debug("From syntax is not supported");
       return {
         success: true,
         errors: [],
