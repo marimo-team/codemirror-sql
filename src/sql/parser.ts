@@ -1,11 +1,15 @@
 import type { EditorState } from "@codemirror/state";
-import type { Option } from "node-sql-parser";
+import type { AST, Option, Parser } from "node-sql-parser";
 import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
 interface NodeSqlParserOptions {
   getParserOptions?: (state: EditorState) => Option;
+}
+
+interface NodeSqlParserResult extends SqlParseResult {
+  ast?: AST | AST[];
 }
 
 /**
@@ -28,6 +32,7 @@ interface NodeSqlParserOptions {
  */
 export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
+  private parser: Parser | null = null;
 
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
@@ -37,11 +42,15 @@ export class NodeSqlParser implements SqlParser {
    * Lazy import of the node-sql-parser package and create a new Parser instance.
    */
   private getParser = lazy(async () => {
+    if (this.parser) {
+      return this.parser;
+    }
     const { Parser } = await import("node-sql-parser");
-    return new Parser();
+    this.parser = new Parser();
+    return this.parser;
   });
 
-  async parse(sql: string, opts: { state: EditorState }): Promise<SqlParseResult> {
+  async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
     try {
       const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
@@ -73,7 +82,7 @@ export class NodeSqlParser implements SqlParser {
   private async parseWithDuckDBSupport(
     sql: string,
     parserOptions: Option,
-  ): Promise<SqlParseResult> {
+  ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
 
     // If the query starts with "from", it's DuckDB-specific syntax
@@ -83,7 +92,6 @@ export class NodeSqlParser implements SqlParser {
       return {
         success: true,
         errors: [],
-        ast: null,
       };
     }
 
@@ -152,5 +160,45 @@ export class NodeSqlParser implements SqlParser {
   async validateSql(sql: string, opts: { state: EditorState }): Promise<SqlParseError[]> {
     const result = await this.parse(sql, opts);
     return result.errors;
+  }
+
+  /**
+   * Extracts table references from a SQL query using node-sql-parser
+   * @param sql The SQL query to analyze
+   * @returns Array of table names referenced in the query
+   */
+  async extractTableReferences(sql: string): Promise<string[]> {
+    try {
+      const parser = await this.getParser();
+      const tableList = parser.tableList(sql);
+      // Clean up table names - node-sql-parser returns format like "select::null::users"
+      return tableList.map((table: string) => {
+        const parts = table.split("::");
+        return parts[parts.length - 1] || table;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Extracts column references from a SQL query using node-sql-parser
+   * @param sql The SQL query to analyze
+   * @returns Array of column names referenced in the query
+   */
+  async extractColumnReferences(sql: string): Promise<string[]> {
+    try {
+      const parser = await this.getParser();
+      const columnList = parser.columnList(sql);
+
+      // Clean up column names - node-sql-parser returns format like "select::null::users"
+      const cleanColumnList = columnList.map((column: string) => {
+        const parts = column.split("::");
+        return parts[parts.length - 1] || column;
+      });
+      return cleanColumnList;
+    } catch {
+      return [];
+    }
   }
 }

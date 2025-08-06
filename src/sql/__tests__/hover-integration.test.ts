@@ -530,3 +530,246 @@ describe("Custom Tooltip Renderers", () => {
     });
   });
 });
+
+describe("Query-aware hover behavior", () => {
+  const testSchema: SQLNamespace = {
+    users: {
+      self: createCompletion("users", "User table"),
+      children: [
+        createCompletion("id", "Primary key"),
+        createCompletion("username", "Username"),
+        createCompletion("email", "Email address"),
+        "created_at",
+        "updated_at",
+      ],
+    },
+    orders: {
+      self: createCompletion("orders", "Order table"),
+      children: [
+        createCompletion("id", "Order ID"),
+        createCompletion("user_id", "User ID"),
+        createCompletion("order_date", "Order date"),
+        createCompletion("total", "Order total"),
+        "status",
+        "created_at",
+      ],
+    },
+    products: {
+      self: createCompletion("products", "Product table"),
+      children: [
+        createCompletion("id", "Product ID"),
+        createCompletion("name", "Product name"),
+        createCompletion("price", "Product price"),
+        "category",
+        "created_at",
+      ],
+    },
+  };
+
+  describe("Table reference extraction", () => {
+    it("should extract table references from simple SELECT queries", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences("SELECT order_date FROM users");
+      expect(tableList).toEqual(["users"]);
+    });
+
+    it("should extract table references from queries with multiple tables", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences(
+        "SELECT u.username, o.order_date FROM users u JOIN orders o ON u.id = o.user_id",
+      );
+      expect(tableList).toContain("users");
+      expect(tableList).toContain("orders");
+    });
+
+    it("should handle queries with aliases", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences("SELECT u.username FROM users AS u");
+      expect(tableList).toEqual(["users"]);
+    });
+
+    it("should handle UPDATE queries", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences(
+        "UPDATE users SET email = 'test@example.com' WHERE id = 1",
+      );
+      expect(tableList).toEqual(["users"]);
+    });
+
+    it("should handle INSERT queries", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences(
+        "INSERT INTO users (username, email) VALUES ('test', 'test@example.com')",
+      );
+      expect(tableList).toEqual(["users"]);
+    });
+
+    it("should handle DELETE queries", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences("DELETE FROM users WHERE id = 1");
+      expect(tableList).toEqual(["users"]);
+    });
+
+    it("should return empty array for invalid SQL", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser();
+
+      const tableList = await parser.extractTableReferences("INVALID SQL QUERY");
+      expect(tableList).toEqual([]);
+    });
+  });
+
+  describe("Schema filtering based on query", () => {
+    it("should filter schema to only include referenced tables", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      const tableRefs = new Set(["users"]);
+      const filteredSchema = filterSchemaByTableRefs(testSchema, tableRefs);
+
+      expect(filteredSchema).toHaveProperty("users");
+      expect(filteredSchema).not.toHaveProperty("orders");
+      expect(filteredSchema).not.toHaveProperty("products");
+    });
+
+    it("should include multiple tables when multiple tables are referenced", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      const tableRefs = new Set(["users", "orders"]);
+      const filteredSchema = filterSchemaByTableRefs(testSchema, tableRefs);
+
+      expect(filteredSchema).toHaveProperty("users");
+      expect(filteredSchema).toHaveProperty("orders");
+      expect(filteredSchema).not.toHaveProperty("products");
+    });
+
+    it("should return empty schema when no tables are referenced", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      const tableRefs = new Set<string>();
+      const filteredSchema = filterSchemaByTableRefs(testSchema, tableRefs);
+
+      expect(filteredSchema).toEqual({});
+    });
+
+    it("should handle case-insensitive table matching", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      const tableRefs = new Set(["USERS", "Orders"]);
+      const filteredSchema = filterSchemaByTableRefs(testSchema, tableRefs);
+
+      expect(filteredSchema).toHaveProperty("users");
+      expect(filteredSchema).toHaveProperty("orders");
+      expect(filteredSchema).not.toHaveProperty("products");
+    });
+  });
+
+  describe("Query-aware column resolution", () => {
+    it("should only show columns from referenced tables", async () => {
+      const { resolveNamespaceItem } = await import("../namespace-utils.js");
+
+      // When only 'users' table is referenced, we should only see columns from 'users'
+      const filteredSchema = {
+        users: testSchema.users,
+      };
+
+      // Should find columns from users table
+      const userColumnResult = resolveNamespaceItem(filteredSchema, "username", {
+        enableFuzzySearch: true,
+      });
+      expect(userColumnResult).toBeTruthy();
+      expect(userColumnResult?.semanticType).toBe("column");
+      expect(userColumnResult?.completion?.label).toBe("username");
+
+      // Should not find columns from other tables
+      const orderColumnResult = resolveNamespaceItem(filteredSchema, "order_date", {
+        enableFuzzySearch: true,
+      });
+      expect(orderColumnResult).toBeNull();
+    });
+
+    it("should show columns from multiple tables when multiple tables are referenced", async () => {
+      const { resolveNamespaceItem } = await import("../namespace-utils.js");
+
+      const filteredSchema = {
+        users: testSchema.users,
+        orders: testSchema.orders,
+      };
+
+      // Should find columns from both tables
+      const userColumnResult = resolveNamespaceItem(filteredSchema, "username", {
+        enableFuzzySearch: true,
+      });
+      expect(userColumnResult).toBeTruthy();
+      expect(userColumnResult?.semanticType).toBe("column");
+
+      const orderColumnResult = resolveNamespaceItem(filteredSchema, "order_date", {
+        enableFuzzySearch: true,
+      });
+      expect(orderColumnResult).toBeTruthy();
+      expect(orderColumnResult?.semanticType).toBe("column");
+    });
+  });
+});
+
+describe("Query-aware hover behavior - edge cases", () => {
+  const testSchema: SQLNamespace = {
+    users: {
+      self: createCompletion("users", "User table"),
+      children: [
+        createCompletion("id", "Primary key"),
+        createCompletion("username", "Username"),
+        createCompletion("email", "Email address"),
+        "created_at",
+        "updated_at",
+      ],
+    },
+    orders: {
+      self: createCompletion("orders", "Order table"),
+      children: [
+        createCompletion("id", "Order ID"),
+        createCompletion("user_id", "User ID"),
+        createCompletion("order_date", "Order date"),
+        createCompletion("total", "Order total"),
+        "status",
+        "created_at",
+      ],
+    },
+  };
+
+  describe("Fallback behavior when no tables found in query", () => {
+    it("should show hover for table names even when no tables are found in query", async () => {
+      const { resolveNamespaceItem } = await import("../namespace-utils.js");
+
+      // Simulate a query with no tables found (e.g., invalid SQL or empty query)
+      // Should be able to find the table in the full schema when no tables are referenced
+      const tableResult = resolveNamespaceItem(testSchema, "users", { enableFuzzySearch: true });
+      expect(tableResult).toBeTruthy();
+      expect(tableResult?.semanticType).toBe("table");
+      expect(tableResult?.completion?.label).toBe("users");
+    });
+
+    it("should show hover for column names even when no tables are found in query", async () => {
+      const { resolveNamespaceItem } = await import("../namespace-utils.js");
+
+      // Should be able to find columns in the full schema when no tables are referenced
+      const columnResult = resolveNamespaceItem(testSchema, "username", {
+        enableFuzzySearch: true,
+      });
+      expect(columnResult).toBeTruthy();
+      expect(columnResult?.semanticType).toBe("column");
+      expect(columnResult?.completion?.label).toBe("username");
+    });
+  });
+});

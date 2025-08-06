@@ -41,4 +41,16 @@ export interface SqlParser {
    * @returns An array of errors
    */
   validateSql(sql: string, opts: { state: EditorState }): Promise<SqlParseError[]>;
+  /**
+   * Extract table references from a SQL query
+   * @param sql - The SQL query to analyze
+   * @returns Array of table names referenced in the query
+   */
+  extractTableReferences(sql: string): Promise<string[]>;
+  /**
+   * Extract column references from a SQL query
+   * @param sql - The SQL query to analyze
+   * @returns Array of column names referenced in the query
+   */
+  extractColumnReferences(sql: string): Promise<string[]>;
 }

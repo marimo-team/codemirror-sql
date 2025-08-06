@@ -127,7 +127,7 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeNull();
+      expect(result.ast).toBeUndefined();
     });
 
     it("should still parse standard SQL with DuckDB dialect", async () => {
@@ -165,7 +165,7 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeNull();
+      expect(result.ast).toBeUndefined();
     });
 
     it("should accept DuckDB queries with semicolons without parsing", async () => {
@@ -183,7 +183,7 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeNull();
+      expect(result.ast).toBeUndefined();
     });
   });
 });

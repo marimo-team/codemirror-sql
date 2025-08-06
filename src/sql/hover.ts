@@ -4,9 +4,55 @@ import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import { debug } from "../debug.js";
 import {
   isArrayNamespace,
+  isObjectNamespace,
   type ResolvedNamespaceItem,
   resolveNamespaceItem,
 } from "./namespace-utils.js";
+import { NodeSqlParser } from "./parser.js";
+import type { SqlParser } from "./types.js";
+
+/**
+ * Creates a filtered namespace that only includes tables referenced in the query
+ * @param schema The full schema namespace
+ * @param tableRefs Set of table names referenced in the query
+ * @returns Filtered namespace containing only referenced tables
+ */
+export function filterSchemaByTableRefs(
+  schema: SQLNamespace,
+  tableRefs: Set<string>,
+): SQLNamespace {
+  if (tableRefs.size === 0) {
+    // If no tables are referenced, return empty schema to avoid showing irrelevant columns
+    return {};
+  }
+
+  if (isObjectNamespace(schema)) {
+    const filtered: { [key: string]: SQLNamespace } = {};
+
+    for (const [key, value] of Object.entries(schema)) {
+      // Check if this table is referenced (case-insensitive)
+      const isReferenced = Array.from(tableRefs).some(
+        (refTable) => refTable.toLowerCase() === key.toLowerCase(),
+      );
+
+      if (isReferenced) {
+        // This table is referenced in the query
+        filtered[key] = value;
+      } else if (isObjectNamespace(value)) {
+        // Check if any child tables are referenced
+        const filteredChild = filterSchemaByTableRefs(value, tableRefs);
+        if (Object.keys(filteredChild).length > 0) {
+          filtered[key] = filteredChild;
+        }
+      }
+    }
+
+    return filtered;
+  }
+
+  // For other namespace types, return as-is (they might contain columns from referenced tables)
+  return schema;
+}
 
 /**
  * SQL schema information for hover tooltips
@@ -66,6 +112,8 @@ export interface SqlHoverConfig {
   enableColumns?: boolean;
   /** Enable fuzzy search for namespace items (default: false) */
   enableFuzzySearch?: boolean;
+  /** Custom SQL parser instance to use for query analysis */
+  parser?: SqlParser;
   /** Custom tooltip renderers for different item types */
   tooltipRenderers?: {
     /** Custom renderer for SQL keywords */
@@ -91,6 +139,7 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
     enableTables = true,
     enableColumns = true,
     enableFuzzySearch = true,
+    parser = new NodeSqlParser(),
     tooltipRenderers = {},
   } = config;
 
@@ -143,17 +192,41 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
           : createKeywordTooltip(keywordData);
       }
 
-      // Step 2: Try to resolve directly in SQLNamespace
+      // Step 2: Try to resolve directly in SQLNamespace (query-aware)
       if (!tooltipContent && (enableTables || enableColumns) && resolvedSchema) {
-        const namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
+        // Get the current SQL query to filter schema by referenced tables
+        const currentQuery = view.state.doc.toString();
+        const tableList = await parser.extractTableReferences(currentQuery);
+        const tableRefs = new Set(tableList.map((table: string) => table.toLowerCase()));
+
+        // Filter schema to only include tables referenced in the current query
+        const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
+
+        // Try to resolve in the filtered schema first (query-aware)
+        let namespaceResult = resolveNamespaceItem(filteredSchema, word, {
           enableFuzzySearch,
         });
+
+        // If no result in filtered schema and no tables were found in query,
+        // fall back to the full schema to show any relevant information
+        if (!namespaceResult && tableRefs.size === 0) {
+          namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
+            enableFuzzySearch,
+          });
+        }
+
         if (namespaceResult) {
-          debug("namespaceResult", word, namespaceResult);
+          debug(
+            "namespaceResult (query-aware)",
+            word,
+            namespaceResult,
+            "tableRefs:",
+            Array.from(tableRefs),
+          );
           const namespaceData: NamespaceTooltipData = {
             item: namespaceResult,
             word,
-            resolvedSchema,
+            resolvedSchema: tableRefs.size > 0 ? filteredSchema : resolvedSchema,
           };
 
           // Use custom renderer based on semantic type, fallback to default
@@ -173,6 +246,8 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
             // Fallback to default renderer
             tooltipContent = createNamespaceTooltip(namespaceResult);
           }
+        } else {
+          debug("No namespace item found for:", word);
         }
       }
 
