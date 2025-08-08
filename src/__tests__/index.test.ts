@@ -11,9 +11,9 @@ describe("index.ts exports", () => {
         "NodeSqlParser",
         "SqlStructureAnalyzer",
         "cteCompletionSource",
+        "defaultSqlHoverTheme",
         "sqlExtension",
         "sqlHover",
-        "sqlHoverTheme",
         "sqlLinter",
         "sqlStructureGutter",
       ]

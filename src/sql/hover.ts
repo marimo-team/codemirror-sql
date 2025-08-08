@@ -125,6 +125,8 @@ export interface SqlHoverConfig {
     /** Custom renderer for column items */
     column?: (data: NamespaceTooltipData) => string;
   };
+  /** Custom CSS theme for hover tooltips */
+  theme?: Extension;
 }
 
 /**
@@ -504,8 +506,51 @@ export const DefaultSqlTooltipRenders = {
 /**
  * Default CSS styles for hover tooltips
  */
-export const sqlHoverTheme = (): Extension =>
-  EditorView.theme({
+export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extension => {
+  // Theme-dependent color variables
+  const lightTheme = {
+    tooltipBg: "#ffffff",
+    tooltipBorder: "#e5e7eb",
+    tooltipText: "#374151",
+    tooltipTypeBg: "#f3f4f6",
+    tooltipTypeText: "#6b7280",
+    tooltipChildren: "#6b7280",
+    codeBg: "#f9fafb",
+    codeText: "#1f2937",
+    strong: "#111827",
+    em: "#6b7280",
+    header: "#111827",
+    info: "#374151",
+    related: "#374151",
+    path: "#374151",
+    example: "#374151",
+    columns: "#374151",
+    syntax: "#374151",
+  };
+
+  const darkTheme = {
+    tooltipBg: "#1f2937",
+    tooltipBorder: "#374151",
+    tooltipText: "#f9fafb",
+    tooltipTypeBg: "#374151",
+    tooltipTypeText: "#9ca3af",
+    tooltipChildren: "#9ca3af",
+    codeBg: "#374151",
+    codeText: "#f3f4f6",
+    strong: "#ffffff",
+    em: "#9ca3af",
+    header: "#ffffff",
+    info: "#d1d5db",
+    related: "#d1d5db",
+    path: "#d1d5db",
+    example: "#d1d5db",
+    columns: "#d1d5db",
+    syntax: "#d1d5db",
+  };
+
+  const colors = theme === "dark" ? darkTheme : lightTheme;
+
+  return EditorView.theme({
     ".cm-sql-hover-tooltip": {
       padding: "8px 12px",
       backgroundColor: "#ffffff",
@@ -516,112 +561,71 @@ export const sqlHoverTheme = (): Extension =>
       lineHeight: "1.4",
       maxWidth: "320px",
       fontFamily: "system-ui, -apple-system, sans-serif",
+      color: colors.tooltipText,
     },
     ".cm-sql-hover-tooltip .sql-hover-header": {
       marginBottom: "6px",
       display: "flex",
       alignItems: "center",
       gap: "6px",
+      color: colors.header,
     },
     ".cm-sql-hover-tooltip .sql-hover-type": {
       fontSize: "11px",
       padding: "2px 6px",
-      backgroundColor: "#f3f4f6",
-      color: "#6b7280",
+      backgroundColor: colors.tooltipTypeBg,
+      color: colors.tooltipTypeText,
       borderRadius: "4px",
       fontWeight: "500",
     },
     ".cm-sql-hover-tooltip .sql-hover-description": {
-      color: "#374151",
+      color: colors.info,
       marginBottom: "8px",
     },
     ".cm-sql-hover-tooltip .sql-hover-syntax": {
       marginBottom: "8px",
-      color: "#374151",
+      color: colors.syntax,
     },
     ".cm-sql-hover-tooltip .sql-hover-example": {
       marginBottom: "4px",
-      color: "#374151",
+      color: colors.example,
     },
     ".cm-sql-hover-tooltip .sql-hover-columns": {
       marginBottom: "4px",
-      color: "#374151",
+      color: colors.columns,
     },
     ".cm-sql-hover-tooltip .sql-hover-related": {
       marginBottom: "4px",
-      color: "#374151",
+      color: colors.related,
     },
     ".cm-sql-hover-tooltip .sql-hover-path": {
       marginBottom: "4px",
-      color: "#374151",
+      color: colors.path,
     },
     ".cm-sql-hover-tooltip .sql-hover-info": {
       marginBottom: "4px",
-      color: "#374151",
+      color: colors.info,
     },
     ".cm-sql-hover-tooltip .sql-hover-children": {
       marginBottom: "4px",
-      color: "#6b7280",
+      color: colors.tooltipChildren,
       fontSize: "12px",
     },
     ".cm-sql-hover-tooltip code": {
-      backgroundColor: "#f9fafb",
+      backgroundColor: colors.codeBg,
       padding: "1px 4px",
       borderRadius: "3px",
       fontSize: "12px",
       fontFamily: "ui-monospace, 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace",
-      color: "#1f2937",
+      color: colors.codeText,
     },
     ".cm-sql-hover-tooltip strong": {
       fontWeight: "600",
-      color: "#111827",
+      color: colors.strong,
     },
     ".cm-sql-hover-tooltip em": {
       fontStyle: "italic",
-      color: "#6b7280",
-    },
-    // Dark theme support
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip": {
-      backgroundColor: "#1f2937",
-      borderColor: "#374151",
-      color: "#f9fafb",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-type": {
-      backgroundColor: "#374151",
-      color: "#9ca3af",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-description": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-syntax": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-example": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-columns": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-related": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-path": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-info": {
-      color: "#d1d5db",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip .sql-hover-children": {
-      color: "#9ca3af",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip code": {
-      backgroundColor: "#374151",
-      color: "#f3f4f6",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip strong": {
-      color: "#ffffff",
-    },
-    ".cm-editor.cm-focused.cm-dark .cm-sql-hover-tooltip em": {
-      color: "#9ca3af",
+      color: colors.em,
     },
   });
+};

@@ -7,7 +7,7 @@ export type {
   SqlHoverConfig,
   SqlKeywordInfo,
 } from "./sql/hover.js";
-export { sqlHover, sqlHoverTheme } from "./sql/hover.js";
+export { defaultSqlHoverTheme, sqlHover } from "./sql/hover.js";
 export { NodeSqlParser } from "./sql/parser.js";
 export type { SqlStatement } from "./sql/structure-analyzer.js";
 export { SqlStructureAnalyzer } from "./sql/structure-analyzer.js";
