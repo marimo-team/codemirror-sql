@@ -1,7 +1,7 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { describe, expect, it, vi } from "vitest";
-import { sqlHover, sqlHoverTheme } from "../hover.js";
+import { defaultSqlHoverTheme, sqlHover } from "../hover.js";
 import { resolveNamespaceItem } from "../namespace-utils.js";
 
 // Helper function to create completion objects
@@ -73,7 +73,7 @@ describe("Hover Integration Tests", () => {
 
     it("should create hover theme without errors", () => {
       expect(() => {
-        sqlHoverTheme();
+        defaultSqlHoverTheme();
       }).not.toThrow();
     });
 

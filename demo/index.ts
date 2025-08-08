@@ -3,10 +3,12 @@ import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { type EditorState, StateEffect, StateField } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
-import { NodeSqlParser } from "../src/index.js";
-import { cteCompletionSource } from "../src/sql/cte-completion-source.js";
-import { sqlExtension } from "../src/sql/extension.js";
-import { DefaultSqlTooltipRenders } from "../src/sql/hover.js";
+import {
+  cteCompletionSource,
+  DefaultSqlTooltipRenders,
+  NodeSqlParser,
+  sqlExtension,
+} from "../src/index.js";
 import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
 
 // Default SQL content for the demo

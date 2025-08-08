@@ -1,6 +1,6 @@
 import type { Extension } from "@codemirror/state";
 import { type SqlLinterConfig, sqlLinter } from "./diagnostics.js";
-import { type SqlHoverConfig, sqlHover, sqlHoverTheme } from "./hover.js";
+import { defaultSqlHoverTheme, type SqlHoverConfig, sqlHover } from "./hover.js";
 import { type SqlGutterConfig, sqlStructureGutter } from "./structure-extension.js";
 
 /**
@@ -68,7 +68,9 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
 
   if (enableHover) {
     extensions.push(sqlHover(hoverConfig));
-    extensions.push(sqlHoverTheme());
+    hoverConfig?.theme
+      ? extensions.push(hoverConfig.theme)
+      : extensions.push(defaultSqlHoverTheme());
   }
 
   return extensions;

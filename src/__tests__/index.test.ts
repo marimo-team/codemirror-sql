@@ -8,12 +8,13 @@ describe("index.ts exports", () => {
     const sortedExports = Object.keys(exports).sort();
     expect(sortedExports).toMatchInlineSnapshot(`
       [
+        "DefaultSqlTooltipRenders",
         "NodeSqlParser",
         "SqlStructureAnalyzer",
         "cteCompletionSource",
+        "defaultSqlHoverTheme",
         "sqlExtension",
         "sqlHover",
-        "sqlHoverTheme",
         "sqlLinter",
         "sqlStructureGutter",
       ]
