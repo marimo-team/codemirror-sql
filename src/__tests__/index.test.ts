@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as dialects from "../dialects";
 import * as exports from "../index";
 
 describe("index.ts exports", () => {
@@ -32,5 +33,16 @@ describe("keywords", async () => {
       const keywords = await import(`../data/${file}`);
       expect(typeof keywords.keywords).toBe("object");
     }
+  });
+});
+
+describe("dialects.ts exports", () => {
+  it("should not change unexpectedly", () => {
+    const sortedExports = Object.keys(dialects).sort();
+    expect(sortedExports).toMatchInlineSnapshot(`
+      [
+        "DuckDBDialect",
+      ]
+    `);
   });
 });
