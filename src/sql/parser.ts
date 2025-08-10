@@ -4,8 +4,12 @@ import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
+interface ParserOption extends Option {
+  database: SupportedDialects;
+}
+
 interface NodeSqlParserOptions {
-  getParserOptions?: (state: EditorState) => Option;
+  getParserOptions?: (state: EditorState) => ParserOption;
 }
 
 interface NodeSqlParserResult extends SqlParseResult {
@@ -97,7 +101,7 @@ export class NodeSqlParser implements SqlParser {
 
     // Otherwise, try standard parsing with PostgreSQL dialect
     try {
-      const postgresOptions = { ...parserOptions, database: "PostgresQL" };
+      const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
       const ast = parser.astify(sql, postgresOptions);
       return {
         success: true,
@@ -202,3 +206,23 @@ export class NodeSqlParser implements SqlParser {
     }
   }
 }
+
+/**
+ * https://github.com/taozhi8833998/node-sql-parser?tab=readme-ov-file#supported-database-sql-syntax
+ * While DuckDB is not supported in the library, we perform some special handling for it and treat it as PostgreSQL.
+ */
+export type SupportedDialects =
+  | "Athena"
+  | "BigQuery"
+  | "DB2"
+  | "Hive"
+  | "MariaDB"
+  | "MySQL"
+  | "PostgreSQL"
+  | "DuckDB"
+  | "Redshift"
+  | "Sqlite"
+  | "TransactSQL"
+  | "FlinkSQL"
+  | "Snowflake"
+  | "Noql";
