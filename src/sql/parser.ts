@@ -49,7 +49,9 @@ export class NodeSqlParser implements SqlParser {
     if (this.parser) {
       return this.parser;
     }
-    const { Parser } = await import("node-sql-parser");
+    const module = await import("node-sql-parser");
+    // Support for ESM and CJS
+    const { Parser } = module.default || module;
     this.parser = new Parser();
     return this.parser;
   });
