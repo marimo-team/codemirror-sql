@@ -8,6 +8,7 @@ import {
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
+  type SupportedDialects,
   sqlExtension,
 } from "../src/index.js";
 import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
@@ -146,9 +147,9 @@ const getKeywordDocs = async () => {
   };
 };
 
-const setDatabase = StateEffect.define<string>();
+const setDatabase = StateEffect.define<SupportedDialects>();
 
-const databaseField = StateField.define({
+const databaseField = StateField.define<SupportedDialects>({
   create: () => "PostgreSQL",
   update: (prevValue, transaction) => {
     for (const effect of transaction.effects) {
@@ -162,7 +163,7 @@ const databaseField = StateField.define({
 
 // Initialize the SQL editor
 function initializeEditor() {
-  // Use the same parser for linter and gutter
+  // Use the same parser
   const parser = new NodeSqlParser({
     getParserOptions: (state: EditorState) => {
       return {
@@ -233,6 +234,7 @@ function initializeEditor() {
           table: tableTooltipRenderer,
         },
         theme: defaultSqlHoverTheme("light"),
+        parser,
       },
     }),
     dialect.language.data.of({
@@ -337,7 +339,7 @@ function setupExampleButtons() {
   });
 }
 
-function getDialect(state: EditorState): string {
+function getDialect(state: EditorState): SupportedDialects {
   return state.field(databaseField);
 }
 
@@ -345,7 +347,7 @@ function setupDialectSelect() {
   const select = document.querySelector("#dialect-select");
   if (select) {
     select.addEventListener("change", (e) => {
-      const value = (e.target as HTMLSelectElement).value;
+      const value = (e.target as HTMLSelectElement).value as SupportedDialects;
       editor.dispatch({
         effects: [setDatabase.of(value)],
       });
