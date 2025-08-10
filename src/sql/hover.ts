@@ -553,8 +553,8 @@ export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extensi
   return EditorView.theme({
     ".cm-sql-hover-tooltip": {
       padding: "8px 12px",
-      backgroundColor: "#ffffff",
-      border: "1px solid #e5e7eb",
+      backgroundColor: colors.tooltipBg,
+      border: `1px solid ${colors.tooltipBorder}`,
       borderRadius: "6px",
       boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
       fontSize: "13px",

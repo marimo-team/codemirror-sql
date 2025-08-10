@@ -6,6 +6,7 @@ import { basicSetup, EditorView } from "codemirror";
 import {
   cteCompletionSource,
   DefaultSqlTooltipRenders,
+  defaultSqlHoverTheme,
   NodeSqlParser,
   sqlExtension,
 } from "../src/index.js";
@@ -231,6 +232,7 @@ function initializeEditor() {
           // Custom renderer for tables
           table: tableTooltipRenderer,
         },
+        theme: defaultSqlHoverTheme("light"),
       },
     }),
     dialect.language.data.of({
