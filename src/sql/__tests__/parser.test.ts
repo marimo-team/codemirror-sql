@@ -209,7 +209,7 @@ describe("SqlParser", () => {
       }
     });
 
-    it("should be succesful with duckdb specific keywords", async () => {
+    it("should be successful with duckdb specific keywords", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
