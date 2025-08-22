@@ -1,6 +1,6 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { PostgreSQL, sql } from "@codemirror/lang-sql";
-import { type EditorState, StateEffect, StateField } from "@codemirror/state";
+import { PostgreSQL, type SQLDialect, sql } from "@codemirror/lang-sql";
+import { Compartment, type EditorState, StateEffect, StateField } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import {
@@ -11,85 +11,9 @@ import {
   type SupportedDialects,
   sqlExtension,
 } from "../src/index.js";
-import { type Schema, tableTooltipRenderer } from "./custom-renderers.js";
-
-// Default SQL content for the demo
-const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
--- Try editing the queries below to see real-time validation
-
-WITH cte_name AS (
-  SELECT * FROM users
-)
-
--- Valid queries (no errors):
-SELECT id, name, email
-FROM users
-WHERE active = true
-ORDER BY created_at DESC;
-
-SELECT
-    u.name,
-    p.title,
-    p.created_at
-FROM users u
-JOIN posts p ON u.id = p.user_id
-WHERE u.status = 'active'
-  AND p.published = true
-LIMIT 10;
-
--- Try editing these to create syntax errors:
--- Uncomment the lines below to see error highlighting
-
--- SELECT * FROM;  -- Missing table name
--- SELECT * FORM users;  -- Typo in FROM keyword
--- INSERT INTO VALUES (1, 2);  -- Missing table name
--- UPDATE SET name = 'test';  -- Missing table name
-
--- Complex example with subquery:
-SELECT
-    customer_id,
-    order_date,
-    total_amount,
-    (SELECT AVG(total_amount) FROM orders) as avg_order_value
-FROM orders
-WHERE order_date >= '2024-01-01'
-  AND total_amount > (
-    SELECT AVG(total_amount) * 0.8
-    FROM orders
-    WHERE YEAR(order_date) = 2024
-  )
-ORDER BY total_amount DESC;
-`;
-
-const schema: Record<Schema, string[]> = {
-  // Users table
-  users: ["id", "name", "email", "active", "status", "created_at", "updated_at", "profile_id"],
-  // Posts table
-  posts: [
-    "id",
-    "title",
-    "content",
-    "user_id",
-    "published",
-    "created_at",
-    "updated_at",
-    "category_id",
-  ],
-  // Orders table
-  orders: [
-    "id",
-    "customer_id",
-    "order_date",
-    "total_amount",
-    "status",
-    "shipping_address",
-    "created_at",
-  ],
-  // Customers table (additional example)
-  customers: ["id", "first_name", "last_name", "email", "phone", "address", "city", "country"],
-  // Categories table
-  categories: ["id", "name", "description", "parent_id"],
-};
+import { tableTooltipRenderer } from "./custom-renderers.js";
+import { defaultSqlDoc, schema } from "./data.js";
+import { guessSqlDialect } from "./utils.js";
 
 let editor: EditorView;
 
@@ -104,7 +28,7 @@ const completionKindStyles = {
   height: "12px",
 };
 
-const dialect = PostgreSQL;
+const defaultDialect = PostgreSQL;
 
 const defaultKeymap = [
   {
@@ -148,7 +72,6 @@ const getKeywordDocs = async () => {
 };
 
 const setDatabase = StateEffect.define<SupportedDialects>();
-
 const databaseField = StateField.define<SupportedDialects>({
   create: () => "PostgreSQL",
   update: (prevValue, transaction) => {
@@ -161,13 +84,45 @@ const databaseField = StateField.define<SupportedDialects>({
   },
 });
 
+// Allows us to reconfigure the base sql extension without reloading the editor
+const baseSqlCompartment = new Compartment();
+
+const baseSqlExtension = (dialect: SQLDialect) => {
+  return sql({
+    dialect: dialect,
+    // Example schema for autocomplete
+    schema: schema,
+    // Enable uppercase keywords for more traditional SQL style
+    upperCaseKeywords: true,
+    keywordCompletion: (label, _type) => {
+      return {
+        label,
+        keyword: label,
+        info: async () => {
+          const dom = document.createElement("div");
+          const keywordDocs = await getKeywordDocs();
+          const description = keywordDocs[label.toLocaleLowerCase()];
+          if (!description) {
+            return null;
+          }
+          dom.innerHTML = DefaultSqlTooltipRenders.keyword({
+            keyword: label,
+            info: description,
+          });
+          return dom;
+        },
+      };
+    },
+  });
+};
+
 // Initialize the SQL editor
 function initializeEditor() {
   // Use the same parser
   const parser = new NodeSqlParser({
     getParserOptions: (state: EditorState) => {
       return {
-        database: getDialect(state),
+        database: getDatabase(state),
       };
     },
   });
@@ -177,32 +132,7 @@ function initializeEditor() {
     EditorView.lineWrapping,
     keymap.of(defaultKeymap),
     databaseField,
-    sql({
-      dialect: dialect,
-      // Example schema for autocomplete
-      schema: schema,
-      // Enable uppercase keywords for more traditional SQL style
-      upperCaseKeywords: true,
-      keywordCompletion: (label, _type) => {
-        return {
-          label,
-          keyword: label,
-          info: async () => {
-            const dom = document.createElement("div");
-            const keywordDocs = await getKeywordDocs();
-            const description = keywordDocs[label.toLocaleLowerCase()];
-            if (!description) {
-              return null;
-            }
-            dom.innerHTML = DefaultSqlTooltipRenders.keyword({
-              keyword: label,
-              info: description,
-            });
-            return dom;
-          },
-        };
-      },
-    }),
+    baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
     sqlExtension({
       // Linter extension configuration
       linterConfig: {
@@ -237,7 +167,7 @@ function initializeEditor() {
         parser,
       },
     }),
-    dialect.language.data.of({
+    defaultDialect.language.data.of({
       autocomplete: cteCompletionSource,
     }),
     // Custom theme for better SQL editing
@@ -339,15 +269,16 @@ function setupExampleButtons() {
   });
 }
 
-function getDialect(state: EditorState): SupportedDialects {
+function getDatabase(state: EditorState): SupportedDialects {
   return state.field(databaseField);
 }
 
-function setupDialectSelect() {
-  const select = document.querySelector("#dialect-select");
+function setupDatabaseSelect() {
+  const select = document.querySelector("#database-select");
   if (select) {
     select.addEventListener("change", (e) => {
       const value = (e.target as HTMLSelectElement).value as SupportedDialects;
+      updateSqlDialect(editor, guessSqlDialect(value));
       editor.dispatch({
         effects: [setDatabase.of(value)],
       });
@@ -355,11 +286,17 @@ function setupDialectSelect() {
   }
 }
 
+function updateSqlDialect(view: EditorView, dialect: SQLDialect) {
+  view.dispatch({
+    effects: [baseSqlCompartment.reconfigure(baseSqlExtension(dialect))],
+  });
+}
+
 // Initialize everything when the page loads
 document.addEventListener("DOMContentLoaded", () => {
   initializeEditor();
   setupExampleButtons();
-  setupDialectSelect();
+  setupDatabaseSelect();
 
   console.log("SQL Editor Demo initialized!");
   console.log("Features:");

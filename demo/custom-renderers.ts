@@ -30,7 +30,7 @@ interface TableMetadata {
   indexes: IndexMetadata[];
 }
 
-export type Schema = "users" | "posts" | "orders" | "customers" | "categories";
+export type Schema = "users" | "posts" | "orders" | "customers" | "categories" | "Users_Posts";
 
 export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
   // Show table name, columns, description, primary key, foreign key, index, unique, check, default, comment
@@ -291,6 +291,24 @@ function getTableMetadata(tableName: string): TableMetadata {
         { name: "idx_categories_name", columns: ["name"], unique: false },
         { name: "idx_categories_parent", columns: ["parent_id"], unique: false },
       ],
+    },
+    Users_Posts: {
+      description: "User-Post relationships",
+      rowCount: "1,234",
+      columns: {
+        user_id: { type: "INT", notNull: true, foreignKey: true, comment: "User who posted" },
+        post_id: {
+          type: "INT",
+          notNull: true,
+          foreignKey: true,
+          comment: "Post being commented on",
+        },
+      },
+      foreignKeys: [
+        { column: "user_id", referencedTable: "users", referencedColumn: "id" },
+        { column: "post_id", referencedTable: "posts", referencedColumn: "id" },
+      ],
+      indexes: [{ name: "idx_users_posts_user", columns: ["user_id"], unique: false }],
     },
   };
 
