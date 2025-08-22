@@ -6,6 +6,14 @@ import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
 interface ParserOption extends Option {
   database: SupportedDialects;
+  /**
+   * If true, the parser will quote brackets in the SQL query which will satisfy the parser.
+   * Eg. `SELECT {id} -> SELECT '{id}'`
+   * This is useful if you want to interpolate variables in f-strings.
+   *
+   * @default false
+   */
+  ignoreBrackets?: boolean;
 }
 
 interface NodeSqlParserOptions {
@@ -60,13 +68,14 @@ export class NodeSqlParser implements SqlParser {
     try {
       const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
+      const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
 
       // Check if this is DuckDB dialect and apply custom processing
       if (parserOptions?.database === "DuckDB") {
-        return this.parseWithDuckDBSupport(sql, parserOptions);
+        return this.parseWithDuckDBSupport(sanitizedSql, parserOptions);
       }
 
-      const ast = parser.astify(sql, parserOptions);
+      const ast = parser.astify(sanitizedSql, parserOptions);
 
       return {
         success: true,
@@ -80,6 +89,14 @@ export class NodeSqlParser implements SqlParser {
         errors: [parseError],
       };
     }
+  }
+
+  async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
+    if (parserOptions?.ignoreBrackets) {
+      // Quote sql with brackets, eg. `SELECT {id} -> SELECT '{id}'`
+      return sql.replace(/\{[^}]*\}/g, (match) => `'${match}'`);
+    }
+    return sql;
   }
 
   /**
@@ -110,12 +127,9 @@ export class NodeSqlParser implements SqlParser {
       };
     }
 
-    // If there is a {}, quote it
-    let modifiedSql = sql.replace(/\{[^}]*\}/g, (match) => `'${match}'`);
-
     // Handle CREATE OR REPLACE syntax
     // Remove "or replace" (case-insensitive)
-    modifiedSql = modifiedSql.replace(/or replace/i, "");
+    const modifiedSql = sql.replace(/or replace/i, "");
 
     // Otherwise, try standard parsing with PostgreSQL dialect
     try {

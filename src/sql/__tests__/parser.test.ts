@@ -232,6 +232,7 @@ describe("SqlParser", () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
+          ignoreBrackets: true,
         }),
       });
 
