@@ -8,10 +8,12 @@ interface ParserOption extends Option {
   database: SupportedDialects;
   /**
    * If true, the parser will quote brackets in the SQL query which will satisfy the parser.
-   * Eg. `SELECT {id} -> SELECT '{id}'`
    * This is useful if you want to interpolate variables in f-strings.
    *
-   * @default false
+   * @example
+   * ```sql
+   * SELECT {id} -> SELECT '{id}'
+   * ```
    */
   ignoreBrackets?: boolean;
 }
