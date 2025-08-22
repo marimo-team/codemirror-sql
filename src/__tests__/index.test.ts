@@ -41,6 +41,7 @@ describe("dialects.ts exports", () => {
     const sortedExports = Object.keys(dialects).sort();
     expect(sortedExports).toMatchInlineSnapshot(`
       [
+        "BigQueryDialect",
         "DuckDBDialect",
       ]
     `);
