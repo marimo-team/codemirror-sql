@@ -185,5 +185,65 @@ describe("SqlParser", () => {
       expect(result.errors).toHaveLength(0);
       expect(result.ast).toBeUndefined();
     });
+
+    it("should treat OR REPLACE as a normal SQL query", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const queries = [
+        "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255))",
+        "create or replace VIEW v1 AS SELECT 1",
+      ];
+
+      for (const sql of queries) {
+        const state = EditorState.create({
+          doc: sql,
+        });
+        const result = await duckdbParser.parse(sql, { state });
+        expect(result.success).toBe(true);
+        expect(result.errors).toHaveLength(0);
+        expect(result.ast).toBeDefined();
+      }
+    });
+
+    it("should be succesful with duckdb specific keywords", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const queries = ["CREATE macro test1(a) as 1"];
+
+      for (const sql of queries) {
+        const state = EditorState.create({
+          doc: sql,
+        });
+        const result = await duckdbParser.parse(sql, { state });
+        expect(result.success).toBe(true);
+        expect(result.errors).toHaveLength(0);
+      }
+    });
+
+    it("should quote {} in quotes", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "SELECT {id} FROM users WHERE id = {id} and name = {name}",
+      });
+
+      const sql = "SELECT {id} FROM users WHERE id = {id} and name = {name}";
+      const result = await duckdbParser.parse(sql, { state });
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
   });
 });
