@@ -246,5 +246,30 @@ describe("SqlParser", () => {
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
     });
+
+    it("should handle error offsets correctly when replacing CREATE OR REPLACE TABLE", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      // This SQL has a syntax error at the end - missing closing parenthesis
+      const sql = "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255), invalid_syntax";
+
+      const state = EditorState.create({
+        doc: sql,
+      });
+
+      const result = await duckdbParser.parse(sql, { state });
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+
+      const error = result.errors[0];
+
+      // The offset should be at the original position of the error
+      const expectedColumn = sql.length + 1;
+      expect(error.column).toBe(expectedColumn);
+    });
   });
 });

@@ -47,6 +47,7 @@ interface NodeSqlParserResult extends SqlParseResult {
 export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
   private parser: Parser | null = null;
+  private offsetLength = 0;
 
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
@@ -109,10 +110,11 @@ export class NodeSqlParser implements SqlParser {
     parserOptions: Option,
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
-    const trimmedSql = sql.trim().toLowerCase();
+    let modifiedSql = sql.trim();
+    const lowercasedSql = modifiedSql.toLowerCase();
 
     // Handle DuckDB-specific syntax patterns
-    if (trimmedSql.startsWith("from")) {
+    if (lowercasedSql.startsWith("from")) {
       debug("From syntax is not supported");
       return {
         success: true,
@@ -121,7 +123,7 @@ export class NodeSqlParser implements SqlParser {
     }
 
     // If there is a MACRO, ignore parsing
-    if (trimmedSql.includes("macro")) {
+    if (lowercasedSql.includes("macro")) {
       debug("Macro syntax is not supported");
       return {
         success: true,
@@ -129,9 +131,11 @@ export class NodeSqlParser implements SqlParser {
       };
     }
 
-    // Handle CREATE OR REPLACE syntax
-    // Remove "or replace" (case-insensitive)
-    const modifiedSql = sql.replace(/or replace/i, "");
+    // Postgres does not support `CREATE OR REPLACE` for tables
+    if (lowercasedSql.includes("create or replace table")) {
+      this.offsetLength = "create or replace table".length - "create table".length;
+      modifiedSql = modifiedSql.replace(/create or replace table/i, "create table");
+    }
 
     // Otherwise, try standard parsing with PostgreSQL dialect
     try {
@@ -178,10 +182,13 @@ export class NodeSqlParser implements SqlParser {
       }
     }
 
+    // We add this offset to the column position to get the correct position of the error
+    const adjustedColumn = Math.max(1, column + this.offsetLength);
+
     return {
       message: this.cleanErrorMessage(message),
       line: Math.max(1, line),
-      column: Math.max(1, column),
+      column: adjustedColumn,
       severity: "error" as const,
     };
   }
