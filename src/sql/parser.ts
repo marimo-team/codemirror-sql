@@ -110,8 +110,7 @@ export class NodeSqlParser implements SqlParser {
     parserOptions: Option,
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
-    let sqlToParse = sql;
-    const sqlToCheck = sqlToParse.trim().toLowerCase();
+    const sqlToCheck = sql.trim().toLowerCase();
 
     // Handle DuckDB-specific syntax patterns
     if (sqlToCheck.startsWith("from")) {
@@ -134,13 +133,13 @@ export class NodeSqlParser implements SqlParser {
     // Postgres does not support `CREATE OR REPLACE` for tables
     if (sqlToCheck.includes("create or replace table")) {
       this.offsetLength += "create or replace table".length - "create table".length;
-      sqlToParse = sqlToParse.replace(/create or replace table/i, "create table");
+      sql = sql.replace(/create or replace table/i, "create table");
     }
 
     // Otherwise, try standard parsing with PostgreSQL dialect
     try {
       const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
-      const ast = parser.astify(sqlToParse, postgresOptions);
+      const ast = parser.astify(sql, postgresOptions);
       return {
         success: true,
         errors: [],
