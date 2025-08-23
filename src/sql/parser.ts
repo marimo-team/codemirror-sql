@@ -133,7 +133,7 @@ export class NodeSqlParser implements SqlParser {
 
     // Postgres does not support `CREATE OR REPLACE` for tables
     if (lowercasedSql.includes("create or replace table")) {
-      this.offsetLength = "create or replace table".length - "create table".length;
+      this.offsetLength += "create or replace table".length - "create table".length;
       modifiedSql = modifiedSql.replace(/create or replace table/i, "create table");
     }
 
