@@ -1,6 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { NodeSqlParser } from "../parser.js";
+import { NodeSqlParser, removeCommentsFromStart } from "../parser.js";
 
 describe("SqlParser", () => {
   const parser = new NodeSqlParser();
@@ -112,18 +112,15 @@ describe("SqlParser", () => {
   });
 
   describe("DuckDB dialect support", () => {
-    it("should accept DuckDB-specific syntax without parsing", async () => {
+    it("should accept FROM queries syntax without parsing", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
         }),
       });
 
-      const state = EditorState.create({
-        doc: "from nyc.rideshare select * limit 100",
-      });
-
-      const result = await duckdbParser.parse("from nyc.rideshare select * limit 100", { state });
+      const sql = "from nyc.rideshare select * limit 100";
+      const result = await duckdbParser.parse(sql, { state });
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
@@ -147,46 +144,7 @@ describe("SqlParser", () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it("should accept complex DuckDB queries without parsing", async () => {
-      const duckdbParser = new NodeSqlParser({
-        getParserOptions: () => ({
-          database: "DuckDB",
-        }),
-      });
-
-      const state = EditorState.create({
-        doc: "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
-      });
-
-      const result = await duckdbParser.parse(
-        "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
-        { state },
-      );
-
-      expect(result.success).toBe(true);
-      expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeUndefined();
-    });
-
-    it("should accept DuckDB queries with semicolons without parsing", async () => {
-      const duckdbParser = new NodeSqlParser({
-        getParserOptions: () => ({
-          database: "DuckDB",
-        }),
-      });
-
-      const state = EditorState.create({
-        doc: "from posts select title, name;",
-      });
-
-      const result = await duckdbParser.parse("from posts select title, name;", { state });
-
-      expect(result.success).toBe(true);
-      expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeUndefined();
-    });
-
-    it("should treat OR REPLACE as a normal SQL query", async () => {
+    it("should treat CREATE OR REPLACE TABLE as a normal SQL query", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
@@ -209,7 +167,32 @@ describe("SqlParser", () => {
       }
     });
 
-    it("should be successful with duckdb specific keywords", async () => {
+    it("should handle error offsets correctly when replacing CREATE OR REPLACE TABLE", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      // This SQL has a syntax error at the end - missing closing parenthesis
+      const sql = "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255), invalid_syntax";
+
+      const state = EditorState.create({
+        doc: sql,
+      });
+
+      const result = await duckdbParser.parse(sql, { state });
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+
+      const error = result.errors[0];
+
+      // The offset should be at the original position of the error
+      const expectedColumn = sql.length + 1;
+      expect(error.column).toBe(expectedColumn);
+    });
+
+    it("should be successful with macro keyword", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
@@ -246,30 +229,42 @@ describe("SqlParser", () => {
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
     });
+  });
+});
 
-    it("should handle error offsets correctly when replacing CREATE OR REPLACE TABLE", async () => {
-      const duckdbParser = new NodeSqlParser({
-        getParserOptions: () => ({
-          database: "DuckDB",
-        }),
-      });
+describe("removeComments", () => {
+  it("should remove comments from the start of the query", () => {
+    const sql = "/* comment */ SELECT * FROM users";
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
+  });
 
-      // This SQL has a syntax error at the end - missing closing parenthesis
-      const sql = "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255), invalid_syntax";
+  it("should remove comments from the start of the query with multiple lines", () => {
+    const sql = `
+      /* comment */
+    SELECT * FROM users
+    `;
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
+  });
 
-      const state = EditorState.create({
-        doc: sql,
-      });
+  it("should remove single line comments", () => {
+    const sql = `
+    -- comment
+    SELECT * FROM users
+    `;
+    const result2 = removeCommentsFromStart(sql).trim();
+    expect(result2).toBe("SELECT * FROM users");
+  });
 
-      const result = await duckdbParser.parse(sql, { state });
-      expect(result.success).toBe(false);
-      expect(result.errors).toHaveLength(1);
+  it("should remove comments from the start of the query with multiple lines and single line comments", () => {
+    const sql = `
+    /* comment */
+      -- comment
+    SELECT * FROM users
 
-      const error = result.errors[0];
-
-      // The offset should be at the original position of the error
-      const expectedColumn = sql.length + 1;
-      expect(error.column).toBe(expectedColumn);
-    });
+    `;
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
   });
 });

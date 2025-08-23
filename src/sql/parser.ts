@@ -68,10 +68,12 @@ export class NodeSqlParser implements SqlParser {
   });
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
+    this.offsetLength = 0;
+    const parserOptions = this.opts.getParserOptions?.(opts.state);
+    const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
+
     try {
-      const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
-      const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
 
       // Check if this is DuckDB dialect and apply custom processing
       if (parserOptions?.database === "DuckDB") {
@@ -86,7 +88,7 @@ export class NodeSqlParser implements SqlParser {
         ast,
       };
     } catch (error: unknown) {
-      const parseError = this.extractErrorInfo(error, sql);
+      const parseError = this.extractErrorInfo(error, sanitizedSql);
       return {
         success: false,
         errors: [parseError],
@@ -97,7 +99,11 @@ export class NodeSqlParser implements SqlParser {
   async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
     if (parserOptions?.ignoreBrackets) {
       // Quote sql with brackets, eg. `SELECT {id} -> SELECT '{id}'`
-      return sql.replace(/\{[^}]*\}/g, (match) => `'${match}'`);
+      const replacedSql = sql.replace(/\{[^}]*\}/g, (match) => {
+        this.offsetLength -= 2; // Offset the length of the brackets
+        return `'${match}'`;
+      });
+      return replacedSql;
     }
     return sql;
   }
@@ -110,7 +116,10 @@ export class NodeSqlParser implements SqlParser {
     parserOptions: Option,
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
-    const sqlToCheck = sql.trim().toLowerCase();
+
+    // Remove -- and /* */ comments from the start of the query for syntax pattern checking
+    let sqlToCheck = removeCommentsFromStart(sql);
+    sqlToCheck = sqlToCheck.trimStart().toLowerCase();
 
     // Handle DuckDB-specific syntax patterns
     if (sqlToCheck.startsWith("from")) {
@@ -245,6 +254,39 @@ export class NodeSqlParser implements SqlParser {
       return [];
     }
   }
+}
+
+type CommentType = "--" | "/*";
+
+export function removeCommentsFromStart(
+  sql: string,
+  commentTypes: CommentType[] = ["/*", "--"],
+): string {
+  const regexPatterns: string[] = [];
+
+  // Multi-line comments
+  if (commentTypes.includes("/*")) {
+    regexPatterns.push("\/\\*[\\s\\S]*?\\*\/");
+  }
+  // Single-line comments
+  if (commentTypes.includes("--")) {
+    regexPatterns.push("--[^\\n]*");
+  }
+
+  if (regexPatterns.length === 0) return sql;
+
+  const commentRegex = new RegExp(`^\\s*(${regexPatterns.join("|")})\\s*`, "");
+
+  // Keep removing comments from the start until no more are found
+  let result = sql;
+  let prevResult = "";
+
+  while (result !== prevResult) {
+    prevResult = result;
+    result = result.replace(commentRegex, "");
+  }
+
+  return result;
 }
 
 /**
