@@ -110,11 +110,11 @@ export class NodeSqlParser implements SqlParser {
     parserOptions: Option,
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
-    let modifiedSql = sql.trim();
-    const lowercasedSql = modifiedSql.toLowerCase();
+    let sqlToParse = sql;
+    const sqlToCheck = sqlToParse.trim().toLowerCase();
 
     // Handle DuckDB-specific syntax patterns
-    if (lowercasedSql.startsWith("from")) {
+    if (sqlToCheck.startsWith("from")) {
       debug("From syntax is not supported");
       return {
         success: true,
@@ -123,7 +123,7 @@ export class NodeSqlParser implements SqlParser {
     }
 
     // If there is a MACRO, ignore parsing
-    if (lowercasedSql.includes("macro")) {
+    if (sqlToCheck.includes("macro")) {
       debug("Macro syntax is not supported");
       return {
         success: true,
@@ -132,15 +132,15 @@ export class NodeSqlParser implements SqlParser {
     }
 
     // Postgres does not support `CREATE OR REPLACE` for tables
-    if (lowercasedSql.includes("create or replace table")) {
+    if (sqlToCheck.includes("create or replace table")) {
       this.offsetLength += "create or replace table".length - "create table".length;
-      modifiedSql = modifiedSql.replace(/create or replace table/i, "create table");
+      sqlToParse = sqlToParse.replace(/create or replace table/i, "create table");
     }
 
     // Otherwise, try standard parsing with PostgreSQL dialect
     try {
       const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
-      const ast = parser.astify(modifiedSql, postgresOptions);
+      const ast = parser.astify(sqlToParse, postgresOptions);
       return {
         success: true,
         errors: [],
