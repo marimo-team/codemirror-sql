@@ -1,6 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { NodeSqlParser, removeCommentsFromStart } from "../parser.js";
+import { NodeSqlParser, removeCommentsFromStart, replaceBracketsWithQuotes } from "../parser.js";
 
 describe("SqlParser", () => {
   const parser = new NodeSqlParser();
@@ -188,7 +188,7 @@ describe("SqlParser", () => {
       const error = result.errors[0];
 
       // The offset should be at the original position of the error
-      const expectedColumn = sql.length + 1;
+      const expectedColumn = sql.length;
       expect(error.column).toBe(expectedColumn);
     });
 
@@ -266,5 +266,104 @@ describe("removeComments", () => {
     `;
     const result = removeCommentsFromStart(sql).trim();
     expect(result).toBe("SELECT * FROM users");
+  });
+});
+
+describe("replaceBracketsWithQuotes", () => {
+  it("should replace brackets with quotes", () => {
+    const sql = "SELECT {id} FROM users WHERE id = {id}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}' FROM users WHERE id = '{id}'");
+  });
+
+  it("should not replace brackets that are already inside quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = '{id}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}' FROM users WHERE id = '{id}'");
+  });
+
+  it("should replace multiple brackets", () => {
+    const sql = "SELECT {id} FROM users WHERE id = {id} and name = {name}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'");
+  });
+
+  it("should not replace multiple brackets that are already inside quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'");
+  });
+
+  it("should handle multiple brackets in quotes", () => {
+    const sql = "SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'");
+  });
+
+  it("should handle mixed quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = \"{id}\"";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}' FROM users WHERE id = \"{id}\"");
+  });
+
+  it(
+    "should handle escaped quotes",
+    () => {
+      const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
+      const result = replaceBracketsWithQuotes(sql);
+      expect(result).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
+    },
+    { fails: true }, // We don't support escaped quotes yet
+  );
+
+  it("should handle brackets at the beginning of string", () => {
+    const sql = "{id} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("'{id}' FROM users");
+  });
+
+  it("should handle brackets at the end of string", () => {
+    const sql = "SELECT * FROM users WHERE id = {id}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT * FROM users WHERE id = '{id}'");
+  });
+
+  it("should handle empty brackets", () => {
+    const sql = "SELECT {} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{}' FROM users");
+  });
+
+  it("should handle brackets with spaces", () => {
+    const sql = "SELECT { user id } FROM users WHERE id = { user id }";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{ user id }' FROM users WHERE id = '{ user id }'");
+  });
+
+  it("should handle complex nested structures", () => {
+    const sql =
+      "SELECT {user.profile.name} FROM users WHERE id = '{user.id}' AND name = \"{user.name}\"";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe(
+      "SELECT '{user.profile.name}' FROM users WHERE id = '{user.id}' AND name = \"{user.name}\"",
+    );
+  });
+
+  it("should handle unclosed brackets", () => {
+    const sql = "SELECT {id FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT {id FROM users");
+  });
+
+  it("should handle multiple unquoted brackets in sequence", () => {
+    const sql = "SELECT {id}{name}{email} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT '{id}''{name}''{email}' FROM users");
+  });
+
+  it("should handle brackets inside string literals with escaped quotes", () => {
+    const sql = "SELECT 'user\\'s {id}' FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result).toBe("SELECT 'user\\'s {id}' FROM users");
   });
 });

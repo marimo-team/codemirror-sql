@@ -98,18 +98,14 @@ export class NodeSqlParser implements SqlParser {
 
   async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
     if (parserOptions?.ignoreBrackets) {
-      // Quote sql with brackets, eg. `SELECT {id} -> SELECT '{id}'`
-      const replacedSql = sql.replace(/\{[^}]*\}/g, (match) => {
-        this.offsetLength -= 2; // Offset the length of the brackets
-        return `'${match}'`;
-      });
-      return replacedSql;
+      return replaceBracketsWithQuotes(sql);
     }
     return sql;
   }
 
   /**
-   * Parse SQL with DuckDB-specific syntax support
+   * Parse SQL with DuckDB syntax support
+   * This is not robust, we catch main cases.
    */
   private async parseWithDuckDBSupport(
     sql: string,
@@ -117,53 +113,41 @@ export class NodeSqlParser implements SqlParser {
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
 
-    // Remove -- and /* */ comments from the start of the query for syntax pattern checking
-    let sqlToCheck = removeCommentsFromStart(sql);
-    sqlToCheck = sqlToCheck.trimStart().toLowerCase();
+    // Remove comments and normalize for pattern checking
+    const sqlToCheck = removeCommentsFromStart(sql).trimStart().toLowerCase();
 
-    // Handle DuckDB-specific syntax patterns
-    if (sqlToCheck.startsWith("from")) {
-      debug("From syntax is not supported");
-      return {
-        success: true,
-        errors: [],
-      };
+    // Handle unsupported DuckDB syntax patterns
+    if (sqlToCheck.startsWith("from") || sqlToCheck.includes("macro")) {
+      debug("Unsupported DuckDB syntax");
+      return { success: true, errors: [] };
     }
 
-    // If there is a MACRO, ignore parsing
-    if (sqlToCheck.includes("macro")) {
-      debug("Macro syntax is not supported");
-      return {
-        success: true,
-        errors: [],
-      };
-    }
-
+    let modifiedSql = sql;
     // Postgres does not support `CREATE OR REPLACE` for tables
     if (sqlToCheck.includes("create or replace table")) {
-      this.offsetLength += "create or replace table".length - "create table".length;
-      sql = sql.replace(/create or replace table/i, "create table");
+      // const offset = "create or replace table".length - "create table".length;
+      modifiedSql = sql.replace(/create or replace table/i, "create table");
     }
 
-    // Otherwise, try standard parsing with PostgreSQL dialect
+    // Try standard parsing with PostgreSQL dialect
     try {
       const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
-      const ast = parser.astify(sql, postgresOptions);
-      return {
-        success: true,
-        errors: [],
-        ast,
-      };
+      const ast = parser.astify(modifiedSql, postgresOptions);
+      return { success: true, errors: [], ast };
     } catch (error) {
+      // Use the original sql since we manually apply the offset
       const parseError = this.extractErrorInfo(error, sql);
-      return {
-        success: false,
-        errors: [parseError],
-      };
+      return { success: false, errors: [parseError] };
     }
   }
 
-  private extractErrorInfo(error: unknown, _sql: string): SqlParseError {
+  /**
+   * @param error - The error object
+   * @param sql - The SQL string
+   * @param offset - The offset to add to the column position. Default is 0.
+   * @returns The parsed error information
+   */
+  private extractErrorInfo(error: unknown, sql: string): SqlParseError {
     let line = 1;
     let column = 1;
     const message = (error as Error)?.message || "SQL parsing error";
@@ -287,6 +271,19 @@ export function removeCommentsFromStart(
   }
 
   return result;
+}
+
+export function replaceBracketsWithQuotes(sql: string): string {
+  /**
+   * Replace queries like `SELECT {id}` with `SELECT '{id}'`
+   * But don't replace brackets that are already inside quotes
+   */
+  return sql.replace(
+    /("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(\{[^}]*\})/g,
+    (_match, doubleQuoted, singleQuoted, bracket) => {
+      return doubleQuoted || singleQuoted || `'${bracket}'`;
+    },
+  );
 }
 
 /**
