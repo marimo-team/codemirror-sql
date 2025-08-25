@@ -1,0 +1,20 @@
+# Principles
+
+- Follow the project's existing conventions and patterns.
+- Prefer strong typing throughout the codebase.
+- Avoid using `any` or `unknown` types unless absolutely necessary.
+- Do not use type assertions; instead, define or refine types as needed.
+- Create and use explicit types or interfaces for complex structures.
+- Prefer using node-sql-parser's API and types for SQL parsing and analysis.
+
+# Code Style
+
+- Prefer concise code changes and minimal extra explanatory text.
+- Keep code changes minimal and focused on the requested functionality.
+
+# Development Workflow
+
+- Always use `pnpm test` or its variations to run tests.
+- Always use `pnpm lint` to run linting.
+- Always use `pnpm typecheck` to run typechecking.
+- Ensure all code changes pass tests, linting, and typechecking before merging.

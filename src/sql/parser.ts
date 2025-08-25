@@ -6,6 +6,18 @@ import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
 interface ParserOption extends Option {
   database: SupportedDialects;
+  /**
+   * If true, the parser will quote brackets in the SQL query which will satisfy the parser.
+   * This is useful if you want to interpolate variables in f-strings.
+   *
+   * @example
+   * ```sql
+   * SELECT {id} -> SELECT '{id}'
+   * ```
+   *
+   * @experimental This is an experimental feature and may break parsing.
+   */
+  ignoreBrackets?: boolean;
 }
 
 interface NodeSqlParserOptions {
@@ -38,6 +50,9 @@ export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
   private parser: Parser | null = null;
 
+  // Record the column number to the offset amount
+  private offsetRecord: Record<number, number> = {};
+
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
   }
@@ -57,16 +72,21 @@ export class NodeSqlParser implements SqlParser {
   });
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
+    // Reset the offset map on each parse
+    this.offsetRecord = {};
+
+    const parserOptions = this.opts.getParserOptions?.(opts.state);
+    const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
+
     try {
-      const parserOptions = this.opts.getParserOptions?.(opts.state);
       const parser = await this.getParser();
 
       // Check if this is DuckDB dialect and apply custom processing
       if (parserOptions?.database === "DuckDB") {
-        return this.parseWithDuckDBSupport(sql, parserOptions);
+        return this.parseWithDuckDBSupport(sanitizedSql, parserOptions);
       }
 
-      const ast = parser.astify(sql, parserOptions);
+      const ast = parser.astify(sanitizedSql, parserOptions);
 
       return {
         success: true,
@@ -74,7 +94,7 @@ export class NodeSqlParser implements SqlParser {
         ast,
       };
     } catch (error: unknown) {
-      const parseError = this.extractErrorInfo(error, sql);
+      const parseError = this.extractErrorInfo(error, sanitizedSql);
       return {
         success: false,
         errors: [parseError],
@@ -82,8 +102,18 @@ export class NodeSqlParser implements SqlParser {
     }
   }
 
+  async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
+    if (parserOptions?.ignoreBrackets) {
+      const { sql: replacedSql, offsetRecord } = replaceBracketsWithQuotes(sql);
+      this.offsetRecord = offsetRecord;
+      return replacedSql;
+    }
+    return sql;
+  }
+
   /**
-   * Parse SQL with DuckDB-specific syntax support
+   * Parse SQL with DuckDB syntax support
+   * This is not robust, we catch main cases.
    */
   private async parseWithDuckDBSupport(
     sql: string,
@@ -91,35 +121,42 @@ export class NodeSqlParser implements SqlParser {
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
 
-    // If the query starts with "from", it's DuckDB-specific syntax
-    // Just return success without parsing to avoid errors
-    if (sql.trim().toLowerCase().startsWith("from")) {
-      debug("From syntax is not supported");
-      return {
-        success: true,
-        errors: [],
-      };
+    // Remove comments and normalize for pattern checking
+    const sqlToCheck = removeCommentsFromStart(sql).trimStart().toLowerCase();
+
+    // Handle unsupported DuckDB syntax patterns
+    if (sqlToCheck.startsWith("from") || sqlToCheck.includes("macro")) {
+      debug("Unsupported DuckDB syntax");
+      return { success: true, errors: [] };
     }
 
-    // Otherwise, try standard parsing with PostgreSQL dialect
+    let modifiedSql = sql;
+    // Postgres does not support `CREATE OR REPLACE` for tables
+    if (sqlToCheck.includes("create or replace table")) {
+      const offset = "create or replace table".length - "create table".length;
+      this.offsetRecord[sql.indexOf("create or replace table")] = -offset;
+      modifiedSql = sql.replace(/create or replace table/i, "create table");
+    }
+
+    // Try standard parsing with PostgreSQL dialect
     try {
       const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
-      const ast = parser.astify(sql, postgresOptions);
-      return {
-        success: true,
-        errors: [],
-        ast,
-      };
+      const ast = parser.astify(modifiedSql, postgresOptions);
+      return { success: true, errors: [], ast };
     } catch (error) {
+      // Use the original sql since we manually apply the offset
       const parseError = this.extractErrorInfo(error, sql);
-      return {
-        success: false,
-        errors: [parseError],
-      };
+      return { success: false, errors: [parseError] };
     }
   }
 
-  private extractErrorInfo(error: unknown, _sql: string): SqlParseError {
+  /**
+   * @param error - The error object
+   * @param sql - The SQL string
+   * @param offset - The offset to add to the column position. Default is 0.
+   * @returns The parsed error information
+   */
+  private extractErrorInfo(error: unknown, sql: string): SqlParseError {
     let line = 1;
     let column = 1;
     const message = (error as Error)?.message || "SQL parsing error";
@@ -146,10 +183,33 @@ export class NodeSqlParser implements SqlParser {
       }
     }
 
+    /**
+     * Add offset to the column position to get the correct position of the error
+     * SELECT {id} FRO users
+     *             ^ error position should be here
+     *
+     * SELECT {id} FRO users
+     *                   ^ user sees this
+     * So in this case, we subtract the offset from the column position.
+     *
+     * If the error is before the brackets, we don't need to add the offset because it just increases the string length
+     * Column position will be the same as the user sees.
+     */
+    for (const [position, offset] of Object.entries(this.offsetRecord)) {
+      if (column > parseInt(position, 10)) {
+        column -= offset;
+      }
+    }
+
+    // Ensure we don't exceed the sql length
+    if (column > sql.length) {
+      column = sql.length;
+    }
+
     return {
       message: this.cleanErrorMessage(message),
       line: Math.max(1, line),
-      column: Math.max(1, column),
+      column: column,
       severity: "error" as const,
     };
   }
@@ -208,6 +268,81 @@ export class NodeSqlParser implements SqlParser {
     }
   }
 }
+
+type CommentType = "--" | "/*";
+
+function removeCommentsFromStart(sql: string, commentTypes: CommentType[] = ["/*", "--"]): string {
+  const regexPatterns: string[] = [];
+
+  // Multi-line comments
+  if (commentTypes.includes("/*")) {
+    regexPatterns.push("\/\\*[\\s\\S]*?\\*\/");
+  }
+  // Single-line comments
+  if (commentTypes.includes("--")) {
+    regexPatterns.push("--[^\\n]*");
+  }
+
+  if (regexPatterns.length === 0) return sql;
+
+  const commentRegex = new RegExp(`^\\s*(${regexPatterns.join("|")})\\s*`, "");
+
+  // Keep removing comments from the start until no more are found
+  let result = sql;
+  let prevResult = "";
+
+  while (result !== prevResult) {
+    prevResult = result;
+    result = result.replace(commentRegex, "");
+  }
+
+  return result;
+}
+
+const QUOTE_LENGTH = "''".length;
+
+/**
+ * Replaces unquoted curly bracket expressions (e.g., {id}) with quoted strings (e.g., '{id}'),
+ * ignoring brackets already inside single or double quotes.
+ *
+ * Returns the modified SQL and a record mapping the index of each replaced bracket to the
+ * number of characters added (for offset tracking).
+ *
+ * @example
+ *   replaceBracketsWithQuotes("SELECT {id}, '{name}' FROM users");
+ *   // => {
+ *   //   sql: "SELECT '{id}', '{name}' FROM users",
+ *   //   offsetRecord: { 7: 2 }
+ *   // }
+ */
+function replaceBracketsWithQuotes(sql: string): {
+  sql: string;
+  offsetRecord: Record<number, number>;
+} {
+  const offsetRecord: Record<number, number> = {};
+
+  const replacedSql = sql.replace(
+    /("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(\{[^}]*\})/g,
+    (match, doubleQuoted, singleQuoted, bracket, offset) => {
+      // If it's a quoted string, return it as-is
+      if (doubleQuoted || singleQuoted) {
+        return match;
+      }
+
+      // If it's a bracket, quote it and record the offset
+      if (bracket) {
+        offsetRecord[offset] = QUOTE_LENGTH;
+        return `'${bracket}'`;
+      }
+
+      return match;
+    },
+  );
+
+  return { sql: replacedSql, offsetRecord };
+}
+
+export const exportedForTesting = { replaceBracketsWithQuotes, removeCommentsFromStart };
 
 /**
  * https://github.com/taozhi8833998/node-sql-parser?tab=readme-ov-file#supported-database-sql-syntax

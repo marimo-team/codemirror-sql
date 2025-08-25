@@ -1,6 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { NodeSqlParser } from "../parser.js";
+import { exportedForTesting, NodeSqlParser } from "../parser.js";
 
 describe("SqlParser", () => {
   const parser = new NodeSqlParser();
@@ -112,18 +112,15 @@ describe("SqlParser", () => {
   });
 
   describe("DuckDB dialect support", () => {
-    it("should accept DuckDB-specific syntax without parsing", async () => {
+    it("should accept FROM queries syntax without parsing", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
         }),
       });
 
-      const state = EditorState.create({
-        doc: "from nyc.rideshare select * limit 100",
-      });
-
-      const result = await duckdbParser.parse("from nyc.rideshare select * limit 100", { state });
+      const sql = "from nyc.rideshare select * limit 100";
+      const result = await duckdbParser.parse(sql, { state });
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
@@ -147,43 +144,235 @@ describe("SqlParser", () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it("should accept complex DuckDB queries without parsing", async () => {
+    it("should treat CREATE OR REPLACE TABLE as a normal SQL query", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
         }),
       });
 
-      const state = EditorState.create({
-        doc: "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
-      });
+      const queries = [
+        "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255))",
+        "create or replace VIEW v1 AS SELECT 1",
+      ];
 
-      const result = await duckdbParser.parse(
-        "from nyc.rideshare select pickup_datetime, dropoff_datetime limit 50",
-        { state },
-      );
-
-      expect(result.success).toBe(true);
-      expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeUndefined();
+      for (const sql of queries) {
+        const state = EditorState.create({
+          doc: sql,
+        });
+        const result = await duckdbParser.parse(sql, { state });
+        expect(result.success).toBe(true);
+        expect(result.errors).toHaveLength(0);
+        expect(result.ast).toBeDefined();
+      }
     });
 
-    it("should accept DuckDB queries with semicolons without parsing", async () => {
+    it("should handle error offsets correctly when replacing CREATE OR REPLACE TABLE", async () => {
       const duckdbParser = new NodeSqlParser({
         getParserOptions: () => ({
           database: "DuckDB",
         }),
       });
 
+      // This SQL has a syntax error at the end - missing closing parenthesis
+      const sql = "CREATE OR REPLACE TABLE users (id INT, name VARCHAR(255), invalid_syntax";
+
       const state = EditorState.create({
-        doc: "from posts select title, name;",
+        doc: sql,
       });
 
-      const result = await duckdbParser.parse("from posts select title, name;", { state });
+      const result = await duckdbParser.parse(sql, { state });
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+
+      const error = result.errors[0];
+
+      // The offset should be at the original position of the error
+      const expectedColumn = sql.length;
+      expect(error.column).toBe(expectedColumn);
+    });
+
+    it("should be successful with macro keyword", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      const queries = ["CREATE macro test1(a) as 1"];
+
+      for (const sql of queries) {
+        const state = EditorState.create({
+          doc: sql,
+        });
+        const result = await duckdbParser.parse(sql, { state });
+        expect(result.success).toBe(true);
+        expect(result.errors).toHaveLength(0);
+      }
+    });
+
+    it("should quote {} in quotes", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+          ignoreBrackets: true,
+        }),
+      });
+
+      const state = EditorState.create({
+        doc: "SELECT {id} FROM users WHERE id = {id} and name = {name}",
+      });
+
+      const sql = "SELECT {id} FROM users WHERE id = {id} and name = {name}";
+      const result = await duckdbParser.parse(sql, { state });
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.ast).toBeUndefined();
     });
+  });
+});
+
+const { removeCommentsFromStart, replaceBracketsWithQuotes } = exportedForTesting;
+
+describe("removeComments", () => {
+  it("should remove comments from the start of the query", () => {
+    const sql = "/* comment */ SELECT * FROM users";
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
+  });
+
+  it("should remove comments from the start of the query with multiple lines", () => {
+    const sql = `
+      /* comment */
+    SELECT * FROM users
+    `;
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
+  });
+
+  it("should remove single line comments", () => {
+    const sql = `
+    -- comment
+    SELECT * FROM users
+    `;
+    const result2 = removeCommentsFromStart(sql).trim();
+    expect(result2).toBe("SELECT * FROM users");
+  });
+
+  it("should remove comments from the start of the query with multiple lines and single line comments", () => {
+    const sql = `
+    /* comment */
+      -- comment
+    SELECT * FROM users
+
+    `;
+    const result = removeCommentsFromStart(sql).trim();
+    expect(result).toBe("SELECT * FROM users");
+  });
+});
+
+describe("replaceBracketsWithQuotes", () => {
+  it("should replace brackets with quotes", () => {
+    const sql = "SELECT {id} FROM users WHERE id = {id}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}'");
+    expect(result.offsetRecord).toEqual({ 7: 2, 34: 2 });
+  });
+
+  it("should not replace brackets that are already inside quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = '{id}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}'");
+    expect(result.offsetRecord).toEqual({});
+  });
+
+  it("should replace multiple brackets", () => {
+    const sql = "SELECT {id} FROM users WHERE id = {id} and name = {name}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'");
+    expect(result.offsetRecord).toEqual({ 50: 2, 7: 2, 34: 2 });
+  });
+
+  it("should not replace multiple brackets that are already inside quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'");
+    expect(result.offsetRecord).toEqual({});
+  });
+
+  it("should handle multiple brackets in quotes", () => {
+    const sql = "SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'");
+    expect(result.offsetRecord).toEqual({});
+  });
+
+  it("should handle mixed quotes", () => {
+    const sql = "SELECT '{id}' FROM users WHERE id = \"{id}\"";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = \"{id}\"");
+    expect(result.offsetRecord).toEqual({});
+  });
+
+  it(
+    "should handle escaped quotes",
+    () => {
+      const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
+      const result = replaceBracketsWithQuotes(sql);
+      expect(result.sql).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
+    },
+    { fails: true }, // We don't support escaped quotes yet
+  );
+
+  it("should handle brackets at the beginning of string", () => {
+    const sql = "{id} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("'{id}' FROM users");
+    expect(result.offsetRecord).toEqual({ 0: 2 });
+  });
+
+  it("should handle brackets at the end of string", () => {
+    const sql = "SELECT * FROM users WHERE id = {id}";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT * FROM users WHERE id = '{id}'");
+  });
+
+  it("should handle empty brackets", () => {
+    const sql = "SELECT {} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{}' FROM users");
+  });
+
+  it("should handle brackets with spaces", () => {
+    const sql = "SELECT { user id } FROM users WHERE id = { user id }";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{ user id }' FROM users WHERE id = '{ user id }'");
+  });
+
+  it("should handle complex nested structures", () => {
+    const sql =
+      "SELECT {user.profile.name} FROM users WHERE id = '{user.id}' AND name = \"{user.name}\"";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe(
+      "SELECT '{user.profile.name}' FROM users WHERE id = '{user.id}' AND name = \"{user.name}\"",
+    );
+  });
+
+  it("should handle unclosed brackets", () => {
+    const sql = "SELECT {id FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT {id FROM users");
+  });
+
+  it("should handle multiple unquoted brackets in sequence", () => {
+    const sql = "SELECT {id}{name}{email} FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT '{id}''{name}''{email}' FROM users");
+  });
+
+  it("should handle brackets inside string literals with escaped quotes", () => {
+    const sql = "SELECT 'user\\'s {id}' FROM users";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT 'user\\'s {id}' FROM users");
   });
 });
