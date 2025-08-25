@@ -14,6 +14,8 @@ interface ParserOption extends Option {
    * ```sql
    * SELECT {id} -> SELECT '{id}'
    * ```
+   *
+   * @experimental This is an experimental feature and may break parsing.
    */
   ignoreBrackets?: boolean;
 }
