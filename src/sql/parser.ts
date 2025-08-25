@@ -133,7 +133,8 @@ export class NodeSqlParser implements SqlParser {
     let modifiedSql = sql;
     // Postgres does not support `CREATE OR REPLACE` for tables
     if (sqlToCheck.includes("create or replace table")) {
-      // const offset = "create or replace table".length - "create table".length;
+      const offset = "create or replace table".length - "create table".length;
+      this.offsetRecord[sql.indexOf("create or replace table")] = -offset;
       modifiedSql = sql.replace(/create or replace table/i, "create table");
     }
 
@@ -322,13 +323,19 @@ function replaceBracketsWithQuotes(sql: string): {
 
   const replacedSql = sql.replace(
     /("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(\{[^}]*\})/g,
-    (_match, doubleQuoted, singleQuoted, bracket) => {
-      const result = doubleQuoted || singleQuoted || `'${bracket}'`;
-      const index = sql.indexOf(bracket);
-      if (index >= 0) {
-        offsetRecord[index] = QUOTE_LENGTH;
+    (match, doubleQuoted, singleQuoted, bracket, offset) => {
+      // If it's a quoted string, return it as-is
+      if (doubleQuoted || singleQuoted) {
+        return match;
       }
-      return result;
+
+      // If it's a bracket, quote it and record the offset
+      if (bracket) {
+        offsetRecord[offset] = QUOTE_LENGTH;
+        return `'${bracket}'`;
+      }
+
+      return match;
     },
   );
 

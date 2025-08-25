@@ -276,7 +276,7 @@ describe("replaceBracketsWithQuotes", () => {
     const sql = "SELECT {id} FROM users WHERE id = {id}";
     const result = replaceBracketsWithQuotes(sql);
     expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}'");
-    expect(result.offsetRecord).toEqual({ 7: 2 });
+    expect(result.offsetRecord).toEqual({ 7: 2, 34: 2 });
   });
 
   it("should not replace brackets that are already inside quotes", () => {
@@ -290,7 +290,7 @@ describe("replaceBracketsWithQuotes", () => {
     const sql = "SELECT {id} FROM users WHERE id = {id} and name = {name}";
     const result = replaceBracketsWithQuotes(sql);
     expect(result.sql).toBe("SELECT '{id}' FROM users WHERE id = '{id}' and name = '{name}'");
-    expect(result.offsetRecord).toEqual({ 7: 2, 23: 2 });
+    expect(result.offsetRecord).toEqual({ 50: 2, 7: 2, 34: 2 });
   });
 
   it("should not replace multiple brackets that are already inside quotes", () => {
@@ -304,7 +304,7 @@ describe("replaceBracketsWithQuotes", () => {
     const sql = "SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'";
     const result = replaceBracketsWithQuotes(sql);
     expect(result.sql).toBe("SELECT '{id} {name}' FROM users WHERE id = '{id} {name}'");
-    expect(result.offsetRecord).toEqual({ "14": 2, "7": 2 });
+    expect(result.offsetRecord).toEqual({});
   });
 
   it("should handle mixed quotes", () => {
