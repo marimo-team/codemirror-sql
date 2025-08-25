@@ -47,7 +47,9 @@ interface NodeSqlParserResult extends SqlParseResult {
 export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
   private parser: Parser | null = null;
-  private offsetLength = 0;
+
+  // Record the column number to the offset amount
+  private offsetRecord: Record<number, number> = {};
 
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
@@ -68,7 +70,9 @@ export class NodeSqlParser implements SqlParser {
   });
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
-    this.offsetLength = 0;
+    // Reset the offset map on each parse
+    this.offsetRecord = {};
+
     const parserOptions = this.opts.getParserOptions?.(opts.state);
     const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
 
@@ -98,7 +102,9 @@ export class NodeSqlParser implements SqlParser {
 
   async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
     if (parserOptions?.ignoreBrackets) {
-      return replaceBracketsWithQuotes(sql);
+      const { sql: replacedSql, offsetRecord } = replaceBracketsWithQuotes(sql);
+      this.offsetRecord = offsetRecord;
+      return replacedSql;
     }
     return sql;
   }
@@ -174,13 +180,33 @@ export class NodeSqlParser implements SqlParser {
       }
     }
 
-    // We add this offset to the column position to get the correct position of the error
-    const adjustedColumn = Math.max(1, column + this.offsetLength);
+    /**
+     * Add offset to the column position to get the correct position of the error
+     * SELECT {id} FRO users
+     *             ^ error position should be here
+     *
+     * SELECT {id} FRO users
+     *                   ^ user sees this
+     * So in this case, we subtract the offset from the column position.
+     *
+     * If the error is before the brackets, we don't need to add the offset because it just increases the string length
+     * Column position will be the same as the user sees.
+     */
+    for (const [position, offset] of Object.entries(this.offsetRecord)) {
+      if (column > parseInt(position, 10)) {
+        column -= offset;
+      }
+    }
+
+    // Ensure we don't exceed the sql length
+    if (column > sql.length) {
+      column = sql.length;
+    }
 
     return {
       message: this.cleanErrorMessage(message),
       line: Math.max(1, line),
-      column: adjustedColumn,
+      column: column,
       severity: "error" as const,
     };
   }
@@ -242,10 +268,7 @@ export class NodeSqlParser implements SqlParser {
 
 type CommentType = "--" | "/*";
 
-export function removeCommentsFromStart(
-  sql: string,
-  commentTypes: CommentType[] = ["/*", "--"],
-): string {
+function removeCommentsFromStart(sql: string, commentTypes: CommentType[] = ["/*", "--"]): string {
   const regexPatterns: string[] = [];
 
   // Multi-line comments
@@ -273,18 +296,44 @@ export function removeCommentsFromStart(
   return result;
 }
 
-export function replaceBracketsWithQuotes(sql: string): string {
-  /**
-   * Replace queries like `SELECT {id}` with `SELECT '{id}'`
-   * But don't replace brackets that are already inside quotes
-   */
-  return sql.replace(
+const QUOTE_LENGTH = "''".length;
+
+/**
+ * Replaces unquoted curly bracket expressions (e.g., {id}) with quoted strings (e.g., '{id}'),
+ * ignoring brackets already inside single or double quotes.
+ *
+ * Returns the modified SQL and a record mapping the index of each replaced bracket to the
+ * number of characters added (for offset tracking).
+ *
+ * @example
+ *   replaceBracketsWithQuotes("SELECT {id}, '{name}' FROM users");
+ *   // => {
+ *   //   sql: "SELECT '{id}', '{name}' FROM users",
+ *   //   offsetRecord: { 7: 2 }
+ *   // }
+ */
+function replaceBracketsWithQuotes(sql: string): {
+  sql: string;
+  offsetRecord: Record<number, number>;
+} {
+  const offsetRecord: Record<number, number> = {};
+
+  const replacedSql = sql.replace(
     /("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(\{[^}]*\})/g,
     (_match, doubleQuoted, singleQuoted, bracket) => {
-      return doubleQuoted || singleQuoted || `'${bracket}'`;
+      const result = doubleQuoted || singleQuoted || `'${bracket}'`;
+      const index = sql.indexOf(bracket);
+      if (index >= 0) {
+        offsetRecord[index] = QUOTE_LENGTH;
+      }
+      return result;
     },
   );
+
+  return { sql: replacedSql, offsetRecord };
 }
+
+export const exportedForTesting = { replaceBracketsWithQuotes, removeCommentsFromStart };
 
 /**
  * https://github.com/taozhi8833998/node-sql-parser?tab=readme-ov-file#supported-database-sql-syntax
