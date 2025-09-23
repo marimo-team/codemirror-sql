@@ -1,6 +1,6 @@
 # codemirror-sql
 
-A CodeMirror extension for SQL linting and visual gutter indicators.
+A CodeMirror extension for SQL linting and visual gutter indicators. Built by and used in [marimo](https://github.com/marimo-team/marimo).
 
 ## Features
 
@@ -8,6 +8,9 @@ A CodeMirror extension for SQL linting and visual gutter indicators.
 - 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
 - 🔮 **CTE autocomplete** - Auto-complete support for CTEs
+- 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
+- 🔍 **Additional dialects** - DuckDB, BigQuery
+- 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
 
 ## Installation
 
@@ -65,6 +68,18 @@ const editor = new EditorView({
   parent: document.querySelector('#editor')
 });
 ```
+
+## Additional Dialects
+
+This extension adds support for additional dialects:
+
+- **DuckDB**
+- **BigQuery**
+
+## Keyword Completion
+
+The extension includes keyword documentation for common **SQL keywords** including used in hover and completion,
+which can be found in the `src/data` directory.
 
 ## Demo
 
