@@ -276,7 +276,7 @@ function removeCommentsFromStart(sql: string, commentTypes: CommentType[] = ["/*
 
   // Multi-line comments
   if (commentTypes.includes("/*")) {
-    regexPatterns.push("\/\\*[\\s\\S]*?\\*\/");
+    regexPatterns.push("/\\*[\\s\\S]*?\\*/");
   }
   // Single-line comments
   if (commentTypes.includes("--")) {
