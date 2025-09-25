@@ -4,7 +4,7 @@ import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
 
-interface ParserOption extends Option {
+export interface ParserOption extends Option {
   database: SupportedDialects;
   /**
    * If true, the parser will quote brackets in the SQL query which will satisfy the parser.
@@ -20,11 +20,11 @@ interface ParserOption extends Option {
   ignoreBrackets?: boolean;
 }
 
-interface NodeSqlParserOptions {
+export interface NodeSqlParserOptions {
   getParserOptions?: (state: EditorState) => ParserOption;
 }
 
-interface NodeSqlParserResult extends SqlParseResult {
+export interface NodeSqlParserResult extends SqlParseResult {
   ast?: AST | AST[];
 }
 
