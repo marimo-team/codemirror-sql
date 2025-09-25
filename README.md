@@ -25,13 +25,13 @@ pnpm add @marimo-team/codemirror-sql
 ### Basic Setup
 
 ```ts
-import { sql, StandardSQL } from '@codemirror/lang-sql';
-import { basicSetup, EditorView } from 'codemirror';
-import { sqlExtension, cteCompletionSource } from '@marimo-team/codemirror-sql';
+import { sql, StandardSQL } from "@codemirror/lang-sql";
+import { basicSetup, EditorView } from "codemirror";
+import { sqlExtension, cteCompletionSource } from "@marimo-team/codemirror-sql";
 
 const schema = {
   users: ["id", "name", "email", "active"],
-  posts: ["id", "title", "content", "user_id"]
+  posts: ["id", "title", "content", "user_id"],
 };
 
 const editor = new EditorView({
@@ -41,19 +41,19 @@ const editor = new EditorView({
     sql({
       dialect: StandardSQL,
       schema: schema,
-      upperCaseKeywords: true
+      upperCaseKeywords: true,
     }),
     StandardSQL.language.data.of({
       autocomplete: cteCompletionSource,
     }),
     sqlExtension({
       linterConfig: {
-        delay: 250 // Validation delay in ms
+        delay: 250, // Validation delay in ms
       },
       gutterConfig: {
         backgroundColor: "#3b82f6", // Current statement color
         errorBackgroundColor: "#ef4444", // Error highlight color
-        hideWhenNotFocused: true
+        hideWhenNotFocused: true,
       },
       enableHover: true,
       hoverConfig: {
@@ -61,11 +61,11 @@ const editor = new EditorView({
         hoverTime: 300,
         enableKeywords: true,
         enableTables: true,
-        enableColumns: true
-      }
-    })
+        enableColumns: true,
+      },
+    }),
   ],
-  parent: document.querySelector('#editor')
+  parent: document.querySelector("#editor"),
 });
 ```
 
