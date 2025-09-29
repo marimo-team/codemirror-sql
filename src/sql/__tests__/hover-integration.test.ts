@@ -1,5 +1,6 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
+import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
 import { defaultSqlHoverTheme, sqlHover } from "../hover.js";
 import { resolveNamespaceItem } from "../namespace-utils.js";
