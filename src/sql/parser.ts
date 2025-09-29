@@ -233,10 +233,12 @@ export class NodeSqlParser implements SqlParser {
    * @param sql The SQL query to analyze
    * @returns Array of table names referenced in the query
    */
-  async extractTableReferences(sql: string): Promise<string[]> {
+  async extractTableReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
+    const parserOptions = opts ? this.opts.getParserOptions?.(opts.state) : undefined;
+
     try {
       const parser = await this.getParser();
-      const tableList = parser.tableList(sql);
+      const tableList = parser.tableList(sql, parserOptions);
       // Clean up table names - node-sql-parser returns format like "select::null::users"
       return tableList.map((table: string) => {
         const parts = table.split("::");
@@ -252,10 +254,12 @@ export class NodeSqlParser implements SqlParser {
    * @param sql The SQL query to analyze
    * @returns Array of column names referenced in the query
    */
-  async extractColumnReferences(sql: string): Promise<string[]> {
+  async extractColumnReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
+    const parserOptions = opts?.state ? this.opts.getParserOptions?.(opts.state) : undefined;
+
     try {
       const parser = await this.getParser();
-      const columnList = parser.columnList(sql);
+      const columnList = parser.columnList(sql, parserOptions);
 
       // Clean up column names - node-sql-parser returns format like "select::null::users"
       const cleanColumnList = columnList.map((column: string) => {
