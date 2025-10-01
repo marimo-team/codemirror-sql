@@ -63,4 +63,4 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: 🔍 Spell Check Repo
-        uses: crate-ci/typos@v1.36.3
+        uses: crate-ci/typos@v1.37.1
