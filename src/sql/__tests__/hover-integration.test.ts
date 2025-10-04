@@ -1,5 +1,6 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
+import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
 import { defaultSqlHoverTheme, sqlHover } from "../hover.js";
 import { resolveNamespaceItem } from "../namespace-utils.js";
@@ -628,6 +629,32 @@ describe("Query-aware hover behavior", () => {
 
       const tableList = await parser.extractTableReferences("INVALID SQL QUERY");
       expect(tableList).toEqual([]);
+    });
+
+    it("should handle hierarchical schema references", async () => {
+      const { NodeSqlParser } = await import("../parser.js");
+      const parser = new NodeSqlParser({
+        getParserOptions: (_state: EditorState) => ({ database: "PostgreSQL" }),
+      });
+
+      let sql = "SELECT * FROM products.users";
+      const tableList = await parser.extractTableReferences(sql, {
+        state: EditorState.create({ doc: sql }),
+      });
+      expect(tableList).toEqual(["users"]);
+
+      sql = "SELECT * FROM products.users.orders";
+      const tableList2 = await parser.extractTableReferences(sql, {
+        state: EditorState.create({ doc: sql }),
+      });
+      expect(tableList2).toEqual(["orders"]);
+
+      sql =
+        "SELECT * FROM products.users.orders AS o INNER JOIN customers.users AS u ON o.id = u.id";
+      const tableList3 = await parser.extractTableReferences(sql, {
+        state: EditorState.create({ doc: sql }),
+      });
+      expect(tableList3).toEqual(["orders", "users"]);
     });
   });
 
