@@ -29,7 +29,7 @@ importers:
         version: 6.10.0
       '@codemirror/view':
         specifier: ^6.38.4
-        version: 6.38.4
+        version: 6.38.6
       '@vitest/coverage-v8':
         specifier: 3.2.4
         version: 3.2.4(vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0))
@@ -159,8 +159,8 @@ packages:
   '@codemirror/state@6.5.2':
     resolution: {integrity: sha512-FVqsPqtPWKVVL3dPSxy8wEF/ymIEuVzF1PK3VbUgrxXpJUSHQWWZz4JMToquRxnkw+36LTamCZG2iua2Ptq0fA==}
 
-  '@codemirror/view@6.38.4':
-    resolution: {integrity: sha512-hduz0suCcUSC/kM8Fq3A9iLwInJDl8fD1xLpTIk+5xkNm8z/FT7UsIa9sOXrkpChh+XXc18RzswE8QqELsVl+g==}
+  '@codemirror/view@6.38.6':
+    resolution: {integrity: sha512-qiS0z1bKs5WOvHIAC0Cybmv4AJSkAXgX5aD6Mqd2epSLlVJsQl8NG23jCVouIgkh4All/mrbdsf2UOLFnJw0tw==}
 
   '@csstools/color-helpers@5.1.0':
     resolution: {integrity: sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==}
@@ -1202,14 +1202,14 @@ snapshots:
     dependencies:
       '@codemirror/language': 6.11.3
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
       '@lezer/common': 1.2.3
 
   '@codemirror/commands@6.9.0':
     dependencies:
       '@codemirror/language': 6.11.3
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
       '@lezer/common': 1.2.3
 
   '@codemirror/lang-sql@6.10.0':
@@ -1224,7 +1224,7 @@ snapshots:
   '@codemirror/language@6.11.3':
     dependencies:
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
       '@lezer/common': 1.2.3
       '@lezer/highlight': 1.2.1
       '@lezer/lr': 1.4.2
@@ -1233,20 +1233,20 @@ snapshots:
   '@codemirror/lint@6.9.0':
     dependencies:
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
       crelt: 1.0.6
 
   '@codemirror/search@6.5.11':
     dependencies:
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
       crelt: 1.0.6
 
   '@codemirror/state@6.5.2':
     dependencies:
       '@marijn/find-cluster-break': 1.0.2
 
-  '@codemirror/view@6.38.4':
+  '@codemirror/view@6.38.6':
     dependencies:
       '@codemirror/state': 6.5.2
       crelt: 1.0.6
@@ -1589,7 +1589,7 @@ snapshots:
       '@codemirror/lint': 6.9.0
       '@codemirror/search': 6.5.11
       '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.38.4
+      '@codemirror/view': 6.38.6
 
   color-convert@2.0.1:
     dependencies:
