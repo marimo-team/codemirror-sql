@@ -19,7 +19,7 @@ importers:
         version: 6.5.2
       node-sql-parser:
         specifier: ^5.3.12
-        version: 5.3.12
+        version: 5.3.13
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.2.5
@@ -810,8 +810,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  node-sql-parser@5.3.12:
-    resolution: {integrity: sha512-GQBwA2e44qjbK0MzFwh5bNYefniV6cKT4KfjNDpuh/2EWipUEK1BCMc//moSidp8EF6fHB/EqJwUH9GCh9MAPg==}
+  node-sql-parser@5.3.13:
+    resolution: {integrity: sha512-heyWv3lLjKHpcBDMUSR+R0DohRYZTYq+Ro3hJ4m9Ia8ccdKbL5UijIaWr2L4co+bmmFuvBVZ4v23QW2PqvBFAA==}
     engines: {node: '>=8'}
 
   package-json-from-dist@1.0.1:
@@ -1828,7 +1828,7 @@ snapshots:
 
   nanoid@3.3.11: {}
 
-  node-sql-parser@5.3.12:
+  node-sql-parser@5.3.13:
     dependencies:
       '@types/pegjs': 0.10.6
       big-integer: 1.6.52
