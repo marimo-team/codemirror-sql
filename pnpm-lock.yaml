@@ -32,13 +32,13 @@ importers:
         version: 6.38.6
       '@vitest/coverage-v8':
         specifier: 3.2.4
-        version: 3.2.4(vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0))
+        version: 3.2.4(vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.1(postcss@8.5.6))(yaml@2.8.0))
       codemirror:
         specifier: ^6.0.2
         version: 6.0.2
       jsdom:
         specifier: ^27.0.0
-        version: 27.0.0(postcss@8.5.6)
+        version: 27.0.1(postcss@8.5.6)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -47,7 +47,7 @@ importers:
         version: 7.1.10(@types/node@22.13.1)(yaml@2.8.0)
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0)
+        version: 3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.1(postcss@8.5.6))(yaml@2.8.0)
 
 packages:
 
@@ -58,8 +58,8 @@ packages:
   '@asamuzakjp/css-color@4.0.5':
     resolution: {integrity: sha512-lMrXidNhPGsDjytDy11Vwlb6OIGrT3CmLg3VWNFyWkLWtijKl7xjvForlh8vuj0SHGjgl4qZEQzUmYTeQA2JFQ==}
 
-  '@asamuzakjp/dom-selector@6.6.2':
-    resolution: {integrity: sha512-+AG0jN9HTwfDLBhjhX1FKi6zlIAc/YGgEHlN/OMaHD1pOPFsC5CpYQpLkPX0aFjyaVmoq9330cQDCU4qnSL1qA==}
+  '@asamuzakjp/dom-selector@6.7.2':
+    resolution: {integrity: sha512-ccKogJI+0aiDhOahdjANIc9SDixSud1gbwdVrhn7kMopAtLXqsz9MKmQQtIl6Y5aC2IYq+j4dz/oedL2AVMmVQ==}
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
@@ -762,8 +762,8 @@ packages:
   js-tokens@9.0.1:
     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
 
-  jsdom@27.0.0:
-    resolution: {integrity: sha512-lIHeR1qlIRrIN5VMccd8tI2Sgw6ieYXSVktcSHaNe3Z5nE/tcPQYQWOq00wxMvYOsz+73eAkNenVvmPC6bba9A==}
+  jsdom@27.0.1:
+    resolution: {integrity: sha512-SNSQteBL1IlV2zqhwwolaG9CwhIhTvVHWg3kTss/cLE7H/X4644mtPQqYvCfsSrGQWt9hSZcgOXX8bOZaMN+kA==}
     engines: {node: '>=20'}
     peerDependencies:
       canvas: ^3.0.0
@@ -817,8 +817,8 @@ packages:
   package-json-from-dist@1.0.1:
     resolution: {integrity: sha512-UEZIS3/by4OC8vL3P2dTXRETpebLI2NiI5vIrjaD/5UtrkFX/tNbwjTSRAGC/+7CAo2pIcBaRgWmcBBHcsaCIw==}
 
-  parse5@7.3.0:
-    resolution: {integrity: sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw==}
+  parse5@8.0.0:
+    resolution: {integrity: sha512-9m4m5GSgXjL4AjumKzq1Fgfp3Z8rsvjRNbnkVwfu2ImRqE5D0LnY2QfDen18FSY9C573YU5XxSapdHZTZ2WolA==}
 
   path-key@3.1.1:
     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
@@ -1138,7 +1138,7 @@ snapshots:
       '@csstools/css-tokenizer': 3.0.4
       lru-cache: 11.2.2
 
-  '@asamuzakjp/dom-selector@6.6.2':
+  '@asamuzakjp/dom-selector@6.7.2':
     dependencies:
       '@asamuzakjp/nwsapi': 2.3.9
       bidi-js: 1.0.3
@@ -1476,7 +1476,7 @@ snapshots:
 
   '@types/pegjs@0.10.6': {}
 
-  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0))':
+  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.1(postcss@8.5.6))(yaml@2.8.0))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
@@ -1491,7 +1491,7 @@ snapshots:
       std-env: 3.10.0
       test-exclude: 7.0.1
       tinyrainbow: 2.0.0
-      vitest: 3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0)
+      vitest: 3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.1(postcss@8.5.6))(yaml@2.8.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -1768,9 +1768,9 @@ snapshots:
 
   js-tokens@9.0.1: {}
 
-  jsdom@27.0.0(postcss@8.5.6):
+  jsdom@27.0.1(postcss@8.5.6):
     dependencies:
-      '@asamuzakjp/dom-selector': 6.6.2
+      '@asamuzakjp/dom-selector': 6.7.2
       cssstyle: 5.3.1(postcss@8.5.6)
       data-urls: 6.0.0
       decimal.js: 10.6.0
@@ -1778,7 +1778,7 @@ snapshots:
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
       is-potential-custom-element-name: 1.0.1
-      parse5: 7.3.0
+      parse5: 8.0.0
       rrweb-cssom: 0.8.0
       saxes: 6.0.0
       symbol-tree: 3.2.4
@@ -1835,7 +1835,7 @@ snapshots:
 
   package-json-from-dist@1.0.1: {}
 
-  parse5@7.3.0:
+  parse5@8.0.0:
     dependencies:
       entities: 6.0.1
 
@@ -2024,7 +2024,7 @@ snapshots:
       fsevents: 2.3.3
       yaml: 2.8.0
 
-  vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.0(postcss@8.5.6))(yaml@2.8.0):
+  vitest@3.2.4(@types/node@22.13.1)(happy-dom@15.11.7)(jsdom@27.0.1(postcss@8.5.6))(yaml@2.8.0):
     dependencies:
       '@types/chai': 5.2.2
       '@vitest/expect': 3.2.4
@@ -2052,7 +2052,7 @@ snapshots:
     optionalDependencies:
       '@types/node': 22.13.1
       happy-dom: 15.11.7
-      jsdom: 27.0.0(postcss@8.5.6)
+      jsdom: 27.0.1(postcss@8.5.6)
     transitivePeerDependencies:
       - jiti
       - less
