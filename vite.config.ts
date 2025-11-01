@@ -15,8 +15,8 @@ export default defineConfig({
       {
         test: {
           environment: "jsdom",
-          exclude: ["vitest-example/**"],
-          include: ["src/**/*.test.ts", "src/**/__tests__/**/*.ts"],
+          exclude: ["src/**/browser_tests/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "src/**/__tests__/**/*.ts",],
         }
       },
       {
@@ -32,11 +32,8 @@ export default defineConfig({
             ui: false,
             headless: true,
           },
-          include: ["src/**/*.test.ts", "src/**/__tests__/**/*.ts", "vitest-example/**/*.test.ts"],
-          exclude: ["src/__tests__/index.test.ts"],
+          include: ["src/**/browser_tests/**/*.test.ts"],
           testTimeout: 5000,
-          hookTimeout: 5000,
-          teardownTimeout: 5000,
         },
       }
     ]

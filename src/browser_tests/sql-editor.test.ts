@@ -1,7 +1,7 @@
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
-import { NodeSqlParser, sqlExtension } from "../src/index.js";
 import { expect, test } from "vitest";
+import { NodeSqlParser, sqlExtension } from "../index.js";
 
 const schema: Record<string, string[]> = {
   users: ["id", "name", "email", "active", "status", "created_at"],
@@ -53,40 +53,35 @@ function initializeEditor(container: HTMLElement) {
   return editor;
 }
 
-test(
-  "SQL editor with input",
-  { timeout: 5000 },
-  async () => {
-    const container = document.createElement("div");
-    container.id = "sql-editor-test";
-    container.style.width = "800px";
-    container.style.height = "400px";
-    document.body.appendChild(container);
+test("SQL editor with input", { timeout: 5000 }, async () => {
+  const container = document.createElement("div");
+  container.id = "sql-editor-test";
+  container.style.width = "800px";
+  container.style.height = "400px";
+  document.body.appendChild(container);
 
-    const editor = initializeEditor(container);
+  const editor = initializeEditor(container);
 
-    const sqlText = "select * from tbl\n inner join";
-    
-    editor.dispatch({
-      changes: {
-        from: 0,
-        to: editor.state.doc.length,
-        insert: sqlText,
-      },
-      selection: {
-        anchor: sqlText.length,
-        head: sqlText.length,
-      },
-    });
+  const sqlText = "select * from tbl\n inner join";
 
-    editor.focus();
+  editor.dispatch({
+    changes: {
+      from: 0,
+      to: editor.state.doc.length,
+      insert: sqlText,
+    },
+    selection: {
+      anchor: sqlText.length,
+      head: sqlText.length,
+    },
+  });
 
-    // Wait a moment for potential browser freeze
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    
-    // If we get here, test should complete quickly
-    const content = editor.state.doc.toString();
-    expect(content).toBe(sqlText);
-  },
-);
+  editor.focus();
 
+  // Wait a moment for potential browser freeze
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  // If we get here, test should complete quickly
+  const content = editor.state.doc.toString();
+  expect(content).toBe(sqlText);
+});
