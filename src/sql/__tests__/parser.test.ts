@@ -314,15 +314,11 @@ describe("replaceBracketsWithQuotes", () => {
     expect(result.offsetRecord).toEqual({});
   });
 
-  it(
-    "should handle escaped quotes",
-    () => {
-      const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
-      const result = replaceBracketsWithQuotes(sql);
-      expect(result.sql).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
-    },
-    { fails: true }, // We don't support escaped quotes yet
-  );
+  it.fails("should handle escaped quotes", () => {
+    const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
+    const result = replaceBracketsWithQuotes(sql);
+    expect(result.sql).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
+  });
 
   it("should handle brackets at the beginning of string", () => {
     const sql = "{id} FROM users";
