@@ -37,6 +37,9 @@ jobs:
       - name: 📥 Install dependencies
         run: pnpm install --ignore-scripts --frozen-lockfile
 
+      - name: 🎭 Install Playwright browsers
+        run: pnpx playwright install chromium
+
       - name: 🔍 Type Check
         run: pnpm run typecheck
 
