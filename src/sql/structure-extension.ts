@@ -134,8 +134,16 @@ function createSqlGutterMarkers(
   const { currentStatement, allStatements, isFocused } = state;
 
   try {
-    // Create markers for all statements
+    const startLine = view.state.doc.lineAt(view.viewport.from).number;
+    const endLine = view.state.doc.lineAt(view.viewport.to).number;
+
+    // Create markers for all statements that intersect with the viewport
     for (const statement of allStatements) {
+      // Skip if statement doesn't intersect with viewport
+      if (statement.lineTo < startLine || statement.lineFrom > endLine) {
+        continue;
+      }
+
       const isCurrent =
         currentStatement?.from === statement.from && currentStatement?.to === statement.to;
 
@@ -146,8 +154,11 @@ function createSqlGutterMarkers(
 
       const marker = new SqlGutterMarker(config, isCurrent, statement.isValid, isFocused);
 
-      // Add marker to each line of the statement
-      for (let lineNum = statement.lineFrom; lineNum <= statement.lineTo; lineNum++) {
+      // Add marker to each line within the viewport of the statement
+      const statementFrom = Math.max(statement.lineFrom, startLine);
+      const statementTo = Math.min(statement.lineTo, endLine);
+
+      for (let lineNum = statementFrom; lineNum <= statementTo; lineNum++) {
         try {
           // Check if line number is within valid bounds
           if (lineNum < 1 || lineNum > view.state.doc.lines) {
