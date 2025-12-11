@@ -9,7 +9,7 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/marimo-team/codemirror-sql"
+    "url": "git+https://github.com/marimo-team/codemirror-sql.git"
   },
   "scripts": {
     "dev": "vite",
