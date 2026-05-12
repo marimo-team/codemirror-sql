@@ -22,7 +22,7 @@ importers:
         version: 5.4.0
     devDependencies:
       '@biomejs/biome':
-        specifier: ^2.3.8
+        specifier: 2.3.11
         version: 2.3.11
       '@codemirror/lang-sql':
         specifier: ^6.10.0
@@ -31,31 +31,31 @@ importers:
         specifier: ^6.39.2
         version: 6.39.2
       '@testing-library/dom':
-        specifier: ^10.4.1
+        specifier: 10.4.1
         version: 10.4.1
       '@vitest/browser-playwright':
-        specifier: ^4.0.15
+        specifier: 4.0.17
         version: 4.0.17(playwright@1.57.0)(vite@8.0.2(@types/node@22.13.1)(yaml@2.8.0))(vitest@4.0.17)
       '@vitest/coverage-v8':
         specifier: 4.0.17
         version: 4.0.17(@vitest/browser@4.0.17(vite@8.0.2(@types/node@22.13.1)(yaml@2.8.0))(vitest@4.0.17))(vitest@4.0.17)
       codemirror:
-        specifier: ^6.0.2
+        specifier: 6.0.2
         version: 6.0.2
       jsdom:
-        specifier: ^27.3.0
+        specifier: 27.3.0
         version: 27.3.0(postcss@8.5.8)
       playwright:
-        specifier: ^1.57.0
+        specifier: 1.57.0
         version: 1.57.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 5.9.3
         version: 5.9.3
       vite:
-        specifier: ^8.0.0
+        specifier: 8.0.2
         version: 8.0.2(@types/node@22.13.1)(yaml@2.8.0)
       vitest:
-        specifier: ^4.0.15
+        specifier: 4.0.17
         version: 4.0.17(@types/node@22.13.1)(@vitest/browser-playwright@4.0.17)(happy-dom@15.11.7)(jsdom@27.3.0(postcss@8.5.8))(lightningcss@1.32.0)(yaml@2.8.0)
 
 packages:
@@ -1026,10 +1026,6 @@ packages:
     resolution: {integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==}
     engines: {node: '>=14.19.0'}
 
-  postcss@8.5.6:
-    resolution: {integrity: sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==}
-    engines: {node: ^10 || ^12 || >=14}
-
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
     engines: {node: ^10 || ^12 || >=14}
@@ -1296,18 +1292,6 @@ packages:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
     engines: {node: '>=8'}
     hasBin: true
-
-  ws@8.18.3:
-    resolution: {integrity: sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
 
   ws@8.19.0:
     resolution: {integrity: sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg==}
@@ -2054,7 +2038,7 @@ snapshots:
       whatwg-encoding: 3.1.1
       whatwg-mimetype: 4.0.0
       whatwg-url: 15.1.0
-      ws: 8.18.3
+      ws: 8.19.0
       xml-name-validator: 5.0.0
     transitivePeerDependencies:
       - bufferutil
@@ -2167,12 +2151,6 @@ snapshots:
       fsevents: 2.3.2
 
   pngjs@7.0.0: {}
-
-  postcss@8.5.6:
-    dependencies:
-      nanoid: 3.3.11
-      picocolors: 1.1.1
-      source-map-js: 1.2.1
 
   postcss@8.5.8:
     dependencies:
@@ -2311,7 +2289,7 @@ snapshots:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.3)
       picomatch: 4.0.3
-      postcss: 8.5.6
+      postcss: 8.5.8
       rollup: 4.53.3
       tinyglobby: 0.2.15
     optionalDependencies:
@@ -2401,8 +2379,6 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
-
-  ws@8.18.3: {}
 
   ws@8.19.0: {}
 
