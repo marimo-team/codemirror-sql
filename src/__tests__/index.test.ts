@@ -42,8 +42,16 @@ describe("dialects.ts exports", () => {
     expect(sortedExports).toMatchInlineSnapshot(`
       [
         "BigQueryDialect",
+        "DremioDialect",
         "DuckDBDialect",
       ]
     `);
+  });
+
+  it("should expose a Dremio dialect with Dremio SQL keywords", () => {
+    expect(dialects.DremioDialect.spec.identifierQuotes).toBe('"');
+    expect(dialects.DremioDialect.spec.keywords?.split(" ")).toContain("reflection");
+    expect(dialects.DremioDialect.spec.keywords?.split(" ")).toContain("qualify");
+    expect(dialects.DremioDialect.spec.types?.split(" ")).toContain("struct");
   });
 });
