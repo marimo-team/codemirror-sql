@@ -9,7 +9,7 @@ A CodeMirror extension for SQL linting and visual gutter indicators. Built by an
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
 - 🔮 **CTE autocomplete** - Auto-complete support for CTEs
 - 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
-- 🔍 **Additional dialects** - DuckDB, BigQuery
+- 🔍 **Additional dialects** - DuckDB, BigQuery, Dremio
 - 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
 
 ## Installation
@@ -75,6 +75,7 @@ This extension adds support for additional dialects:
 
 - **DuckDB**
 - **BigQuery**
+- **Dremio**
 
 ## Keyword Completion
 
