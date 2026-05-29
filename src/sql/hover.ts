@@ -201,9 +201,10 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
       // 3. If neither, look in SQLNamespace and try to guess (fuzzy match)
 
       // Step 1: If no namespace match, try keywords
-      if (!createData && enableKeywords && resolvedKeywords[word]) {
-        debug("keywordResult", word, resolvedKeywords[word]);
-        const keywordData: KeywordTooltipData = { keyword: word, info: resolvedKeywords[word] };
+      const keywordInfo = resolvedKeywords[word];
+      if (!createData && enableKeywords && keywordInfo) {
+        debug("keywordResult", word, keywordInfo);
+        const keywordData: KeywordTooltipData = { keyword: word, info: keywordInfo };
         createData = {
           word,
           view,
@@ -268,6 +269,8 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
         return null;
       }
 
+      const tooltipData = createData;
+
       return {
         pos: start,
         end,
@@ -284,12 +287,12 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
           // Priority 2: Custom renderers and default renderers
           let tooltipContent: string | null = null;
 
-          if (createData.tooltipType === "keyword" && createData.keywordData) {
+          if (tooltipData.tooltipType === "keyword" && tooltipData.keywordData) {
             tooltipContent = tooltipRenderers.keyword
-              ? tooltipRenderers.keyword(createData.keywordData)
-              : createKeywordTooltip(createData.keywordData);
-          } else if (createData.tooltipType === "namespace" && createData.namespaceData) {
-            const namespaceData = createData.namespaceData;
+              ? tooltipRenderers.keyword(tooltipData.keywordData)
+              : createKeywordTooltip(tooltipData.keywordData);
+          } else if (tooltipData.tooltipType === "namespace" && tooltipData.namespaceData) {
+            const namespaceData = tooltipData.namespaceData;
             const { semanticType } = namespaceData.item;
 
             if (semanticType === "table" && tooltipRenderers.table) {
