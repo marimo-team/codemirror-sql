@@ -28,34 +28,34 @@ importers:
         specifier: ^6.39.2
         version: 6.43.0
       '@testing-library/dom':
-        specifier: ^10.4.1
+        specifier: 10.4.1
         version: 10.4.1
       '@vitest/browser-playwright':
-        specifier: ^4.1.6
+        specifier: 4.1.6
         version: 4.1.6(playwright@1.60.0)(vite@8.0.13)(vitest@4.1.6)
       '@vitest/coverage-v8':
         specifier: 4.1.6
         version: 4.1.6(@vitest/browser@4.1.6)(vitest@4.1.6)
       codemirror:
-        specifier: ^6.0.2
+        specifier: 6.0.2
         version: 6.0.2
       jsdom:
-        specifier: ^29.0.0
+        specifier: 29.1.1
         version: 29.1.1
       oxlint:
-        specifier: ^1.64.0
+        specifier: 1.64.0
         version: 1.64.0
       playwright:
-        specifier: ^1.57.0
+        specifier: 1.60.0
         version: 1.60.0
       typescript:
-        specifier: ^6.0.0
+        specifier: 6.0.3
         version: 6.0.3
       vite:
-        specifier: ^8.0.13
+        specifier: 8.0.13
         version: 8.0.13
       vitest:
-        specifier: ^4.1.6
+        specifier: 4.1.6
         version: 4.1.6(@vitest/browser-playwright@4.1.6)(@vitest/coverage-v8@4.1.6)(jsdom@29.1.1)(vite@8.0.13)
 
 packages:
