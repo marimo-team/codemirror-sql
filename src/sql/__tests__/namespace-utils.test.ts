@@ -570,7 +570,7 @@ describe("edge cases and error handling", () => {
 
   it("should handle circular references without infinite loops", () => {
     // Create a namespace with potential circular reference
-    // biome-ignore lint/suspicious/noExplicitAny: Mock SQLNamespace
+    // oxlint-disable-next-line no-explicit-any -- Mock SQLNamespace
     const circularNamespace: any = {
       parent: {
         child: null,

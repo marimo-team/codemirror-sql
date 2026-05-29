@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check --write",
+    "lint": "oxlint --fix",
     "test": "vitest",
     "demo": "vite build",
     "build": "tsc",
@@ -36,7 +36,6 @@
     "@codemirror/view": "^6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.8",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/view": "^6.39.2",
     "@testing-library/dom": "^10.4.1",
@@ -44,6 +43,7 @@
     "@vitest/coverage-v8": "4.1.7",
     "codemirror": "^6.0.2",
     "jsdom": "^29.0.0",
+    "oxlint": "^1.66.0",
     "playwright": "^1.57.0",
     "typescript": "^6.0.0",
     "vite": "^8.0.0",
