@@ -24,7 +24,9 @@ export default defineConfig({
           name: "browser",
           browser: {
             enabled: true,
-            provider: playwright(),
+            provider: playwright({
+              launchOptions: process.env.CI ? { channel: "chrome" } : undefined,
+            }),
             // https://vitest.dev/guide/browser/playwright
             instances: [
               { browser: 'chromium' },
