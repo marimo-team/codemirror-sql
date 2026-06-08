@@ -80,6 +80,11 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: 📥 Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: package
+
       - name: ⎔ Setup pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
 
@@ -88,11 +93,6 @@ jobs:
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
-
-      - name: 📥 Download package artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: package
 
       - name: 📦 Publish to NPM
         run: pnpm publish --no-git-checks --ignore-scripts
