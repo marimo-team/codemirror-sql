@@ -6,8 +6,10 @@ export default defineConfig({
   test: {
     watch: false,
     coverage: {
+      enabled: true,
       provider: "v8",
-      reporter: ["text", "json", "html"],
+      reportOnFailure: true,
+      reporter: ["text", "json", "html", "json-summary"],
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/**/__tests__/**", "src/debug.ts"],
     },
