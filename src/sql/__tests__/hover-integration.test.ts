@@ -950,7 +950,7 @@ describe("Query-aware hover behavior - edge cases", () => {
 
       it("still resolves aliases while the statement is mid-edit", async () => {
         const source = createHoverSource({ schema });
-        // Trailing WHERE makes the statement unparseable
+        // Trailing WHERE makes the statement unparsable
         const doc = "SELECT u.name FROM users u WHERE";
         const view = createMockView(doc);
 

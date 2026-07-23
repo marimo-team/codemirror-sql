@@ -133,7 +133,7 @@ describe("aliasColumnCompletionSource", () => {
     expect(result).toBeNull();
   });
 
-  it("still completes while the statement is mid-edit (unparseable)", async () => {
+  it("still completes while the statement is mid-edit (unparsable)", async () => {
     const doc = "SELECT u. FROM users u WHERE";
     const result = await complete(doc, { schema, pos: "SELECT u.".length });
     expect(labels(result)).toEqual(["id", "username", "email"]);

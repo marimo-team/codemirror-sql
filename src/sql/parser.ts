@@ -338,8 +338,10 @@ function replaceBracketsWithQuotes(sql: string): {
 } {
   const offsetRecord: Record<number, number> = {};
 
+  // Quote bodies use the unrolled-loop form (`[^"\\]*(?:\\.[^"\\]*)*`) instead
+  // of `(?:[^"\\]|\\.)*` to avoid polynomial backtracking on unclosed strings
   const replacedSql = sql.replace(
-    /("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(\{[^}]*\})/g,
+    /("[^"\\]*(?:\\.[^"\\]*)*")|('[^'\\]*(?:\\.[^'\\]*)*')|(\{[^}]*\})/g,
     (match, doubleQuoted, singleQuoted, bracket, offset) => {
       // If it's a quoted string, return it as-is
       if (doubleQuoted || singleQuoted) {

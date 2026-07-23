@@ -112,9 +112,9 @@ describe("analyzeQueryContext", () => {
     });
   });
 
-  describe("regex fallback for unparseable statements", () => {
+  describe("regex fallback for unparsable statements", () => {
     it("still resolves aliases mid-edit", async () => {
-      // Trailing dot makes this unparseable
+      // Trailing dot makes this unparsable
       const context = await analyze("SELECT u. FROM users u");
       expect(context.aliases.get("u")).toBe("users");
       expect(context.tables).toEqual([{ name: "users", path: ["users"], alias: "u" }]);

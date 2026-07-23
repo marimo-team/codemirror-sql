@@ -146,7 +146,7 @@ interface MutableContext {
 /**
  * Records a FROM/target entry of shape `{db?, catalog?, schema?, table, as?}`.
  * Expression sources (subqueries, table functions) carry no `table` string and
- * are skipped; their inner SELECTs are reached by the generic walk.
+ * are skipped; their inner SELECT nodes are reached by the generic walk.
  */
 function recordTableEntry(entry: AstNode, ctx: MutableContext): void {
   if (typeof entry.table !== "string" || entry.table.length === 0) {
