@@ -57,6 +57,45 @@ const sqlGutterStateField = StateField.define<SqlGutterState>({
   },
 });
 
+/**
+ * Computes the background color and opacity for a gutter marker based on its
+ * state and config. Extracted as a pure function so the (many) branches can be
+ * unit-tested without constructing an EditorView.
+ */
+export function computeMarkerStyle(
+  config: SqlGutterConfig,
+  state: { isCurrent: boolean; isValid: boolean; isFocused: boolean },
+): { backgroundColor: string; opacity: string } {
+  const { isCurrent, isValid, isFocused } = state;
+
+  // Set background color based on state
+  let backgroundColor = config.backgroundColor || "#3b82f6";
+  if (!isValid && config.showInvalid !== false) {
+    backgroundColor = config.errorBackgroundColor || "#ef4444";
+  }
+
+  // Opacity for the "normal" (focused, or focus-agnostic) case
+  const normalOpacity = isCurrent ? "1" : (config.inactiveOpacity ?? 0.3).toString();
+
+  // Calculate opacity based on focus state
+  let opacity: string;
+  if (!isFocused) {
+    if (config.unfocusedOpacity !== undefined) {
+      opacity = config.unfocusedOpacity.toString();
+    } else if (config.hideWhenNotFocused) {
+      opacity = "0";
+    } else {
+      // Default behavior when not focused - use normal opacity
+      opacity = normalOpacity;
+    }
+  } else {
+    // Normal focused behavior
+    opacity = normalOpacity;
+  }
+
+  return { backgroundColor, opacity };
+}
+
 class SqlGutterMarker extends GutterMarker {
   constructor(
     private config: SqlGutterConfig,
@@ -71,27 +110,11 @@ class SqlGutterMarker extends GutterMarker {
     const el = document.createElement("div");
     el.className = "cm-sql-gutter-marker";
 
-    // Set background color based on state
-    let backgroundColor = this.config.backgroundColor || "#3b82f6";
-    if (!this.isValid && this.config.showInvalid !== false) {
-      backgroundColor = this.config.errorBackgroundColor || "#ef4444";
-    }
-
-    // Calculate opacity based on focus state
-    let opacity: string;
-    if (!this.isFocused) {
-      if (this.config.unfocusedOpacity !== undefined) {
-        opacity = this.config.unfocusedOpacity.toString();
-      } else if (this.config.hideWhenNotFocused) {
-        opacity = "0";
-      } else {
-        // Default behavior when not focused - use normal opacity
-        opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity ?? 0.3).toString();
-      }
-    } else {
-      // Normal focused behavior
-      opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity ?? 0.3).toString();
-    }
+    const { backgroundColor, opacity } = computeMarkerStyle(this.config, {
+      isCurrent: this.isCurrent,
+      isValid: this.isValid,
+      isFocused: this.isFocused,
+    });
 
     el.style.cssText = `
       background: ${backgroundColor};
