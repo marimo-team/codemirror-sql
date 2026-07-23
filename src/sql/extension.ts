@@ -95,13 +95,19 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
   if (enableSemanticLinting) {
     // Reuse the syntax linter's parser/analyzer so dialect-specific setups
     // don't have to configure them twice (and semantic checks don't disagree
-    // with the syntax linter about what parses)
+    // with the syntax linter about what parses). The linter's analyzer is
+    // only inherited when its parser is too — an analyzer is bound to the
+    // parser it was built with, and mixing it with a different semantic
+    // parser would gate statements with the wrong dialect.
+    const semanticParser = semanticLinterConfig?.parser ?? linterConfig?.parser;
+    const semanticAnalyzer =
+      semanticLinterConfig?.structureAnalyzer ??
+      (semanticLinterConfig?.parser == null ? linterConfig?.structureAnalyzer : undefined);
     extensions.push(
       sqlSemanticLinter({
         ...semanticLinterConfig,
-        parser: semanticLinterConfig?.parser ?? linterConfig?.parser,
-        structureAnalyzer:
-          semanticLinterConfig?.structureAnalyzer ?? linterConfig?.structureAnalyzer,
+        parser: semanticParser,
+        structureAnalyzer: semanticAnalyzer,
       }),
     );
   }
