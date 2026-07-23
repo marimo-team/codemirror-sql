@@ -7,6 +7,10 @@ export {
   unqualifiedColumnCompletionSource,
 } from "./sql/column-completion-source.js";
 export {
+  type SqlCompletionConfig,
+  sqlCompletion,
+} from "./sql/completion-extension.js";
+export {
   createCteCompletionSource,
   type CteCompletionConfig,
   cteCompletionSource,

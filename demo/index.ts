@@ -4,15 +4,13 @@ import { Compartment, type EditorState, StateEffect, StateField } from "@codemir
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import {
-  aliasColumnCompletionSource,
-  createCteCompletionSource,
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
   QueryContextAnalyzer,
   type SupportedDialects,
+  sqlCompletion,
   sqlExtension,
-  unqualifiedColumnCompletionSource,
 } from "../src/index.js";
 import { tableTooltipRenderer } from "./custom-renderers.js";
 import { defaultSqlDoc, schema } from "./data.js";
@@ -185,18 +183,11 @@ function initializeEditor() {
         parser,
       },
     }),
-    defaultDialect.language.data.of({
-      // Statement-scoped CTE names and their output columns
-      autocomplete: createCteCompletionSource({ parser }),
-    }),
-    defaultDialect.language.data.of({
-      // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
-      autocomplete: aliasColumnCompletionSource({ schema, parser, contextAnalyzer }),
-    }),
-    defaultDialect.language.data.of({
-      // Complete `SELECT e` -> `email` because `FROM users` is in the statement
-      autocomplete: unqualifiedColumnCompletionSource({ schema, parser, contextAnalyzer }),
-    }),
+    // Register all schema-aware completion sources at once:
+    // - CTE names and their output columns
+    // - `u.` -> columns of `users` in `SELECT ... FROM users u`
+    // - `SELECT e` -> `email` because `FROM users` is in the statement
+    sqlCompletion({ dialect: defaultDialect, schema, parser, contextAnalyzer }),
     // Custom theme for better SQL editing
     EditorView.theme({
       "&": {
