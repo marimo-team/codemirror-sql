@@ -163,6 +163,66 @@ describe("lint source", () => {
     }
   });
 
+  it("should position diagnostics correctly when a line comment precedes the statement", async () => {
+    const doc = [
+      "-- Valid queries (no errors):",
+      "SELECT id, name, email",
+      "FROM users",
+      "WHERE active == true",
+      "ORDER BY created_at DESC;",
+    ].join("\n");
+    const diagnostics = await lint(doc);
+
+    expect(diagnostics).toHaveLength(1);
+    const text = Text.of(doc.split("\n"));
+    // The error is at the "==" operator on line 4, not shifted up by the comment
+    expect(text.lineAt(diagnostics[0].from).number).toBe(4);
+    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+  });
+
+  it("should position diagnostics correctly when a multi-line comment precedes the statement", async () => {
+    const doc = [
+      "/* header",
+      "comment */",
+      "SELECT id",
+      "FROM users",
+      "WHERE active == true;",
+    ].join("\n");
+    const diagnostics = await lint(doc);
+
+    expect(diagnostics).toHaveLength(1);
+    const text = Text.of(doc.split("\n"));
+    expect(text.lineAt(diagnostics[0].from).number).toBe(5);
+    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+  });
+
+  it("should position diagnostics correctly when a comment appears inside the statement", async () => {
+    const doc = [
+      "SELECT id",
+      "-- pick the table",
+      "FROM users",
+      "WHERE active == true;",
+    ].join("\n");
+    const diagnostics = await lint(doc);
+
+    expect(diagnostics).toHaveLength(1);
+    const text = Text.of(doc.split("\n"));
+    expect(text.lineAt(diagnostics[0].from).number).toBe(4);
+    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+  });
+
+  it("should not report diagnostics for valid statements with comments", async () => {
+    const doc = [
+      "-- fetch users",
+      "SELECT id /* inline */, name",
+      "FROM users;",
+      "/* another",
+      "   comment */",
+      "SELECT 2;",
+    ].join("\n");
+    expect(await lint(doc)).toEqual([]);
+  });
+
   it("should reuse errors from a provided structure analyzer without re-validating", async () => {
     const parser = new NodeSqlParser();
     const validateSpy = vi.spyOn(parser, "validateSql");

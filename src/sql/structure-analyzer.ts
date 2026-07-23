@@ -104,7 +104,7 @@ export class SqlStructureAnalyzer {
       const fromLine = state.doc.lineAt(from);
       const toLine = state.doc.lineAt(to);
 
-      // Strip comments from the statement content
+      // Strip comments to detect comment-only parts and determine the type
       const strippedContent = this.stripComments(trimmedPart);
 
       // Skip if the statement is empty after stripping comments
@@ -113,8 +113,9 @@ export class SqlStructureAnalyzer {
         continue;
       }
 
-      // Parse the statement to determine validity and type (use stripped content)
-      const parseResult = await this.parser.parse(strippedContent, { state });
+      // Parse the original content (comments included) so error positions
+      // reported by the parser line up with the document
+      const parseResult = await this.parser.parse(trimmedPart, { state });
       const type = this.determineStatementType(strippedContent);
 
       // Remove trailing semicolon from content for cleaner display

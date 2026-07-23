@@ -77,7 +77,7 @@ function convertStatementErrorToDiagnostic(
     from = line.from + Math.max(0, error.column - 1);
   }
   // Clamp within the statement's range in case the parser's reported
-  // position drifts (e.g. comments are stripped before parsing)
+  // position drifts
   from = Math.max(stmt.from, Math.min(from, stmt.to));
 
   return {
