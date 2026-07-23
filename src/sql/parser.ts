@@ -184,19 +184,32 @@ export class NodeSqlParser implements SqlParser {
     }
 
     /**
-     * Add offset to the column position to get the correct position of the error
+     * Map the error column back to the original (pre-replacement) SQL
      * SELECT {id} FRO users
      *             ^ error position should be here
      *
-     * SELECT {id} FRO users
-     *                   ^ user sees this
+     * SELECT '{id}' FRO users
+     *                   ^ parser reports this
      * So in this case, we subtract the offset from the column position.
      *
-     * If the error is before the brackets, we don't need to add the offset because it just increases the string length
-     * Column position will be the same as the user sees.
+     * offsetRecord keys are absolute offsets into the pre-replacement SQL,
+     * while the parser reports line-relative columns, so only replacements
+     * on the error's own line (and before the error column) shift it.
+     * Replacements never add or remove newlines, so line numbers match.
      */
-    for (const [position, offset] of Object.entries(this.offsetRecord)) {
-      if (column > parseInt(position, 10)) {
+    const replacements = Object.entries(this.offsetRecord)
+      .map(([position, offset]) => ({ position: parseInt(position, 10), offset }))
+      .sort((a, b) => a.position - b.position);
+    let shift = 0;
+    for (const { position, offset } of replacements) {
+      const replacedPosition = position + shift;
+      shift += offset;
+
+      const beforeReplacement = sql.slice(0, replacedPosition);
+      const replacementLine = (beforeReplacement.match(/\n/g)?.length ?? 0) + 1;
+      const replacementColumn = replacedPosition - beforeReplacement.lastIndexOf("\n");
+
+      if (line === replacementLine && column > replacementColumn) {
         column -= offset;
       }
     }
@@ -209,7 +222,7 @@ export class NodeSqlParser implements SqlParser {
     return {
       message: this.cleanErrorMessage(message),
       line: Math.max(1, line),
-      column: column,
+      column: Math.max(1, column),
       severity: "error" as const,
     };
   }

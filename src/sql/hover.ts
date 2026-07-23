@@ -144,13 +144,14 @@ export interface SqlHoverConfig {
 }
 
 /**
- * Creates a hover tooltip extension for SQL
+ * Creates the hover source used by the sqlHover extension
  */
-export function sqlHover(config: SqlHoverConfig = {}): Extension {
+function createHoverSource(
+  config: SqlHoverConfig = {},
+): (view: EditorView, pos: number, side: number) => Promise<Tooltip | null> {
   const {
     schema = {},
     keywords = {},
-    hoverTime = 300,
     enableKeywords = true,
     enableTables = true,
     enableColumns = true,
@@ -162,170 +163,188 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
 
   let keywordsPromise: Promise<Record<string, SqlKeywordInfo>> | null = null;
 
-  return hoverTooltip(
-    async (view: EditorView, pos: number, side: number): Promise<Tooltip | null> => {
-      const { from, to, text } = view.state.doc.lineAt(pos);
-      let start = pos;
-      let end = pos;
+  return async (view: EditorView, pos: number, side: number): Promise<Tooltip | null> => {
+    const { from, to, text } = view.state.doc.lineAt(pos);
+    let start = pos;
+    let end = pos;
 
-      if (keywordsPromise === null) {
-        keywordsPromise =
-          typeof keywords === "function" ? keywords(view) : Promise.resolve(keywords);
+    if (keywordsPromise === null) {
+      keywordsPromise =
+        typeof keywords === "function" ? keywords(view) : Promise.resolve(keywords);
+    }
+
+    let resolvedKeywords: Record<string, SqlKeywordInfo>;
+    try {
+      resolvedKeywords = await keywordsPromise;
+    } catch (error) {
+      // Don't cache a failed fetch; retry on the next hover
+      keywordsPromise = null;
+      debug("failed to resolve keywords", error);
+      resolvedKeywords = {};
+    }
+
+    // Find word boundaries (including dots for table.column syntax)
+    while (start > from && /[\w.]/.test(text[start - from - 1] ?? "")) start--;
+    while (end < to && /[\w.]/.test(text[end - from] ?? "")) end++;
+
+    // Validate pointer position within word
+    if ((start === pos && side < 0) || (end === pos && side > 0)) {
+      return null;
+    }
+
+    const word = text.slice(start - from, end - from).toLowerCase();
+    if (!word || word.length === 0) {
+      return null;
+    }
+
+    const resolvedSchema = typeof schema === "function" ? schema(view) : schema;
+
+    let createData: TooltipCreateData | null = null;
+
+    debug(`hover word: '${word}'`);
+
+    // Implement preference order:
+    // 1. Look in keywords if it exists
+    // 2. Look for it in SQLNamespace as is
+    // 3. If neither, look in SQLNamespace and try to guess (fuzzy match)
+
+    // Step 1: If no namespace match, try keywords
+    // Own-property check so Object.prototype members don't match
+    const keywordInfo = Object.hasOwn(resolvedKeywords, word)
+      ? resolvedKeywords[word]
+      : undefined;
+    if (!createData && enableKeywords && keywordInfo) {
+      debug("keywordResult", word, keywordInfo);
+      const keywordData: KeywordTooltipData = { keyword: word, info: keywordInfo };
+      createData = {
+        word,
+        view,
+        pos,
+        tooltipType: "keyword",
+        keywordData,
+      };
+    }
+
+    // Step 2: Try to resolve directly in SQLNamespace (query-aware)
+    if (!createData && (enableTables || enableColumns) && resolvedSchema) {
+      // Get the current SQL query to filter schema by referenced tables
+      const currentQuery = view.state.doc.toString();
+      const tableList = await parser.extractTableReferences(currentQuery);
+      const tableRefs = new Set(tableList.map((table: string) => table.toLowerCase()));
+
+      // Filter schema to only include tables referenced in the current query
+      const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
+
+      // Try to resolve in the filtered schema first (query-aware)
+      let namespaceResult = resolveNamespaceItem(filteredSchema, word, {
+        enableFuzzySearch,
+      });
+
+      // If no result in filtered schema and no tables were found in query,
+      // fall back to the full schema to show any relevant information
+      if (!namespaceResult && tableRefs.size === 0) {
+        namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
+          enableFuzzySearch,
+        });
       }
 
-      const resolvedKeywords = await keywordsPromise;
+      if (namespaceResult) {
+        debug(
+          "namespaceResult (query-aware)",
+          word,
+          namespaceResult,
+          "tableRefs:",
+          Array.from(tableRefs),
+        );
+        const namespaceData: NamespaceTooltipData = {
+          item: namespaceResult,
+          word,
+          resolvedSchema: tableRefs.size > 0 ? filteredSchema : resolvedSchema,
+        };
 
-      // Find word boundaries (including dots for table.column syntax)
-      while (start > from && /[\w.]/.test(text[start - from - 1] ?? "")) start--;
-      while (end < to && /[\w.]/.test(text[end - from] ?? "")) end++;
-
-      // Validate pointer position within word
-      if ((start === pos && side < 0) || (end === pos && side > 0)) {
-        return null;
-      }
-
-      const word = text.slice(start - from, end - from).toLowerCase();
-      if (!word || word.length === 0) {
-        return null;
-      }
-
-      const resolvedSchema = typeof schema === "function" ? schema(view) : schema;
-
-      let createData: TooltipCreateData | null = null;
-
-      debug(`hover word: '${word}'`);
-
-      // Implement preference order:
-      // 1. Look in keywords if it exists
-      // 2. Look for it in SQLNamespace as is
-      // 3. If neither, look in SQLNamespace and try to guess (fuzzy match)
-
-      // Step 1: If no namespace match, try keywords
-      const keywordInfo = resolvedKeywords[word];
-      if (!createData && enableKeywords && keywordInfo) {
-        debug("keywordResult", word, keywordInfo);
-        const keywordData: KeywordTooltipData = { keyword: word, info: keywordInfo };
         createData = {
           word,
           view,
           pos,
-          tooltipType: "keyword",
-          keywordData,
+          tooltipType: "namespace",
+          namespaceData,
         };
+      } else {
+        debug("No namespace item found for:", word);
       }
+    }
 
-      // Step 2: Try to resolve directly in SQLNamespace (query-aware)
-      if (!createData && (enableTables || enableColumns) && resolvedSchema) {
-        // Get the current SQL query to filter schema by referenced tables
-        const currentQuery = view.state.doc.toString();
-        const tableList = await parser.extractTableReferences(currentQuery);
-        const tableRefs = new Set(tableList.map((table: string) => table.toLowerCase()));
+    // Step 3: Fuzzy matching is handled by resolveNamespaceItem if enableFuzzySearch is true
 
-        // Filter schema to only include tables referenced in the current query
-        const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
+    if (!createData) {
+      return null;
+    }
 
-        // Try to resolve in the filtered schema first (query-aware)
-        let namespaceResult = resolveNamespaceItem(filteredSchema, word, {
-          enableFuzzySearch,
-        });
+    const tooltipData = createData;
 
-        // If no result in filtered schema and no tables were found in query,
-        // fall back to the full schema to show any relevant information
-        if (!namespaceResult && tableRefs.size === 0) {
-          namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
-            enableFuzzySearch,
-          });
+    return {
+      pos: start,
+      end,
+      above: true,
+      create(createView: EditorView) {
+        // Priority 1: Custom tooltipRender function
+        if (tooltipRender) {
+          const customElement = tooltipRender(word, createView, pos);
+          if (customElement) {
+            return { dom: customElement };
+          }
         }
 
-        if (namespaceResult) {
-          debug(
-            "namespaceResult (query-aware)",
-            word,
-            namespaceResult,
-            "tableRefs:",
-            Array.from(tableRefs),
-          );
-          const namespaceData: NamespaceTooltipData = {
-            item: namespaceResult,
-            word,
-            resolvedSchema: tableRefs.size > 0 ? filteredSchema : resolvedSchema,
-          };
+        // Priority 2: Custom renderers and default renderers
+        let tooltipContent: string | null = null;
 
-          createData = {
-            word,
-            view,
-            pos,
-            tooltipType: "namespace",
-            namespaceData,
-          };
-        } else {
-          debug("No namespace item found for:", word);
+        if (tooltipData.tooltipType === "keyword" && tooltipData.keywordData) {
+          tooltipContent = tooltipRenderers.keyword
+            ? tooltipRenderers.keyword(tooltipData.keywordData)
+            : createKeywordTooltip(tooltipData.keywordData);
+        } else if (tooltipData.tooltipType === "namespace" && tooltipData.namespaceData) {
+          const namespaceData = tooltipData.namespaceData;
+          const { semanticType } = namespaceData.item;
+
+          if (semanticType === "table" && tooltipRenderers.table) {
+            tooltipContent = tooltipRenderers.table(namespaceData);
+          } else if (semanticType === "column" && tooltipRenderers.column) {
+            tooltipContent = tooltipRenderers.column(namespaceData);
+          } else if (
+            (semanticType === "database" ||
+              semanticType === "schema" ||
+              semanticType === "namespace") &&
+            tooltipRenderers.namespace
+          ) {
+            tooltipContent = tooltipRenderers.namespace(namespaceData);
+          } else {
+            // Fallback to default renderer
+            tooltipContent = createNamespaceTooltip(namespaceData.item);
+          }
         }
-      }
 
-      // Step 3: Fuzzy matching is handled by resolveNamespaceItem if enableFuzzySearch is true
+        if (!tooltipContent) {
+          return { dom: document.createElement("div") };
+        }
 
-      if (!createData) {
-        return null;
-      }
-
-      const tooltipData = createData;
-
-      return {
-        pos: start,
-        end,
-        above: true,
-        create(createView: EditorView) {
-          // Priority 1: Custom tooltipRender function
-          if (tooltipRender) {
-            const customElement = tooltipRender(word, createView, pos);
-            if (customElement) {
-              return { dom: customElement };
-            }
-          }
-
-          // Priority 2: Custom renderers and default renderers
-          let tooltipContent: string | null = null;
-
-          if (tooltipData.tooltipType === "keyword" && tooltipData.keywordData) {
-            tooltipContent = tooltipRenderers.keyword
-              ? tooltipRenderers.keyword(tooltipData.keywordData)
-              : createKeywordTooltip(tooltipData.keywordData);
-          } else if (tooltipData.tooltipType === "namespace" && tooltipData.namespaceData) {
-            const namespaceData = tooltipData.namespaceData;
-            const { semanticType } = namespaceData.item;
-
-            if (semanticType === "table" && tooltipRenderers.table) {
-              tooltipContent = tooltipRenderers.table(namespaceData);
-            } else if (semanticType === "column" && tooltipRenderers.column) {
-              tooltipContent = tooltipRenderers.column(namespaceData);
-            } else if (
-              (semanticType === "database" ||
-                semanticType === "schema" ||
-                semanticType === "namespace") &&
-              tooltipRenderers.namespace
-            ) {
-              tooltipContent = tooltipRenderers.namespace(namespaceData);
-            } else {
-              // Fallback to default renderer
-              tooltipContent = createNamespaceTooltip(namespaceData.item);
-            }
-          }
-
-          if (!tooltipContent) {
-            return { dom: document.createElement("div") };
-          }
-
-          const dom = document.createElement("div");
-          dom.className = "cm-sql-hover-tooltip";
-          dom.innerHTML = tooltipContent;
-          return { dom };
-        },
-      };
-    },
-    { hoverTime },
-  );
+        const dom = document.createElement("div");
+        dom.className = "cm-sql-hover-tooltip";
+        dom.innerHTML = tooltipContent;
+        return { dom };
+      },
+    };
+  };
 }
+
+/**
+ * Creates a hover tooltip extension for SQL
+ */
+export function sqlHover(config: SqlHoverConfig = {}): Extension {
+  const { hoverTime = 300 } = config;
+  return hoverTooltip(createHoverSource(config), { hoverTime });
+}
+
+export const exportedForTesting = { createHoverSource };
 
 /**
  * Creates HTML content for namespace-resolved items

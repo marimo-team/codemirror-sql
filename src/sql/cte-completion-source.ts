@@ -1,6 +1,52 @@
 import type { Completion, CompletionContext, CompletionSource } from "@codemirror/autocomplete";
 
 /**
+ * Extracts the names of all CTEs declared in WITH clauses in the document
+ */
+function extractCteNames(doc: string): Set<string> {
+  const cteNames = new Set<string>();
+
+  // Start of a WITH clause (optionally recursive)
+  const withPattern = /\bWITH\s+(?:RECURSIVE\s+)?/gi;
+  // CTE name with an optional column list, followed by AS (
+  const ctePattern = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\)\s*)?\bAS\s*\(/i;
+
+  let withMatch = withPattern.exec(doc);
+  while (withMatch !== null) {
+    let pos = withMatch.index + withMatch[0].length;
+
+    for (;;) {
+      const cteMatch = ctePattern.exec(doc.slice(pos));
+      const cteName = cteMatch?.[1];
+      if (!cteName) {
+        break;
+      }
+      cteNames.add(cteName);
+
+      // Skip past the CTE body, tracking nested parentheses
+      let i = pos + cteMatch[0].length;
+      let depth = 1;
+      while (i < doc.length && depth > 0) {
+        if (doc[i] === "(") depth++;
+        else if (doc[i] === ")") depth--;
+        i++;
+      }
+
+      // A comma introduces the next CTE in the same WITH clause
+      const separator = /^\s*,\s*/.exec(doc.slice(i));
+      if (!separator) {
+        break;
+      }
+      pos = i + separator[0].length;
+    }
+
+    withMatch = withPattern.exec(doc);
+  }
+
+  return cteNames;
+}
+
+/**
  * A completion source for Common Table Expressions (CTEs) in SQL
  *
  * This function provides autocomplete suggestions for CTE references based on
@@ -22,42 +68,7 @@ import type { Completion, CompletionContext, CompletionSource } from "@codemirro
  */
 export const cteCompletionSource: CompletionSource = (context: CompletionContext) => {
   const doc = context.state.doc.toString();
-  const cteNames = new Set<string>();
-
-  // Find all CTEs in the document using regex pattern
-  // Match WITH clause and extract CTE names
-  const ctePattern = /WITH\s+(?:RECURSIVE\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\(/gi;
-  let match: RegExpExecArray | null;
-
-  match = ctePattern.exec(doc);
-  while (match !== null) {
-    const cteName = match[1];
-    if (cteName) {
-      cteNames.add(cteName);
-    }
-    match = ctePattern.exec(doc);
-  }
-
-  // Also match additional CTEs in the same WITH clause (comma-separated)
-  const additionalCtePattern =
-    /WITH\s+(?:RECURSIVE\s+)?[a-zA-Z_][a-zA-Z0-9_]*\s+AS\s*\([^)]*\)(?:\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\([^)]*\))*/gi;
-
-  match = additionalCtePattern.exec(doc);
-  while (match !== null) {
-    // Extract all comma-separated CTEs
-    const fullMatch = match[0];
-    const cteChainPattern = /([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\(/g;
-    let cteMatch: RegExpExecArray | null = cteChainPattern.exec(fullMatch);
-
-    while (cteMatch !== null) {
-      const cteName = cteMatch[1];
-      if (cteName) {
-        cteNames.add(cteName);
-      }
-      cteMatch = cteChainPattern.exec(fullMatch);
-    }
-    match = additionalCtePattern.exec(doc);
-  }
+  const cteNames = extractCteNames(doc);
 
   // If no CTEs found, return null (no completions)
   if (cteNames.size === 0) {

@@ -39,16 +39,15 @@ export class SqlStructureAnalyzer {
    */
   async analyzeDocument(state: EditorState): Promise<SqlStatement[]> {
     const content = state.doc.toString();
-    const cacheKey = this.generateCacheKey(content);
 
     // Check cache
-    const cached = this.cache.get(cacheKey);
+    const cached = this.cache.get(content);
     if (cached) {
       return cached;
     }
 
     const statements = await this.extractStatements(content, state);
-    this.cache.set(cacheKey, statements);
+    this.cache.set(content, statements);
 
     // Keep cache size reasonable
     if (this.cache.size > this.MAX_CACHE_SIZE) {
@@ -308,17 +307,6 @@ export class SqlStructureAnalyzer {
     }
 
     return result;
-  }
-
-  private generateCacheKey(content: string): string {
-    // Simple hash function for caching
-    let hash = 0;
-    for (let i = 0; i < content.length; i++) {
-      const char = content.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return hash.toString();
   }
 
   /**

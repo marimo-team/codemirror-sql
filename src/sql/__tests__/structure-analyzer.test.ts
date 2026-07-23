@@ -331,4 +331,17 @@ WHERE u.active = true
       });
     });
   });
+
+  describe("cache correctness", () => {
+    it("does not return cached statements for a different document with a colliding hash", async () => {
+      // "select Aa" and "select BB" collide under a 31-based 32-bit string hash
+      const first = await analyzer.analyzeDocument(createState("select Aa"));
+      expect(first).toHaveLength(1);
+      expect(first[0].content).toBe("select Aa");
+
+      const second = await analyzer.analyzeDocument(createState("select BB"));
+      expect(second).toHaveLength(1);
+      expect(second[0].content).toBe("select BB");
+    });
+  });
 });
