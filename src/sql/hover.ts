@@ -9,6 +9,7 @@ import {
   resolveNamespaceItem,
 } from "./namespace-utils.js";
 import { NodeSqlParser } from "./parser.js";
+import { resolveSqlSchema } from "./schema-facet.js";
 import type { SqlParser } from "./types.js";
 
 /**
@@ -106,7 +107,10 @@ interface TooltipCreateData {
  * Configuration for SQL hover tooltips
  */
 export interface SqlHoverConfig {
-  /** Database schema for table and column information */
+  /**
+   * Database schema for table and column information.
+   * Falls back to the shared `sqlSchemaFacet` when not provided.
+   */
   schema?: SQLNamespace | ((view: EditorView) => SQLNamespace);
   /** SQL dialect for keyword information */
   dialect?: SQLDialect | ((view: EditorView) => SQLDialect);
@@ -150,7 +154,7 @@ function createHoverSource(
   config: SqlHoverConfig = {},
 ): (view: EditorView, pos: number, side: number) => Promise<Tooltip | null> {
   const {
-    schema = {},
+    schema,
     keywords = {},
     enableKeywords = true,
     enableTables = true,
@@ -197,7 +201,7 @@ function createHoverSource(
       return null;
     }
 
-    const resolvedSchema = typeof schema === "function" ? schema(view) : schema;
+    const resolvedSchema = resolveSqlSchema(schema, view) ?? {};
 
     let createData: TooltipCreateData | null = null;
 

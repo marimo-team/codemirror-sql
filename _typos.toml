@@ -7,4 +7,6 @@ extend-exclude = [
   "src/data/duckdb-keywords.json",
   # Contains intentionally misspelled SQL (e.g. SELCT) to trigger parse errors
   "src/sql/__tests__/diagnostics.test.ts",
+  # Contains intentionally misspelled identifiers (e.g. usres) to trigger schema diagnostics
+  "src/sql/__tests__/semantic-diagnostics.test.ts",
 ]
