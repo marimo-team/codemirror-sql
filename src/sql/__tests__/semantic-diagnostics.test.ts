@@ -1,5 +1,6 @@
+import { type Diagnostic, forceLinting, forEachDiagnostic } from "@codemirror/lint";
 import { EditorState, type Extension } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { sqlSchemaFacet } from "../schema-facet.js";
 import {
@@ -30,6 +31,37 @@ describe("sqlSemanticLinter", () => {
   it("should create a linter extension", () => {
     expect(sqlSemanticLinter()).toBeDefined();
     expect(sqlSemanticLinter({ schema: SCHEMA, delay: 100 })).toBeDefined();
+  });
+
+  it("produces diagnostics through the installed extension", async () => {
+    const view = new EditorView({
+      doc: "SELECT * FROM usres",
+      extensions: [
+        sqlSemanticLinter({
+          schema: SCHEMA,
+          delay: 0,
+          severity: { unknownTable: "error" },
+        }),
+      ],
+      parent: document.body,
+    });
+
+    try {
+      forceLinting(view);
+      const diagnostics = await vi.waitFor(() => {
+        const found: Diagnostic[] = [];
+        forEachDiagnostic(view.state, (d) => found.push(d));
+        expect(found).toHaveLength(1);
+        return found;
+      });
+
+      expect(diagnostics[0].message).toContain("usres");
+      expect(diagnostics[0].source).toBe("sql-schema");
+      // Option forwarding: severity override applied
+      expect(diagnostics[0].severity).toBe("error");
+    } finally {
+      view.destroy();
+    }
   });
 });
 
@@ -266,11 +298,12 @@ describe("inertness and gating", () => {
   it("skips statements with syntax errors", async () => {
     // Broken statement: no semantic noise on top of the syntax error;
     // the valid statement is still checked
-    const diagnostics = await lint("SELCT * FROM usres;\nSELECT * FROM usres;", {
-      schema: SCHEMA,
-    });
+    const doc = "SELCT * FROM tbl_broken;\nSELECT * FROM tbl_missing;";
+    const diagnostics = await lint(doc, { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].source).toBe("sql-schema");
+    expect(diagnostics[0].message).toContain("tbl_missing");
+    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("tbl_missing");
   });
 
   it("reads the schema from sqlSchemaFacet when not configured directly", async () => {

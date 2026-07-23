@@ -93,7 +93,17 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
   }
 
   if (enableSemanticLinting) {
-    extensions.push(sqlSemanticLinter(semanticLinterConfig));
+    // Reuse the syntax linter's parser/analyzer so dialect-specific setups
+    // don't have to configure them twice (and semantic checks don't disagree
+    // with the syntax linter about what parses)
+    extensions.push(
+      sqlSemanticLinter({
+        ...semanticLinterConfig,
+        parser: semanticLinterConfig?.parser ?? linterConfig?.parser,
+        structureAnalyzer:
+          semanticLinterConfig?.structureAnalyzer ?? linterConfig?.structureAnalyzer,
+      }),
+    );
   }
 
   if (enableGutterMarkers) {

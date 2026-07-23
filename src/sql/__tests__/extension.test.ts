@@ -1,5 +1,7 @@
+import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { sqlExtension } from "../extension.js";
+import { sqlSchemaFacet } from "../schema-facet.js";
 
 describe("sqlExtension", () => {
   it("should return an array of extensions with default config", () => {
@@ -43,14 +45,27 @@ describe("sqlExtension", () => {
   });
 
   it("should register the shared schema facet when a schema is provided", () => {
+    const schema = { users: ["id"] };
     const withSchema = sqlExtension({
-      schema: { users: ["id"] },
+      schema,
       enableLinting: false,
       enableSemanticLinting: false,
       enableGutterMarkers: false,
       enableHover: false,
     });
     expect(withSchema).toHaveLength(1);
+
+    const state = EditorState.create({ extensions: withSchema });
+    expect(state.facet(sqlSchemaFacet)).toBe(schema);
+
+    const withoutSchema = sqlExtension({
+      enableLinting: false,
+      enableSemanticLinting: false,
+      enableGutterMarkers: false,
+      enableHover: false,
+    });
+    const emptyState = EditorState.create({ extensions: withoutSchema });
+    expect(emptyState.facet(sqlSchemaFacet)).toBeNull();
   });
 
   it("should pass config objects to individual extensions", () => {

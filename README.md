@@ -80,15 +80,21 @@ are reported as warnings (configurable per check). Without a schema the
 semantic linter is inert.
 
 ```ts
+import { EditorView } from "codemirror";
 import { sqlSemanticLinter } from "@marimo-team/codemirror-sql";
 
-sqlSemanticLinter({
-  schema: { users: ["id", "name"], posts: ["id", "user_id"] },
-  severity: {
-    unknownTable: "error", // "error" | "warning" | "off" (default: "warning")
-    unknownColumn: "warning",
-    ambiguousColumn: "warning",
-  },
+const editor = new EditorView({
+  extensions: [
+    sqlSemanticLinter({
+      schema: { users: ["id", "name"], posts: ["id", "user_id"] },
+      severity: {
+        unknownTable: "error", // "error" | "warning" | "off" (default: "warning")
+        unknownColumn: "warning",
+        ambiguousColumn: "warning",
+      },
+    }),
+  ],
+  parent: document.querySelector("#editor"),
 });
 ```
 
