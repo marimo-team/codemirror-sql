@@ -23,6 +23,7 @@ describe("index.ts exports", () => {
         "gotoSqlDefinition",
         "renameSqlIdentifier",
         "resolveSqlSchema",
+        "sqlCompletion",
         "sqlExtension",
         "sqlGotoDefinition",
         "sqlHighlightReferences",
