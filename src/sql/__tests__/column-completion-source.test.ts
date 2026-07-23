@@ -214,8 +214,8 @@ describe("unqualifiedColumnCompletionSource", () => {
 
   it("completes columns of a quoted table name", async () => {
     const quotedSchema: SQLNamespace = { "User Table": ["id", "full_name"] };
-    const doc = 'SELECT ful FROM "User Table"';
-    const result = await complete(doc, { schema: quotedSchema, pos: "SELECT ful".length });
+    const doc = 'SELECT full FROM "User Table"';
+    const result = await complete(doc, { schema: quotedSchema, pos: "SELECT full".length });
     expect(labels(result)).toEqual(["id", "full_name"]);
   });
 
