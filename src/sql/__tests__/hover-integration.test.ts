@@ -809,6 +809,20 @@ describe("Query-aware hover behavior - edge cases", () => {
       return { state } as unknown as EditorView;
     }
 
+    it("only shows hovers for tables when columns are disabled (and vice versa)", async () => {
+      const schema = { users: ["id", "name"] };
+      const doc = "SELECT name FROM users";
+      const view = createMockView(doc);
+
+      const tablesOnly = createHoverSource({ schema, enableColumns: false });
+      expect(await tablesOnly(view, doc.indexOf("users") + 2, 1)).not.toBeNull();
+      expect(await tablesOnly(view, doc.indexOf("name") + 2, 1)).toBeNull();
+
+      const columnsOnly = createHoverSource({ schema, enableTables: false });
+      expect(await columnsOnly(view, doc.indexOf("users") + 2, 1)).toBeNull();
+      expect(await columnsOnly(view, doc.indexOf("name") + 2, 1)).not.toBeNull();
+    });
+
     it("does not show keyword tooltips for Object.prototype members", async () => {
       const source = createHoverSource({ keywords: {}, schema: {} });
 
@@ -831,6 +845,119 @@ describe("Query-aware hover behavior - edge cases", () => {
 
       const tooltip = await source(view, doc.indexOf("SELECT") + 2, 1);
       expect(tooltip).not.toBeNull();
+    });
+
+    describe("alias-aware resolution", () => {
+      const schema = {
+        users: ["id", "name", "email"],
+        orders: ["order_id", "total"],
+      };
+
+      function renderTooltip(
+        tooltip: Awaited<ReturnType<ReturnType<typeof createHoverSource>>>,
+        view: EditorView,
+      ): string {
+        if (!tooltip) {
+          throw new Error("expected a tooltip");
+        }
+        return tooltip.create(view).dom.innerHTML;
+      }
+
+      it("resolves a bare alias to its table and labels it as an alias", async () => {
+        const source = createHoverSource({ schema });
+        const doc = "SELECT u.name FROM users u";
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.length - 1, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("is an alias for");
+        expect(html).toContain("users");
+        expect(html).toContain("table");
+      });
+
+      it("resolves alias-qualified columns to the aliased table", async () => {
+        const source = createHoverSource({ schema });
+        const doc = "SELECT u.name FROM users u";
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.indexOf("u.name") + 3, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("<strong>name</strong>");
+        expect(html).toContain("column");
+        expect(html).toContain("users");
+      });
+
+      it("supports AS aliases", async () => {
+        const source = createHoverSource({ schema });
+        const doc = "SELECT u.email FROM users AS u";
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.indexOf("u.email") + 3, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("<strong>email</strong>");
+        expect(html).toContain("column");
+      });
+
+      it("resolves each alias in a join to its own table", async () => {
+        const source = createHoverSource({ schema });
+        const doc = "SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.order_id";
+        const view = createMockView(doc);
+
+        const totalHtml = renderTooltip(await source(view, doc.indexOf("o.total") + 3, 1), view);
+        expect(totalHtml).toContain("<strong>total</strong>");
+        expect(totalHtml).toContain("orders");
+
+        const nameHtml = renderTooltip(await source(view, doc.indexOf("u.name") + 3, 1), view);
+        expect(nameHtml).toContain("<strong>name</strong>");
+        expect(nameHtml).toContain("users");
+      });
+
+      it("lets an alias shadow a real table name within the statement", async () => {
+        const source = createHoverSource({ schema });
+        // `orders` aliases the users table here; `orders.name` must resolve to
+        // users.name (the real orders table has no `name` column)
+        const doc = "SELECT orders.name FROM users orders";
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.indexOf("orders.name") + 8, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("<strong>name</strong>");
+        expect(html).toContain("users");
+      });
+
+      it("escapes markup in alias targets before rendering", async () => {
+        const source = createHoverSource({ schema: { "<b>t</b>": ["x"] } });
+        const doc = 'SELECT x FROM "<b>t</b>" a';
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.length - 1, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("is an alias for");
+        expect(html).toContain("&lt;b&gt;t&lt;/b&gt;");
+        expect(html).not.toContain("alias for <code><b>");
+      });
+
+      it("does not leak tables across statement boundaries", async () => {
+        const source = createHoverSource({ schema, enableFuzzySearch: true });
+        const doc = "SELECT name FROM users; SELECT name FROM orders";
+        const view = createMockView(doc);
+
+        // In statement 1, `name` resolves in users
+        expect(await source(view, doc.indexOf("name") + 2, 1)).not.toBeNull();
+        // In statement 2, only orders is in scope and it has no `name` column
+        expect(await source(view, doc.lastIndexOf("name") + 2, 1)).toBeNull();
+      });
+
+      it("still resolves aliases while the statement is mid-edit", async () => {
+        const source = createHoverSource({ schema });
+        // Trailing WHERE makes the statement unparsable
+        const doc = "SELECT u.name FROM users u WHERE";
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.indexOf("u.name") + 3, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("<strong>name</strong>");
+      });
     });
 
     it("does not permanently disable hovers when the keywords promise rejects", async () => {

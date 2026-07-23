@@ -9,7 +9,9 @@ import {
   resolveNamespaceItem,
 } from "./namespace-utils.js";
 import { NodeSqlParser } from "./parser.js";
+import { QueryContextAnalyzer } from "./query-context.js";
 import { resolveSqlSchema } from "./schema-facet.js";
+import { SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SqlParser } from "./types.js";
 
 /**
@@ -89,6 +91,11 @@ export interface NamespaceTooltipData {
   word: string;
   /** The resolved schema context */
   resolvedSchema: SQLNamespace;
+  /**
+   * When the hovered word was an alias (or alias-qualified), the dotted table
+   * path the alias resolves to, e.g. `users` for `SELECT u.name FROM users u`.
+   */
+  aliasFor?: string;
 }
 
 /**
@@ -130,6 +137,11 @@ export interface SqlHoverConfig {
   enableFuzzySearch?: boolean;
   /** Custom SQL parser instance to use for query analysis */
   parser?: SqlParser;
+  /**
+   * Query-context analyzer to reuse (e.g. shared with
+   * `aliasColumnCompletionSource`), so each statement is only analyzed once.
+   */
+  contextAnalyzer?: QueryContextAnalyzer;
   /** Custom tooltip render function - highest priority, returns HTMLElement or null for fallback */
   tooltipRender?: (word: string, view: EditorView, pos: number) => HTMLElement | null;
   /** Custom tooltip renderers for different item types */
@@ -164,6 +176,9 @@ function createHoverSource(
     tooltipRender,
     tooltipRenderers = {},
   } = config;
+
+  const structureAnalyzer = new SqlStructureAnalyzer(parser);
+  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
 
   let keywordsPromise: Promise<Record<string, SqlKeywordInfo>> | null = null;
 
@@ -231,25 +246,52 @@ function createHoverSource(
 
     // Step 2: Try to resolve directly in SQLNamespace (query-aware)
     if (!createData && (enableTables || enableColumns) && resolvedSchema) {
-      // Get the current SQL query to filter schema by referenced tables
-      const currentQuery = view.state.doc.toString();
-      const tableList = await parser.extractTableReferences(currentQuery);
-      const tableRefs = new Set(tableList.map((table: string) => table.toLowerCase()));
+      // Scope the analysis to the statement containing the hover position, so
+      // tables from other statements in a multi-statement doc don't leak in
+      const statement = await structureAnalyzer.getStatementAtPosition(view.state, pos);
+      const statementSql = statement
+        ? view.state.doc.sliceString(statement.from, statement.to)
+        : view.state.doc.toString();
+      const queryContext = await contextAnalyzer.getContext(statementSql, {
+        state: view.state,
+      });
 
-      // Filter schema to only include tables referenced in the current query
+      // Rewrite alias-qualified words through the statement's alias map:
+      // `u` -> `users`, `u.name` -> `users.name`
+      const [firstSegment = "", ...restSegments] = word.split(".");
+      const aliasTarget = queryContext.aliases.get(firstSegment);
+      const lookupWord = aliasTarget
+        ? [aliasTarget, ...restSegments].join(".").toLowerCase()
+        : word;
+
+      const tableRefs = new Set(queryContext.tables.map((table) => table.name.toLowerCase()));
+
+      // Filter schema to only include tables referenced in the current statement
       const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
 
       // Try to resolve in the filtered schema first (query-aware)
-      let namespaceResult = resolveNamespaceItem(filteredSchema, word, {
+      let namespaceResult = resolveNamespaceItem(filteredSchema, lookupWord, {
         enableFuzzySearch,
       });
 
-      // If no result in filtered schema and no tables were found in query,
-      // fall back to the full schema to show any relevant information
+      // If no result in filtered schema and no tables were found in the
+      // statement, fall back to the full schema to show any relevant information
       if (!namespaceResult && tableRefs.size === 0) {
-        namespaceResult = resolveNamespaceItem(resolvedSchema, word, {
+        namespaceResult = resolveNamespaceItem(resolvedSchema, lookupWord, {
           enableFuzzySearch,
         });
+      }
+
+      // Gate by the resolved semantic type so disabling only tables (or only
+      // columns) actually disables that kind of tooltip
+      if (namespaceResult) {
+        const { semanticType } = namespaceResult;
+        if (
+          (semanticType === "table" && !enableTables) ||
+          (semanticType === "column" && !enableColumns)
+        ) {
+          namespaceResult = null;
+        }
       }
 
       if (namespaceResult) {
@@ -264,6 +306,7 @@ function createHoverSource(
           item: namespaceResult,
           word,
           resolvedSchema: tableRefs.size > 0 ? filteredSchema : resolvedSchema,
+          ...(aliasTarget ? { aliasFor: aliasTarget } : {}),
         };
 
         createData = {
@@ -324,6 +367,13 @@ function createHoverSource(
           } else {
             // Fallback to default renderer
             tooltipContent = createNamespaceTooltip(namespaceData.item);
+            if (namespaceData.aliasFor) {
+              // Alias targets come from document text, so escape them
+              const aliasName = escapeHtml(namespaceData.word.split(".")[0] ?? "");
+              tooltipContent =
+                `<div class="sql-hover-alias"><code>${aliasName}</code> is an alias for <code>${escapeHtml(namespaceData.aliasFor)}</code></div>` +
+                tooltipContent;
+            }
           }
         }
 
@@ -349,6 +399,14 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
 }
 
 export const exportedForTesting = { createHoverSource };
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 /**
  * Creates HTML content for namespace-resolved items
@@ -680,6 +738,11 @@ export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extensi
     ".cm-sql-hover-tooltip .sql-hover-info": {
       marginBottom: "4px",
       color: colors.info,
+    },
+    ".cm-sql-hover-tooltip .sql-hover-alias": {
+      marginBottom: "6px",
+      color: colors.tooltipChildren,
+      fontSize: "12px",
     },
     ".cm-sql-hover-tooltip .sql-hover-children": {
       marginBottom: "4px",
