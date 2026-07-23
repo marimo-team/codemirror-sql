@@ -24,6 +24,7 @@ describe("index.ts exports", () => {
         "sqlSchemaFacet",
         "sqlSemanticLinter",
         "sqlStructureGutter",
+        "unqualifiedColumnCompletionSource",
       ]
     `);
   });

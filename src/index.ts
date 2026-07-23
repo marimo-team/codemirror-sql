@@ -2,6 +2,10 @@ export {
   type AliasCompletionConfig,
   aliasColumnCompletionSource,
 } from "./sql/alias-completion-source.js";
+export {
+  type ColumnCompletionConfig,
+  unqualifiedColumnCompletionSource,
+} from "./sql/column-completion-source.js";
 export { cteCompletionSource } from "./sql/cte-completion-source.js";
 export { type SqlLinterConfig, sqlLinter } from "./sql/diagnostics.js";
 export { type SqlExtensionConfig, sqlExtension } from "./sql/extension.js";

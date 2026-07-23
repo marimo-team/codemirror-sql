@@ -9,8 +9,10 @@ import {
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
+  QueryContextAnalyzer,
   type SupportedDialects,
   sqlExtension,
+  unqualifiedColumnCompletionSource,
 } from "../src/index.js";
 import { tableTooltipRenderer } from "./custom-renderers.js";
 import { defaultSqlDoc, schema } from "./data.js";
@@ -127,6 +129,8 @@ function initializeEditor() {
       };
     },
   });
+  // Shared between the completion sources so each edit is analyzed once
+  const contextAnalyzer = new QueryContextAnalyzer(parser);
 
   const extensions = [
     basicSetup,
@@ -180,7 +184,11 @@ function initializeEditor() {
     }),
     defaultDialect.language.data.of({
       // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
-      autocomplete: aliasColumnCompletionSource({ schema, parser }),
+      autocomplete: aliasColumnCompletionSource({ schema, parser, contextAnalyzer }),
+    }),
+    defaultDialect.language.data.of({
+      // Complete `SELECT e` -> `email` because `FROM users` is in the statement
+      autocomplete: unqualifiedColumnCompletionSource({ schema, parser, contextAnalyzer }),
     }),
     // Custom theme for better SQL editing
     EditorView.theme({
