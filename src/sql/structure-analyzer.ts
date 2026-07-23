@@ -1,5 +1,5 @@
 import type { EditorState } from "@codemirror/state";
-import type { SqlParser } from "./types.js";
+import type { SqlParseError, SqlParser } from "./types.js";
 
 /**
  * Represents a SQL statement with position information
@@ -19,6 +19,8 @@ export interface SqlStatement {
   type: "select" | "insert" | "update" | "delete" | "create" | "drop" | "alter" | "use" | "other";
   /** Whether this statement is syntactically valid */
   isValid: boolean;
+  /** Parse errors for this statement, with line/column relative to the statement content */
+  errors: SqlParseError[];
 }
 
 /**
@@ -128,6 +130,7 @@ export class SqlStructureAnalyzer {
         content: cleanContent,
         type,
         isValid: parseResult.success,
+        errors: parseResult.errors ?? [],
       });
 
       currentPosition += part.length;

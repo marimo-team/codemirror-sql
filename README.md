@@ -4,7 +4,7 @@ A CodeMirror extension for SQL linting and visual gutter indicators. Built by an
 
 ## Features
 
-- ⚡ **Real-time validation** - SQL syntax checking as you type with detailed error messages
+- ⚡ **Real-time validation** - Per-statement SQL syntax checking as you type, with detailed error messages for every broken statement
 - 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
 - 🔮 **CTE autocomplete** - Auto-complete support for CTEs

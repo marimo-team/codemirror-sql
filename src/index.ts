@@ -1,5 +1,5 @@
 export { cteCompletionSource } from "./sql/cte-completion-source.js";
-export { sqlLinter } from "./sql/diagnostics.js";
+export { type SqlLinterConfig, sqlLinter } from "./sql/diagnostics.js";
 export { sqlExtension } from "./sql/extension.js";
 export type {
   KeywordTooltipData,
