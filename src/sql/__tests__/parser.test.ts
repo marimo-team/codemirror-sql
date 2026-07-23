@@ -91,6 +91,37 @@ describe("SqlParser", () => {
     });
   });
 
+  describe("extractColumnReferences", () => {
+    it("extracts column references from a SELECT query", async () => {
+      const columns = await parser.extractColumnReferences("SELECT id, name FROM users");
+      expect(columns).toContain("id");
+      expect(columns).toContain("name");
+    });
+
+    it("strips the node-sql-parser prefixes from column names", async () => {
+      const columns = await parser.extractColumnReferences(
+        "SELECT u.email FROM users u WHERE u.active = true",
+      );
+      // Names are cleaned of the "type::table::column" prefixing
+      expect(columns.every((col) => !col.includes("::"))).toBe(true);
+      expect(columns).toContain("email");
+    });
+
+    it("returns an empty array for invalid SQL", async () => {
+      const columns = await parser.extractColumnReferences("NOT VALID SQL");
+      expect(columns).toEqual([]);
+    });
+
+    it("passes parser options through when a state is provided", async () => {
+      const getParserOptions = vi.fn().mockReturnValue({ database: "PostgreSQL" });
+      const customParser = new NodeSqlParser({ getParserOptions });
+      const columnState = EditorState.create({ doc: "SELECT id FROM users" });
+
+      await customParser.extractColumnReferences("SELECT id FROM users", { state: columnState });
+      expect(getParserOptions).toHaveBeenCalledWith(columnState);
+    });
+  });
+
   describe("validateSql", () => {
     it("should return empty array for valid SQL", async () => {
       const sql = "SELECT 1";

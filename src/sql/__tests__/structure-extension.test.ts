@@ -1,7 +1,7 @@
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
-import { sqlStructureGutter } from "../structure-extension.js";
+import { computeMarkerStyle, sqlStructureGutter } from "../structure-extension.js";
 
 async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
   const start = Date.now();
@@ -32,6 +32,95 @@ const _createMockView = (content: string, hasFocus = true) => {
     dispatch: () => {},
   } as EditorView;
 };
+
+describe("computeMarkerStyle", () => {
+  const focused = { isCurrent: false, isValid: true, isFocused: true };
+
+  describe("background color", () => {
+    it("uses the default blue for valid statements", () => {
+      expect(computeMarkerStyle({}, focused).backgroundColor).toBe("#3b82f6");
+    });
+
+    it("honors a custom backgroundColor", () => {
+      expect(computeMarkerStyle({ backgroundColor: "#123456" }, focused).backgroundColor).toBe(
+        "#123456",
+      );
+    });
+
+    it("uses the default red for invalid statements", () => {
+      expect(
+        computeMarkerStyle({}, { isCurrent: false, isValid: false, isFocused: true })
+          .backgroundColor,
+      ).toBe("#ef4444");
+    });
+
+    it("honors a custom errorBackgroundColor for invalid statements", () => {
+      expect(
+        computeMarkerStyle(
+          { errorBackgroundColor: "#abcdef" },
+          { isCurrent: false, isValid: false, isFocused: true },
+        ).backgroundColor,
+      ).toBe("#abcdef");
+    });
+
+    it("does not use the error color when showInvalid is false", () => {
+      expect(
+        computeMarkerStyle(
+          { showInvalid: false },
+          { isCurrent: false, isValid: false, isFocused: true },
+        ).backgroundColor,
+      ).toBe("#3b82f6");
+    });
+  });
+
+  describe("opacity when focused", () => {
+    it("is fully opaque for the current statement", () => {
+      expect(
+        computeMarkerStyle({}, { isCurrent: true, isValid: true, isFocused: true }).opacity,
+      ).toBe("1");
+    });
+
+    it("defaults to 0.3 for non-current statements", () => {
+      expect(computeMarkerStyle({}, focused).opacity).toBe("0.3");
+    });
+
+    it("honors a custom inactiveOpacity", () => {
+      expect(computeMarkerStyle({ inactiveOpacity: 0.5 }, focused).opacity).toBe("0.5");
+    });
+
+    it("honors an explicit inactiveOpacity of 0", () => {
+      expect(computeMarkerStyle({ inactiveOpacity: 0 }, focused).opacity).toBe("0");
+    });
+  });
+
+  describe("opacity when not focused", () => {
+    const unfocused = { isCurrent: false, isValid: true, isFocused: false };
+
+    it("uses unfocusedOpacity when provided", () => {
+      expect(computeMarkerStyle({ unfocusedOpacity: 0.2 }, unfocused).opacity).toBe("0.2");
+    });
+
+    it("prefers unfocusedOpacity over hideWhenNotFocused", () => {
+      expect(
+        computeMarkerStyle(
+          { unfocusedOpacity: 0.4, hideWhenNotFocused: true },
+          unfocused,
+        ).opacity,
+      ).toBe("0.4");
+    });
+
+    it("hides the marker when hideWhenNotFocused is set", () => {
+      expect(computeMarkerStyle({ hideWhenNotFocused: true }, unfocused).opacity).toBe("0");
+    });
+
+    it("falls back to normal opacity when neither unfocused option is set", () => {
+      expect(computeMarkerStyle({}, unfocused).opacity).toBe("0.3");
+      expect(
+        computeMarkerStyle({}, { isCurrent: true, isValid: true, isFocused: false }).opacity,
+      ).toBe("1");
+    });
+  });
+});
 
 describe("sqlStructureGutter", () => {
   it("should create a gutter extension with default config", () => {

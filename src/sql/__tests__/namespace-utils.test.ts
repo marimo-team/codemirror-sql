@@ -266,6 +266,23 @@ describe("findNamespaceCompletions", () => {
     });
   });
 
+  describe("self label matching at the root", () => {
+    it("should match the self completion of a root self/children namespace by prefix", () => {
+      // "database" is the self label of the selfChildren namespace.
+      const results = findNamespaceCompletions(mockNamespaces.selfChildren, "data");
+      const selfMatch = results.find((r) => r.completion?.label === "database");
+      expect(selfMatch).toBeTruthy();
+      expect(selfMatch?.type).toBe("completion");
+    });
+
+    it("should match the self completion exactly when partial matching is disabled", () => {
+      const results = findNamespaceCompletions(mockNamespaces.selfChildren, "database", {
+        allowPartialMatch: false,
+      });
+      expect(results.some((r) => r.completion?.label === "database")).toBe(true);
+    });
+  });
+
   describe("array namespace completions", () => {
     it("should find string completions in arrays", () => {
       const results = findNamespaceCompletions(mockNamespaces.arrayNamespace, "");
@@ -353,6 +370,28 @@ describe("findNamespaceItemByEndMatch", () => {
 
   it("should return empty array for non-existent identifiers", () => {
     const results = findNamespaceItemByEndMatch(mockNamespaces.complexNested, "nonexistent");
+    expect(results).toEqual([]);
+  });
+
+  it("should collect items from a root-level self/children namespace", () => {
+    // The root of selfChildren is itself a { self, children } node, exercising the
+    // self/children branch of collectAllItems.
+    const results = findNamespaceItemByEndMatch(mockNamespaces.selfChildren, "public");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results.some((r) => r.path[r.path.length - 1] === "public")).toBe(true);
+  });
+
+  it("should find array columns nested under a root self/children namespace", () => {
+    const results = findNamespaceItemByEndMatch(mockNamespaces.selfChildren, "api_key");
+    expect(results.some((r) => r.value === "api_key")).toBe(true);
+  });
+
+  it("should stop collecting once maxDepth is reached", () => {
+    // With maxDepth 1, only depth-0 keys (postgres, mysql) are collected, so a deep
+    // column like "id" is never reached.
+    const results = findNamespaceItemByEndMatch(mockNamespaces.complexNested, "id", {
+      maxDepth: 1,
+    });
     expect(results).toEqual([]);
   });
 });
