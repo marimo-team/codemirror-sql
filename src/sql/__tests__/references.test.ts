@@ -84,6 +84,34 @@ describe("findReferences", () => {
       expect(doc.slice(result!.definition.from, result!.definition.to)).toBe('"recent"');
       expect(result?.references).toHaveLength(2);
     });
+
+    it("resolves from a cursor inside a quoted declaration", async () => {
+      const doc = 'WITH "recent" AS (SELECT 1) SELECT * FROM recent';
+      const state = EditorState.create({ doc });
+      const result = await findReferences(state, doc.indexOf("recent"));
+      expect(result?.kind).toBe("cte");
+      expect(result?.references).toHaveLength(2);
+    });
+
+    it("does not treat a bare same-named select-list identifier as a reference", async () => {
+      const doc = "WITH t AS (SELECT 1) SELECT t FROM t";
+      const result = await resolveAt(doc, "t AS");
+      // definition + `FROM t`; the select-list `t` is a column reference
+      expect(result?.references).toHaveLength(2);
+      expect(result?.references.some((r) => r.from === doc.indexOf("t FROM"))).toBe(false);
+    });
+
+    it("counts FROM-list comma entries as references", async () => {
+      const doc = "WITH t AS (SELECT 1) SELECT * FROM a, t";
+      const result = await resolveAt(doc, "t AS");
+      expect(result?.references).toHaveLength(2);
+    });
+
+    it("refuses when a CTE name collides with a select alias", async () => {
+      const doc = "WITH t AS (SELECT 1) SELECT 1 AS t FROM t ORDER BY t";
+      const result = await resolveAt(doc, "t AS (");
+      expect(result).toBeNull();
+    });
   });
 
   describe("table aliases", () => {
@@ -110,6 +138,12 @@ describe("findReferences", () => {
       const result = await resolveAt(sql, "u.name");
       expect(result?.kind).toBe("table-alias");
       expect(result?.definition.from).toBe(sql.indexOf("AS u") + "AS ".length);
+    });
+
+    it("refuses when an alias collides with a select alias", async () => {
+      const sql = "SELECT u.name AS u FROM users u ORDER BY u";
+      const result = await resolveAt(sql, "u.name");
+      expect(result).toBeNull();
     });
 
     it("refuses when the same alias is bound to two tables", async () => {

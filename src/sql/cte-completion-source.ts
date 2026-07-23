@@ -53,6 +53,7 @@ function cteColumnCompletions(cte: QueryContextCte): Completion[] {
     type: "property",
     detail: `column of ${cte.name}`,
     boost: 5,
+    ...(isBareIdentifier(column) ? {} : { apply: `"${column}"` }),
   }));
 }
 
@@ -71,7 +72,7 @@ export function createCteCompletionSource(config: CteCompletionConfig = {}): Com
   const structureAnalyzer = config.structureAnalyzer ?? new SqlStructureAnalyzer(parser);
 
   return async (context: CompletionContext) => {
-    const word = context.matchBefore(/\w*/);
+    const word = context.matchBefore(/[\w$]*/);
     if (!word) {
       return null;
     }
@@ -118,7 +119,7 @@ export function createCteCompletionSource(config: CteCompletionConfig = {}): Com
       return {
         from: word.from,
         options: cteColumnCompletions(cte),
-        validFor: /^\w*$/,
+        validFor: /^[\w$]*$/,
       };
     }
 
@@ -147,7 +148,7 @@ export function createCteCompletionSource(config: CteCompletionConfig = {}): Com
     return {
       from: word.from,
       options,
-      validFor: /^\w*$/,
+      validFor: /^[\w$]*$/,
     };
   };
 }

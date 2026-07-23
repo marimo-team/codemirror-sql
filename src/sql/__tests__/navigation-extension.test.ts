@@ -131,6 +131,14 @@ describe("renameSqlIdentifier", () => {
     expect(dispatched).toHaveLength(0);
   });
 
+  it("refuses reserved words as new names", async () => {
+    const sql = "WITH t AS (SELECT 1) SELECT * FROM t";
+    const { view, dispatched } = createFakeView(sql, sql.indexOf("t AS"));
+
+    expect(await renameSqlIdentifier(view, { prompt: () => "select" })).toBe(false);
+    expect(dispatched).toHaveLength(0);
+  });
+
   it("refuses invalid identifiers as new names", async () => {
     const sql = "WITH t AS (SELECT 1) SELECT * FROM t";
     const { view, dispatched } = createFakeView(sql, sql.indexOf("t AS"));

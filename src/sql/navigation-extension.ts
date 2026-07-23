@@ -164,9 +164,11 @@ export async function gotoSqlDefinition(
   pos?: number,
   config: SqlNavigationConfig = {},
 ): Promise<boolean> {
-  const at = pos ?? view.state.selection.main.head;
-  const result = await getResolver(config).resolve(view.state, at);
-  if (!result) {
+  const state = view.state;
+  const at = pos ?? state.selection.main.head;
+  const result = await getResolver(config).resolve(state, at);
+  // Discard stale ranges if the document changed while resolving
+  if (!result || view.state !== state) {
     return false;
   }
   view.dispatch({
@@ -209,6 +211,12 @@ export function sqlGotoDefinition(config: SqlNavigationConfig = {}): Extension {
 
       constructor(private view: EditorView) {}
 
+      update(update: ViewUpdate) {
+        if (update.docChanged) {
+          this.hovered = null;
+        }
+      }
+
       resultAt(pos: number): SqlReferenceResult | null {
         if (this.hovered && pos >= this.hovered.from && pos <= this.hovered.to) {
           return this.hovered.result;
@@ -241,10 +249,11 @@ export function sqlGotoDefinition(config: SqlNavigationConfig = {}): Extension {
           result: null,
         };
         this.hovered = hovered;
+        const state = this.view.state;
         try {
-          const result = await resolver.resolve(this.view.state, pos);
-          if (this.hovered !== hovered) {
-            return; // moved on while resolving
+          const result = await resolver.resolve(state, pos);
+          if (this.hovered !== hovered || this.view.state !== state) {
+            return; // moved on or edited while resolving
           }
           hovered.result = result;
           this.view.dispatch({
@@ -313,6 +322,18 @@ const defaultPrompt = (currentName: string): string | null =>
 /** New names must be plain identifiers so the rewritten SQL stays valid */
 const VALID_IDENTIFIER = /^[A-Za-z_][\w$]*$/;
 
+/** Reserved words that would break the statement if used as a bare name */
+// prettier-ignore
+const RESERVED_WORDS = new Set([
+  "all", "and", "as", "asc", "between", "by", "case", "cross", "delete",
+  "desc", "distinct", "else", "end", "except", "exists", "fetch", "from",
+  "full", "group", "having", "in", "inner", "insert", "intersect", "into",
+  "is", "join", "lateral", "left", "like", "limit", "natural", "not", "null",
+  "offset", "on", "or", "order", "outer", "qualify", "recursive", "right",
+  "select", "set", "table", "then", "union", "update", "using", "values",
+  "when", "where", "window", "with",
+]);
+
 /**
  * Renames the statement-local identifier (CTE name, table alias, or select
  * alias) at the cursor: replaces the definition and every reference in a
@@ -330,7 +351,12 @@ export async function renameSqlIdentifier(
     return false;
   }
   const newName = await (config.prompt ?? defaultPrompt)(result.name);
-  if (!newName || newName === result.name || !VALID_IDENTIFIER.test(newName)) {
+  if (
+    !newName ||
+    newName === result.name ||
+    !VALID_IDENTIFIER.test(newName) ||
+    RESERVED_WORDS.has(newName.toLowerCase())
+  ) {
     return false;
   }
   if (view.state !== state) {

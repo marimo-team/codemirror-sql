@@ -134,7 +134,20 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
   }
 
   if (enableNavigation) {
-    extensions.push(...sqlNavigation(navigationConfig));
+    // Inherit the syntax linter's parser/analyzer (same rules as the semantic
+    // linter above) so dialect-specific setups resolve references with the
+    // dialect they lint with
+    const navigationParser = navigationConfig?.parser ?? linterConfig?.parser;
+    const navigationAnalyzer =
+      navigationConfig?.structureAnalyzer ??
+      (navigationConfig?.parser == null ? linterConfig?.structureAnalyzer : undefined);
+    extensions.push(
+      ...sqlNavigation({
+        ...navigationConfig,
+        parser: navigationParser,
+        structureAnalyzer: navigationAnalyzer,
+      }),
+    );
   }
 
   return extensions;

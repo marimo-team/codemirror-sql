@@ -23,9 +23,9 @@ function createMockContext(doc: string, pos: number, explicit = false): Completi
     matchBefore: (pattern: RegExp) => {
       const before = doc.slice(0, pos);
 
-      // For \w* pattern, find the word at the end
-      if (pattern.source === "\\w*") {
-        const wordMatch = before.match(/(\w*)$/);
+      // For word patterns, find the word at the end
+      if (pattern.source === "\\w*" || pattern.source === "[\\w$]*") {
+        const wordMatch = before.match(/([\w$]*)$/);
         if (!wordMatch) return null;
 
         const text = wordMatch[1] || "";
@@ -359,6 +359,28 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result?.options[0].apply).toBeUndefined();
+    });
+
+    it("completes names containing $ as one token", async () => {
+      const sql = "WITH t$1 AS (SELECT 1) SELECT * FROM t$";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.from).toBe(sql.lastIndexOf("t$"));
+      expect(result?.options[0].label).toBe("t$1");
+    });
+
+    it("quotes non-bare column labels on apply", async () => {
+      const sql = 'WITH t("My Col", b) AS (SELECT 1, 2) SELECT t. FROM t';
+      const pos = sql.indexOf("t. FROM") + 2;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      const myCol = result?.options.find((opt) => opt.label === "My Col");
+      expect(myCol?.apply).toBe('"My Col"');
+      expect(result?.options.find((opt) => opt.label === "b")?.apply).toBeUndefined();
     });
   });
 

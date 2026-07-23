@@ -4,6 +4,7 @@ import {
   maskLiteralsAndComments,
   type QueryContext,
   QueryContextAnalyzer,
+  stripIdentifierQuotes,
 } from "./query-context.js";
 import { SqlStructureAnalyzer, type SqlStatement } from "./structure-analyzer.js";
 import type { SqlParser } from "./types.js";
@@ -42,16 +43,36 @@ export interface SqlReferenceConfig {
 }
 
 const WORD_CHAR = /[\w$]/;
+const QUOTED_TOKEN = /"[^"]*"|`[^`]*`|\[[^\]]*\]/g;
 
-/** The bare identifier token containing (or immediately touching) `pos` */
+/**
+ * The identifier token containing (or immediately touching) `pos` — bare, or
+ * quoted (the range covers the quotes; `text` is the unquoted name).
+ */
 export function identifierTokenAt(
   state: EditorState,
   pos: number,
 ): { from: number; to: number; text: string } | null {
   const line = state.doc.lineAt(pos);
   const text = line.text;
-  let start = pos - line.from;
-  let end = start;
+  const rel = pos - line.from;
+
+  QUOTED_TOKEN.lastIndex = 0;
+  let quoted = QUOTED_TOKEN.exec(text);
+  while (quoted !== null && quoted.index <= rel) {
+    const end = quoted.index + quoted[0].length;
+    if (rel <= end) {
+      return {
+        from: line.from + quoted.index,
+        to: line.from + end,
+        text: stripIdentifierQuotes(quoted[0]),
+      };
+    }
+    quoted = QUOTED_TOKEN.exec(text);
+  }
+
+  let start = rel;
+  let end = rel;
   while (start > 0 && WORD_CHAR.test(text[start - 1] ?? "")) start--;
   while (end < text.length && WORD_CHAR.test(text[end] ?? "")) end++;
   if (start === end) {
@@ -127,6 +148,57 @@ function parenDepths(text: string): number[] {
   return depths;
 }
 
+const CLAUSE_KEYWORD =
+  /\b(select|from|where|having|qualify|on|set|values|by|join|limit|offset|union|intersect|except|window)\b/gi;
+
+function lastClauseKeyword(text: string): string | null {
+  CLAUSE_KEYWORD.lastIndex = 0;
+  let last: string | null = null;
+  let match = CLAUSE_KEYWORD.exec(text);
+  while (match !== null) {
+    last = (match[1] ?? "").toLowerCase();
+    match = CLAUSE_KEYWORD.exec(text);
+  }
+  return last;
+}
+
+/**
+ * Whether the token starting at `from` sits in a relation (table-name)
+ * position: after FROM/JOIN — possibly as the trailing segment of a dotted
+ * path — or after a comma in a FROM list.
+ */
+function isRelationPosition(masked: string, from: number): boolean {
+  let i = from - 1;
+  for (;;) {
+    while (i >= 0 && /\s/.test(masked[i] ?? "")) i--;
+    if (i >= 0 && masked[i] === ".") {
+      // Skip the qualifier segment of a dotted path and keep looking left
+      i--;
+      while (i >= 0 && /\s/.test(masked[i] ?? "")) i--;
+      const char = masked[i];
+      if (char === '"' || char === "`" || char === "]") {
+        const open = char === "]" ? "[" : char;
+        i--;
+        while (i >= 0 && masked[i] !== open) i--;
+        i--;
+      } else {
+        while (i >= 0 && WORD_CHAR.test(masked[i] ?? "")) i--;
+      }
+      continue;
+    }
+    break;
+  }
+  if (i < 0) {
+    return false;
+  }
+  if (masked[i] === ",") {
+    // Comma-separated list: a relation only when it continues a FROM list
+    return lastClauseKeyword(masked.slice(0, i)) === "from";
+  }
+  const word = /([A-Za-z_]+)$/.exec(masked.slice(0, i + 1))?.[1]?.toLowerCase();
+  return word === "from" || word === "join";
+}
+
 function dedupeAndSort(ranges: SqlRange[]): SqlRange[] {
   const byFrom = new Map<number, SqlRange>();
   for (const range of ranges) {
@@ -149,19 +221,27 @@ function resolveInStatement(
 ): SqlReferenceResult | null {
   const masked = maskLiteralsAndComments(statementText);
   const lower = token.text.toLowerCase();
+  const isSelectAlias = context.selectAliases.some((a) => a.toLowerCase() === lower);
 
   const cte = context.ctes.find((c) => c.name.toLowerCase() === lower);
   if (cte) {
-    // A name that is also an alias for something else is ambiguous — refuse
+    // A name that is also an alias or select alias binds two distinct things
+    // in this statement — refuse rather than mixing them
     const aliasTarget = context.aliases.get(lower);
-    if (aliasTarget && aliasTarget.toLowerCase() !== lower) {
+    if ((aliasTarget && aliasTarget.toLowerCase() !== lower) || isSelectAlias) {
       return null;
     }
     if (cte.from < 0) {
       return null;
     }
     const definition: SqlRange = { from: cte.from, to: cte.to };
-    const references = dedupeAndSort([definition, ...scanOccurrences(masked, cte.name)]);
+    // CTE uses are relation positions (`FROM x`, `JOIN x`, FROM-list commas)
+    // or qualifiers (`x.col`); a bare same-named identifier elsewhere is a
+    // column and is left alone
+    const uses = scanOccurrences(masked, cte.name).filter(
+      (range) => masked[range.to] === "." || isRelationPosition(masked, range.from),
+    );
+    const references = dedupeAndSort([definition, ...uses]);
     if (!containsRange(references, token)) {
       return null;
     }
@@ -169,6 +249,9 @@ function resolveInStatement(
   }
 
   if (context.aliases.has(lower)) {
+    if (isSelectAlias) {
+      return null;
+    }
     const owners = context.tables.filter((table) => table.alias?.toLowerCase() === lower);
     // Same alias on two different tables (e.g. sibling subqueries) — refuse
     // rather than mixing scopes
@@ -185,7 +268,11 @@ function resolveInStatement(
       `${tableToken}\\s+(?:AS\\s+)?(${tokenAlternatives(alias)})`,
       "gi",
     );
-    const match = definitionPattern.exec(masked);
+    let match = definitionPattern.exec(masked);
+    // Anchor to the table reference itself, not e.g. a same-shaped expression
+    while (match !== null && !isRelationPosition(masked, match.index)) {
+      match = definitionPattern.exec(masked);
+    }
     if (!match || match[1] == null) {
       return null;
     }
