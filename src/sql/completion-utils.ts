@@ -39,11 +39,13 @@ export function columnsOf(
 /**
  * Resolves a (possibly qualified) table path to its column list,
  * case-insensitively. An under-qualified name also matches a table nested
- * deeper in the namespace (e.g. `users` matches `mydb.users`).
+ * deeper in the namespace (e.g. `users` matches `mydb.users`). Pre-split
+ * segments preserve identifier boundaries when a segment contains a dot
+ * (e.g. a `"my.db"` quoted identifier).
  */
 export function findTableColumns(
   schema: SQLNamespace,
-  tablePath: string,
+  tablePath: string | readonly string[],
 ): readonly (Completion | string)[] | null {
   const exact = traverseNamespacePath(schema, tablePath, { caseSensitive: false });
   const exactColumns = columnsOf(exact?.namespace);
@@ -51,7 +53,9 @@ export function findTableColumns(
     return exactColumns;
   }
 
-  const segments = tablePath.split(".").map((segment) => segment.toLowerCase());
+  const segments = (typeof tablePath === "string" ? tablePath.split(".") : tablePath).map(
+    (segment) => segment.toLowerCase(),
+  );
   const lastSegment = segments[segments.length - 1];
   if (!lastSegment) {
     return null;

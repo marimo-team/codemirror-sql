@@ -114,6 +114,30 @@ describe("unqualifiedColumnCompletionSource", () => {
     expect(await complete(doc, { schema, pos: doc.length })).toBeNull();
   });
 
+  it("returns null in a comma-continued FROM table list", async () => {
+    expect(await complete("SELECT id FROM users, ord", { schema })).toBeNull();
+    expect(await complete("SELECT id FROM users u, ord", { schema })).toBeNull();
+    expect(await complete("SELECT id FROM users AS u, orders o, ord", { schema })).toBeNull();
+  });
+
+  it("still completes after commas in non-FROM clauses", async () => {
+    const groupBy = "SELECT id FROM users GROUP BY id, user";
+    expect(labels(await complete(groupBy, { schema }))).toContain("username");
+    const selectList = "SELECT id, e FROM users";
+    expect(labels(await complete(selectList, { schema, pos: "SELECT id, e".length }))).toContain(
+      "email",
+    );
+  });
+
+  it("returns null inside string literals and comments", async () => {
+    const inString = "SELECT id FROM users WHERE name = 'em";
+    expect(await complete(inString, { schema })).toBeNull();
+    const inLineComment = "SELECT id FROM users -- em";
+    expect(await complete(inLineComment, { schema })).toBeNull();
+    const inBlockComment = "SELECT id FROM users /* em";
+    expect(await complete(inBlockComment, { schema })).toBeNull();
+  });
+
   it("requires a prefix unless the request is explicit", async () => {
     const doc = "SELECT  FROM users";
     expect(await complete(doc, { schema, pos: "SELECT ".length })).toBeNull();
@@ -193,6 +217,13 @@ describe("unqualifiedColumnCompletionSource", () => {
     const doc = 'SELECT ful FROM "User Table"';
     const result = await complete(doc, { schema: quotedSchema, pos: "SELECT ful".length });
     expect(labels(result)).toEqual(["id", "full_name"]);
+  });
+
+  it("completes columns of a quoted table name containing a dot", async () => {
+    const dottedSchema: SQLNamespace = { "my.table": ["id", "email"] };
+    const doc = 'SELECT e FROM "my.table"';
+    const result = await complete(doc, { schema: dottedSchema, pos: "SELECT e".length });
+    expect(labels(result)).toEqual(["id", "email"]);
   });
 
   it("falls back to the sqlSchemaFacet when no schema is configured", async () => {

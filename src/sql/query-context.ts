@@ -298,7 +298,7 @@ const TABLE_REF_PATTERN = new RegExp(
  * so the regex fallback doesn't read `FROM`/`JOIN` inside them as table
  * references. Double-quoted/backtick/bracket identifiers are left intact.
  */
-function maskLiteralsAndComments(sql: string): string {
+export function maskLiteralsAndComments(sql: string): string {
   const chars = sql.split("");
   let i = 0;
   while (i < sql.length) {
