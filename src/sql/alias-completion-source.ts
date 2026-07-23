@@ -8,7 +8,11 @@ import {
   traverseNamespacePath,
 } from "./namespace-utils.js";
 import { NodeSqlParser } from "./parser.js";
-import { type QueryContext, QueryContextAnalyzer } from "./query-context.js";
+import {
+  type QueryContext,
+  QueryContextAnalyzer,
+  stripIdentifierQuotes,
+} from "./query-context.js";
 import { type SqlSchemaSource, sqlSchemaFacet } from "./schema-facet.js";
 import { SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SqlParser } from "./types.js";
@@ -98,7 +102,7 @@ function toCompletion(column: Completion | string, detail: string): Completion {
   if (typeof column === "string") {
     return { label: column, type: "property", detail };
   }
-  return { type: "property", detail, ...column };
+  return { ...column, type: "property", detail: column.detail ?? detail };
 }
 
 /**
@@ -122,8 +126,9 @@ export function aliasColumnCompletionSource(config: AliasCompletionConfig = {}):
   const structureAnalyzer = new SqlStructureAnalyzer(parser);
 
   return async (context: CompletionContext) => {
-    // Match `<alias>.<partial>` immediately before the cursor
-    const match = context.matchBefore(/[\w$]+\.[\w$]*/);
+    // Match `<alias>.<partial>` immediately before the cursor; the alias may
+    // be a quoted identifier ("ut"., `ut`., [ut].)
+    const match = context.matchBefore(/(?:[\w$]+|"[^"]+"|`[^`]+`|\[[^\]]+\])\.[\w$]*/);
     if (!match) {
       return null;
     }
@@ -133,8 +138,10 @@ export function aliasColumnCompletionSource(config: AliasCompletionConfig = {}):
       return null;
     }
 
-    const dotIndex = match.text.indexOf(".");
-    const qualifier = match.text.slice(0, dotIndex);
+    // The partial after the dot contains no dots, so the last dot is the
+    // qualifier separator even for quoted qualifiers like `"a.b".`
+    const dotIndex = match.text.lastIndexOf(".");
+    const qualifier = stripIdentifierQuotes(match.text.slice(0, dotIndex));
 
     const statement = await structureAnalyzer.getStatementAtPosition(context.state, context.pos);
     const statementSql = statement

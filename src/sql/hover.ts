@@ -368,9 +368,10 @@ function createHoverSource(
             // Fallback to default renderer
             tooltipContent = createNamespaceTooltip(namespaceData.item);
             if (namespaceData.aliasFor) {
-              const aliasName = namespaceData.word.split(".")[0];
+              // Alias targets come from document text, so escape them
+              const aliasName = escapeHtml(namespaceData.word.split(".")[0] ?? "");
               tooltipContent =
-                `<div class="sql-hover-alias"><code>${aliasName}</code> is an alias for <code>${namespaceData.aliasFor}</code></div>` +
+                `<div class="sql-hover-alias"><code>${aliasName}</code> is an alias for <code>${escapeHtml(namespaceData.aliasFor)}</code></div>` +
                 tooltipContent;
             }
           }
@@ -398,6 +399,14 @@ export function sqlHover(config: SqlHoverConfig = {}): Extension {
 }
 
 export const exportedForTesting = { createHoverSource };
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 /**
  * Creates HTML content for namespace-resolved items

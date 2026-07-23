@@ -285,16 +285,93 @@ const NON_ALIAS_KEYWORDS = new Set([
 ]);
 
 const IDENT = String.raw`(?:[\w$]+|"[^"]+"|\`[^\`]+\`|\[[^\]]+\])`;
+// A keyword after a table reference is never its alias; without this guard the
+// match would consume e.g. `JOIN` and skip right past the joined table
+const NON_ALIAS_GUARD = `(?!(?:${[...NON_ALIAS_KEYWORDS].join("|")})\\b)`;
 const TABLE_REF_PATTERN = new RegExp(
-  String.raw`\b(?:from|join)\s+(${IDENT}(?:\.${IDENT})*)(?:\s+(?:as\s+)?(${IDENT}))?`,
+  String.raw`\b(?:from|join)\s+(${IDENT}(?:\.${IDENT})*)(?:\s+(?:as\s+)?${NON_ALIAS_GUARD}(${IDENT}))?`,
   "gi",
 );
+
+/**
+ * Blanks out single-quoted string literals and comments (preserving offsets)
+ * so the regex fallback doesn't read `FROM`/`JOIN` inside them as table
+ * references. Double-quoted/backtick/bracket identifiers are left intact.
+ */
+function maskLiteralsAndComments(sql: string): string {
+  const chars = sql.split("");
+  let i = 0;
+  while (i < sql.length) {
+    const char = sql[i];
+    const next = sql[i + 1];
+
+    if (char === "-" && next === "-") {
+      while (i < sql.length && sql[i] !== "\n") {
+        chars[i] = " ";
+        i++;
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      chars[i] = " ";
+      chars[i + 1] = " ";
+      i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        chars[i] = " ";
+        i++;
+      }
+      if (i < sql.length) {
+        chars[i] = " ";
+        chars[i + 1] = " ";
+        i += 2;
+      }
+      continue;
+    }
+
+    // Quoted identifiers pass through untouched (a ' inside them must not
+    // start a string literal)
+    if (char === '"' || char === "`" || char === "[") {
+      const close = char === "[" ? "]" : char;
+      i++;
+      while (i < sql.length && sql[i] !== close) {
+        i++;
+      }
+      i++;
+      continue;
+    }
+
+    if (char === "'") {
+      chars[i] = " ";
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === "'") {
+          chars[i] = " ";
+          if (sql[i + 1] === "'") {
+            // Escaped quote ('') stays inside the literal
+            chars[i + 1] = " ";
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        chars[i] = " ";
+        i++;
+      }
+      continue;
+    }
+
+    i++;
+  }
+  return chars.join("");
+}
 
 /**
  * Regex-based fallback used when the statement doesn't parse (e.g. mid-edit),
  * so aliases still resolve. Matches `FROM|JOIN <table> [AS] <alias>` forms.
  */
-function buildContextByRegex(sql: string): QueryContext {
+function buildContextByRegex(rawSql: string): QueryContext {
   const ctx: MutableContext = {
     tables: [],
     ctes: [],
@@ -302,6 +379,9 @@ function buildContextByRegex(sql: string): QueryContext {
     seenTables: new Set(),
     seenCtes: new Set(),
   };
+
+  // Masking preserves offsets, so CTE spans remain valid in the original text
+  const sql = maskLiteralsAndComments(rawSql);
 
   extractCtesByRegex(sql, ctx);
 

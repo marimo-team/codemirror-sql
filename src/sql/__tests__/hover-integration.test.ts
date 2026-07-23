@@ -925,6 +925,18 @@ describe("Query-aware hover behavior - edge cases", () => {
         expect(html).toContain("users");
       });
 
+      it("escapes markup in alias targets before rendering", async () => {
+        const source = createHoverSource({ schema: { "<b>t</b>": ["x"] } });
+        const doc = 'SELECT x FROM "<b>t</b>" a';
+        const view = createMockView(doc);
+
+        const tooltip = await source(view, doc.length - 1, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("is an alias for");
+        expect(html).toContain("&lt;b&gt;t&lt;/b&gt;");
+        expect(html).not.toContain("alias for <code><b>");
+      });
+
       it("does not leak tables across statement boundaries", async () => {
         const source = createHoverSource({ schema, enableFuzzySearch: true });
         const doc = "SELECT name FROM users; SELECT name FROM orders";

@@ -139,6 +139,26 @@ describe("aliasColumnCompletionSource", () => {
     expect(labels(result)).toEqual(["id", "username", "email"]);
   });
 
+  it("completes after a quoted alias qualifier", async () => {
+    const quotedSchema: SQLNamespace = { "User Table": ["id", "full_name"] };
+    const doc = 'SELECT "ut". FROM "User Table" ut';
+    const result = await complete(doc, { schema: quotedSchema, pos: 'SELECT "ut".'.length });
+    expect(labels(result)).toEqual(["id", "full_name"]);
+  });
+
+  it("forces the property type but keeps schema-provided details", async () => {
+    const typedSchema: SQLNamespace = {
+      users: [{ label: "id", type: "keyword", detail: "Primary key" }],
+    };
+    const result = await complete("SELECT u. FROM users u", {
+      schema: typedSchema,
+      pos: "SELECT u.".length,
+    });
+    expect(result?.options).toEqual([
+      { label: "id", type: "property", detail: "Primary key" },
+    ]);
+  });
+
   it("returns null when the aliased table is not in the schema", async () => {
     const result = await complete("SELECT m. FROM missing m", {
       schema,

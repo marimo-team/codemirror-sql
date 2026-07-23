@@ -127,6 +127,32 @@ describe("analyzeQueryContext", () => {
       expect(context.tables.some((t) => t.name === "orders" && t.alias)).toBe(false);
     });
 
+    it("still records a joined table when the previous table has no alias", async () => {
+      const context = await analyze("SELECT FROM users JOIN orders o ON ");
+      expect(context.tables.map((t) => t.name)).toEqual(["users", "orders"]);
+      expect(context.aliases.get("o")).toBe("orders");
+    });
+
+    it("ignores FROM/JOIN inside string literals", async () => {
+      const context = await analyze("SELECT u. FROM users u WHERE name = 'from phantom p'");
+      expect(context.tables.map((t) => t.name)).toEqual(["users"]);
+      expect(context.aliases.has("p")).toBe(false);
+    });
+
+    it("ignores FROM/JOIN inside comments", async () => {
+      const context = await analyze(
+        "SELECT u. -- join phantom ph\n/* from ghost g */ FROM users u",
+      );
+      expect(context.tables.map((t) => t.name)).toEqual(["users"]);
+      expect(context.aliases.has("ph")).toBe(false);
+      expect(context.aliases.has("g")).toBe(false);
+    });
+
+    it("does not let a quote inside a quoted identifier start a string", async () => {
+      const context = await analyze(`SELECT x. FROM "it's" x`);
+      expect(context.aliases.get("x")).toBe("it's");
+    });
+
     it("handles AS aliases and qualified paths", async () => {
       const context = await analyze("SELECT FROM mydb.users AS u WHERE u.");
       expect(context.aliases.get("u")).toBe("mydb.users");
