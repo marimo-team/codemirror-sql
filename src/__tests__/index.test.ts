@@ -14,9 +14,12 @@ describe("index.ts exports", () => {
         "SqlStructureAnalyzer",
         "cteCompletionSource",
         "defaultSqlHoverTheme",
+        "resolveSqlSchema",
         "sqlExtension",
         "sqlHover",
         "sqlLinter",
+        "sqlSchemaFacet",
+        "sqlSemanticLinter",
         "sqlStructureGutter",
       ]
     `);

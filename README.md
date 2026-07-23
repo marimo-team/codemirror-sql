@@ -5,6 +5,7 @@ A CodeMirror extension for SQL linting and visual gutter indicators. Built by an
 ## Features
 
 - ⚡ **Real-time validation** - Per-statement SQL syntax checking as you type, with detailed error messages for every broken statement
+- 🧠 **Schema-aware linting** - Warns about unknown tables, unknown columns, and ambiguous column references based on your schema
 - 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
 - 🔮 **CTE autocomplete** - Auto-complete support for CTEs
@@ -47,6 +48,8 @@ const editor = new EditorView({
       autocomplete: cteCompletionSource,
     }),
     sqlExtension({
+      // Shared by hover tooltips and semantic linting
+      schema: schema,
       linterConfig: {
         delay: 250, // Validation delay in ms
       },
@@ -57,7 +60,6 @@ const editor = new EditorView({
       },
       enableHover: true,
       hoverConfig: {
-        schema: schema,
         hoverTime: 300,
         enableKeywords: true,
         enableTables: true,
@@ -68,6 +70,34 @@ const editor = new EditorView({
   parent: document.querySelector("#editor"),
 });
 ```
+
+### Schema-aware semantic linting
+
+When a schema is provided (via the top-level `schema` option, the
+`sqlSchemaFacet`, or `semanticLinterConfig.schema`), queries are validated
+against it: unknown tables, unknown columns, and ambiguous column references
+are reported as warnings (configurable per check). Without a schema the
+semantic linter is inert.
+
+```ts
+import { sqlSemanticLinter } from "@marimo-team/codemirror-sql";
+
+sqlSemanticLinter({
+  schema: { users: ["id", "name"], posts: ["id", "user_id"] },
+  severity: {
+    unknownTable: "error", // "error" | "warning" | "off" (default: "warning")
+    unknownColumn: "warning",
+    ambiguousColumn: "warning",
+  },
+});
+```
+
+Checks only run on statements that parse cleanly, and skip anything that
+can't be confidently resolved (CTE outputs, subquery results, aliases from
+outer scopes), preferring under-reporting over false positives. Semantic
+diagnostics carry `source: "sql-schema"`; syntax diagnostics use
+`source: "sql-parser"`. If the schema is provided as a function, it is called
+on every lint pass and should be cheap/memoized.
 
 ## Additional Dialects
 

@@ -35,10 +35,22 @@ describe("sqlExtension", () => {
   it("should handle all features disabled", () => {
     const extensions = sqlExtension({
       enableLinting: false,
+      enableSemanticLinting: false,
       enableGutterMarkers: false,
       enableHover: false,
     });
     expect(extensions).toEqual([]);
+  });
+
+  it("should register the shared schema facet when a schema is provided", () => {
+    const withSchema = sqlExtension({
+      schema: { users: ["id"] },
+      enableLinting: false,
+      enableSemanticLinting: false,
+      enableGutterMarkers: false,
+      enableHover: false,
+    });
+    expect(withSchema).toHaveLength(1);
   });
 
   it("should pass config objects to individual extensions", () => {

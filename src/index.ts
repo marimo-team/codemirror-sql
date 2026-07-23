@@ -1,6 +1,6 @@
 export { cteCompletionSource } from "./sql/cte-completion-source.js";
 export { type SqlLinterConfig, sqlLinter } from "./sql/diagnostics.js";
-export { sqlExtension } from "./sql/extension.js";
+export { type SqlExtensionConfig, sqlExtension } from "./sql/extension.js";
 export type {
   KeywordTooltipData,
   NamespaceTooltipData,
@@ -15,6 +15,12 @@ export {
   type ParserOption,
   type SupportedDialects,
 } from "./sql/parser.js";
+export { resolveSqlSchema, type SqlSchemaSource, sqlSchemaFacet } from "./sql/schema-facet.js";
+export {
+  type SemanticSeverity,
+  type SqlSemanticLinterConfig,
+  sqlSemanticLinter,
+} from "./sql/semantic-diagnostics.js";
 export type { SqlStatement } from "./sql/structure-analyzer.js";
 export { SqlStructureAnalyzer } from "./sql/structure-analyzer.js";
 export type { SqlGutterConfig } from "./sql/structure-extension.js";

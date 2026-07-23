@@ -134,9 +134,16 @@ function initializeEditor() {
     databaseField,
     baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
     sqlExtension({
+      // Shared schema for hover tooltips and schema-aware linting
+      schema: schema,
       // Linter extension configuration
       linterConfig: {
         delay: 250, // Delay before running validation
+        parser,
+      },
+      // Schema-aware linting (unknown tables/columns, ambiguous columns)
+      semanticLinterConfig: {
+        delay: 250,
         parser,
       },
 
