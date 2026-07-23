@@ -264,6 +264,11 @@ describe("findNamespaceCompletions", () => {
       const results = findNamespaceCompletions(mockNamespaces.complexNested, "postgres.public.");
       expect(results.length).toBeGreaterThanOrEqual(2); // users, orders
     });
+
+    it("should return an empty array when the dotted base path does not resolve", () => {
+      const results = findNamespaceCompletions(mockNamespaces.simpleObject, "nonexistent.foo");
+      expect(results).toEqual([]);
+    });
   });
 
   describe("self label matching at the root", () => {
@@ -653,6 +658,239 @@ describe("performance and memory", () => {
 
     // If we get here without running out of memory, the test passes
     expect(true).toBe(true);
+  });
+});
+
+describe("semantic type classification", () => {
+  // A schema crafted so that each structural branch of determineSemanticType is
+  // reachable through the public traversal/completion helpers.
+  const semanticSchema: SQLNamespace = {
+    // object namespace whose child is an array (table) -> "database" at depth 1
+    db: {
+      tbl: ["a", createCompletion("b")],
+    },
+    // object namespace whose children are only nested objects -> "namespace"
+    nsOnly: {
+      child: { grand: ["x"] },
+    },
+    // object -> object -> object(with array) so the inner object is a "schema" at depth 3
+    deep: {
+      lvl1: {
+        sch: { t: ["x"] },
+      },
+    },
+    // self/children completion whose children is an array -> "table" at depth 1
+    tblSelf: {
+      self: createCompletion("tblSelf"),
+      children: ["c1", createCompletion("c2")],
+    },
+    // self/children completion whose object children include a table (array) -> "database"
+    dbSelf: {
+      self: createCompletion("dbSelf"),
+      children: { t1: ["x"] },
+    },
+    // self/children completion whose object children have no tables -> "database" at depth 1
+    dbSelfNoTables: {
+      self: createCompletion("dbSelfNoTables"),
+      children: { subsch: { t: ["x"] } },
+    },
+    // nested self/children completions at depth 2 -> "schema"
+    outer: {
+      mid: {
+        self: createCompletion("mid"),
+        children: { t: ["x"] },
+      },
+      midNoTables: {
+        self: createCompletion("midNoTables"),
+        children: { subsch: { t: ["x"] } },
+      },
+    },
+    // self/children completion whose children is itself a self/children node
+    // (neither array nor plain object) -> database (depth 1)
+    weirdSelf: {
+      self: createCompletion("weirdSelf"),
+      children: { self: createCompletion("inner"), children: ["x"] },
+    },
+    outerWeird: {
+      midWeird: {
+        self: createCompletion("midWeird"),
+        children: { self: createCompletion("inner2"), children: ["y"] },
+      },
+    },
+  };
+
+  describe("leaf columns in arrays", () => {
+    it("classifies a leaf string in an array as a column", () => {
+      const result = traverseNamespacePath(semanticSchema, "db.tbl.a");
+      expect(result?.type).toBe("string");
+      expect(result?.value).toBe("a");
+      expect(result?.semanticType).toBe("column");
+    });
+
+    it("classifies a leaf Completion in an array as a column", () => {
+      const result = traverseNamespacePath(semanticSchema, "db.tbl.b");
+      expect(result?.type).toBe("completion");
+      expect(result?.completion?.label).toBe("b");
+      expect(result?.semanticType).toBe("column");
+    });
+
+    it("classifies array columns as columns via findNamespaceCompletions", () => {
+      const results = findNamespaceCompletions(mockNamespaces.arrayNamespace, "");
+      expect(results.length).toBeGreaterThan(0);
+      for (const result of results) {
+        expect(result.semanticType).toBe("column");
+      }
+    });
+
+    it("classifies Completion columns of a self/children array via findNamespaceCompletions", () => {
+      // "postgres.public.users" is a self/children whose children is an array of columns
+      const results = findNamespaceCompletions(
+        mockNamespaces.complexNested,
+        "postgres.public.users.",
+      );
+      expect(results.length).toBeGreaterThan(0);
+      const completionColumn = results.find((r) => r.type === "completion");
+      expect(completionColumn).toBeTruthy();
+      expect(completionColumn?.semanticType).toBe("column");
+    });
+
+    it("classifies array columns as columns via findNamespaceItemByEndMatch", () => {
+      const results = findNamespaceItemByEndMatch(mockNamespaces.arrayNamespace, "created_at");
+      const match = results.find((r) => r.completion?.label === "created_at");
+      expect(match?.semanticType).toBe("column");
+    });
+  });
+
+  describe("array namespaces resolved as nodes", () => {
+    it("classifies an array namespace node as a table", () => {
+      const result = traverseNamespacePath(semanticSchema, "db.tbl");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("table");
+    });
+  });
+
+  describe("object namespaces with tables", () => {
+    it("classifies a shallow object namespace with table children as a database", () => {
+      const result = traverseNamespacePath(semanticSchema, "db");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("database");
+    });
+
+    it("classifies a deep object namespace with table children as a schema", () => {
+      const result = traverseNamespacePath(semanticSchema, "deep.lvl1.sch");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("schema");
+    });
+
+    it("classifies an object namespace whose child is a self/children table as a schema (depth>1)", () => {
+      // postgres.public: children are `users` (self/children with array children) and
+      // `orders` (array), so hasTableChildren is satisfied via the self/children branch.
+      const result = traverseNamespacePath(mockNamespaces.complexNested, "postgres.public");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("schema");
+    });
+  });
+
+  describe("object namespaces without tables", () => {
+    it("classifies a shallow object namespace of only nested objects as a namespace", () => {
+      const result = traverseNamespacePath(semanticSchema, "nsOnly");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("namespace");
+    });
+
+    it("classifies a deeper object namespace of only nested objects as a namespace", () => {
+      const result = traverseNamespacePath(semanticSchema, "deep.lvl1");
+      expect(result?.type).toBe("namespace");
+      expect(result?.semanticType).toBe("namespace");
+    });
+  });
+
+  describe("self/children completions", () => {
+    it("classifies a self/children completion with array children as a table", () => {
+      const result = traverseNamespacePath(semanticSchema, "tblSelf");
+      expect(result?.type).toBe("completion");
+      expect(result?.completion?.label).toBe("tblSelf");
+      expect(result?.semanticType).toBe("table");
+    });
+
+    it("classifies a shallow self/children completion with table children as a database", () => {
+      const result = traverseNamespacePath(semanticSchema, "dbSelf");
+      expect(result?.type).toBe("completion");
+      expect(result?.semanticType).toBe("database");
+    });
+
+    it("classifies a shallow self/children completion without table children as a database", () => {
+      const result = traverseNamespacePath(semanticSchema, "dbSelfNoTables");
+      expect(result?.type).toBe("completion");
+      expect(result?.semanticType).toBe("database");
+    });
+
+    it("classifies a deep self/children completion with table children as a schema", () => {
+      const result = traverseNamespacePath(semanticSchema, "outer.mid");
+      expect(result?.type).toBe("completion");
+      expect(result?.completion?.label).toBe("mid");
+      expect(result?.semanticType).toBe("schema");
+    });
+
+    it("classifies a deep self/children completion without table children as a schema", () => {
+      const result = traverseNamespacePath(semanticSchema, "outer.midNoTables");
+      expect(result?.type).toBe("completion");
+      expect(result?.semanticType).toBe("schema");
+    });
+
+    it("classifies a root self/children completion (empty path) as a database", () => {
+      const result = traverseNamespacePath(mockNamespaces.selfChildren, "");
+      expect(result?.type).toBe("completion");
+      expect(result?.completion?.label).toBe("database");
+      expect(result?.semanticType).toBe("database");
+    });
+
+    it("classifies the self completion matched at the root as a database", () => {
+      const results = findNamespaceCompletions(mockNamespaces.selfChildren, "data");
+      const selfMatch = results.find((r) => r.completion?.label === "database");
+      expect(selfMatch?.semanticType).toBe("database");
+    });
+
+    it("classifies a shallow self/children completion with self/children children as a database", () => {
+      const result = traverseNamespacePath(semanticSchema, "weirdSelf");
+      expect(result?.type).toBe("completion");
+      expect(result?.semanticType).toBe("database");
+    });
+
+    it("classifies a deep self/children completion with self/children children as a schema", () => {
+      const result = traverseNamespacePath(semanticSchema, "outerWeird.midWeird");
+      expect(result?.type).toBe("completion");
+      expect(result?.semanticType).toBe("schema");
+    });
+  });
+
+  describe("array item matching", () => {
+    it("resolves an array's Completion item by its label", () => {
+      const result = traverseNamespacePath(mockNamespaces.arrayNamespace, "created_at");
+      expect(result?.type).toBe("completion");
+      expect(result?.completion?.label).toBe("created_at");
+      expect(result?.semanticType).toBe("column");
+    });
+
+    it("matches array string items case-insensitively by default", () => {
+      const result = traverseNamespacePath(mockNamespaces.arrayNamespace, "NAME");
+      expect(result?.type).toBe("string");
+      expect(result?.value).toBe("name");
+    });
+
+    it("does not match array string items when case-sensitive", () => {
+      const result = traverseNamespacePath(mockNamespaces.arrayNamespace, "NAME", {
+        caseSensitive: true,
+      });
+      expect(result).toBeNull();
+    });
+
+    it("does not match an array Completion item when case-sensitive", () => {
+      const result = traverseNamespacePath(mockNamespaces.arrayNamespace, "CREATED_AT", {
+        caseSensitive: true,
+      });
+      expect(result).toBeNull();
+    });
   });
 });
 

@@ -89,6 +89,83 @@ describe("SqlParser", () => {
       expect(mockGetParserOptions).toHaveBeenCalledTimes(1);
       expect(mockGetParserOptions).toHaveBeenCalledWith(state);
     });
+
+    it("rewrites 'Expected ... but ... found.' messages and strips the Error: prefix", async () => {
+      // node-sql-parser produces an "Expected ... but \"F\" found." style message here
+      const result = await parser.parse("SELECT * FORM users", { state });
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      const message = result.errors[0].message;
+      // cleanErrorMessage rewrites the "but ... found" tail
+      expect(message).toContain("found unexpected token");
+      expect(message).not.toContain("but");
+      // and strips any leading "Error: " prefix
+      expect(message.startsWith("Error: ")).toBe(false);
+    });
+
+    it("falls back to line/column 1 for errors without location info (unsupported dialect)", async () => {
+      // An unsupported dialect throws "X is not supported currently" with no
+      // location or hash, forcing the message-regex fallback in extractErrorInfo.
+      const oracleParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          // Oracle is not supported by node-sql-parser
+          database: "Oracle" as unknown as "PostgreSQL",
+        }),
+      });
+
+      const result = await oracleParser.parse("SELECT 1", { state });
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain("not supported");
+      // No "line N"/"column N" in the message, so both default to 1
+      expect(result.errors[0].line).toBe(1);
+      expect(result.errors[0].column).toBe(1);
+    });
+
+    it("clamps a reported column that exceeds the sql length", async () => {
+      // "SELECT * FROM" is 13 chars; the parser reports column 14 (end of input),
+      // which extractErrorInfo clamps down to sql.length.
+      const sql = "SELECT * FROM";
+      const result = await parser.parse(sql, { state });
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].column).toBe(sql.length);
+    });
+  });
+
+  describe("extractTableReferences", () => {
+    it("extracts and cleans table names from a valid query", async () => {
+      const tables = await parser.extractTableReferences("SELECT id FROM users");
+      expect(tables).toContain("users");
+      // Names are cleaned of the "type::schema::table" prefixing
+      expect(tables.every((table) => !table.includes("::"))).toBe(true);
+    });
+
+    it("strips schema prefixes from qualified table names", async () => {
+      const tables = await parser.extractTableReferences("SELECT * FROM schema1.orders");
+      expect(tables).toContain("orders");
+      expect(tables.every((table) => !table.includes("::"))).toBe(true);
+    });
+
+    it("returns an empty array for invalid SQL", async () => {
+      const tables = await parser.extractTableReferences("NOT VALID SQL");
+      expect(tables).toEqual([]);
+    });
+
+    it("passes parser options through when a state is provided", async () => {
+      const getParserOptions = vi.fn().mockReturnValue({ database: "PostgreSQL" });
+      const customParser = new NodeSqlParser({ getParserOptions });
+      const tableState = EditorState.create({ doc: "SELECT id FROM users" });
+
+      const tables = await customParser.extractTableReferences("SELECT id FROM users", {
+        state: tableState,
+      });
+      expect(getParserOptions).toHaveBeenCalledWith(tableState);
+      expect(tables).toContain("users");
+    });
   });
 
   describe("extractColumnReferences", () => {
@@ -221,6 +298,29 @@ describe("SqlParser", () => {
       // The offset should be at the original position of the error
       const expectedColumn = sql.length;
       expect(error.column).toBe(expectedColumn);
+    });
+
+    it("maps the error column back through the CREATE OR REPLACE replacement (catch path)", async () => {
+      const duckdbParser = new NodeSqlParser({
+        getParserOptions: () => ({
+          database: "DuckDB",
+        }),
+      });
+
+      // Lowercase "create or replace table" is matched by indexOf at position 0,
+      // so a mid-string syntax error ("badclause") gets its column shifted back
+      // by the length removed during the replacement rather than clamped.
+      const sql = "create or replace table t (id INT) badclause";
+      const state = EditorState.create({ doc: sql });
+
+      const result = await duckdbParser.parse(sql, { state });
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].line).toBe(1);
+      // Column points at "badclause" in the original (pre-replacement) SQL
+      expect(result.errors[0].column).toBe(sql.indexOf("badclause") + 1);
+      expect(result.errors[0].column).toBeLessThan(sql.length);
     });
 
     it("should be successful with macro keyword", async () => {

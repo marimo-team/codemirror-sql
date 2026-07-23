@@ -128,6 +128,14 @@ describe("DefaultSqlTooltipRenders.column", () => {
     expect(html).toContain('title="type"');
     expect(html).toContain("int");
   });
+
+  it("omits the related section when the only other columns are the column itself", () => {
+    // Duplicate column names mean the filtered "other columns" list is empty
+    // even though the table has more than one entry.
+    const html = render({ tableName: "t", columnName: "a", schema: { t: ["a", "a"] } });
+    expect(html).toContain("<strong>a</strong>");
+    expect(html).not.toContain("Other columns");
+  });
 });
 
 describe("DefaultSqlTooltipRenders.namespace", () => {
@@ -247,6 +255,166 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
     };
     const html = render(item);
     expect(html).toContain("<strong>unknown</strong>");
+  });
+
+  it("omits the children line when the namespace is not countable", () => {
+    // A namespace value that is neither an array nor an object makes
+    // countNamespaceChildren return 0, so no "Contains N items" line renders.
+    const item: ResolvedNamespaceItem = {
+      path: ["x"],
+      type: "namespace",
+      semanticType: "namespace",
+      namespace: "not-a-namespace" as unknown as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("<strong>x</strong>");
+    expect(html).toContain("Namespace");
+    expect(html).not.toContain("Contains");
+  });
+
+  it("renders a table with no detail and no columns", () => {
+    // Exercises the table branch with an empty (array) namespace and no
+    // completion detail: no "Columns" block, no "Schema" path (single segment).
+    const item: ResolvedNamespaceItem = {
+      path: ["solo"],
+      type: "namespace",
+      semanticType: "table",
+      namespace: [] as unknown as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("<strong>solo</strong>");
+    expect(html).toContain("Table</div>");
+    expect(html).not.toContain("sql-hover-columns");
+    expect(html).not.toContain("Schema:");
+  });
+
+  it("renders a column without a table path when the path has a single segment", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["lonely"],
+      type: "string",
+      semanticType: "column",
+      value: "lonely",
+    };
+    const html = render(item);
+    expect(html).toContain("<strong>lonely</strong>");
+    expect(html).toContain("Column</div>");
+    expect(html).not.toContain("Table:");
+  });
+
+  it("renders a column with no table path when the path is empty", () => {
+    const item: ResolvedNamespaceItem = {
+      path: [],
+      type: "string",
+      semanticType: "column",
+      value: "bare",
+    };
+    const html = render(item);
+    expect(html).toContain("<strong>bare</strong>");
+    expect(html).not.toContain("sql-hover-path");
+    expect(html).not.toContain("Table:");
+  });
+
+  it("renders a database with a detail but no namespace children line", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["db"],
+      type: "completion",
+      semanticType: "database",
+      completion: { label: "db", detail: "the database" },
+    };
+    const html = render(item);
+    expect(html).toContain("Database: the database");
+    expect(html).not.toContain("Contains");
+  });
+
+  it("renders a schema with a detail but no table count", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["db", "sch"],
+      type: "completion",
+      semanticType: "schema",
+      completion: { label: "sch", detail: "a schema" },
+    };
+    const html = render(item);
+    expect(html).toContain("Schema: a schema");
+    expect(html).toContain("<code>db.sch</code>");
+    expect(html).not.toContain("Contains");
+  });
+
+  it("renders a table with an object namespace (not a column array) and skips the column list", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["sch", "t"],
+      type: "completion",
+      semanticType: "table",
+      completion: { label: "t", detail: "a table" },
+      namespace: { self: { label: "t" }, children: ["a"] } as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("Table: a table");
+    expect(html).toContain("Schema:</strong> <code>sch</code>");
+    expect(html).not.toContain("sql-hover-columns");
+  });
+
+  it("uses singular table wording for a schema with exactly one table", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["db", "public"],
+      type: "namespace",
+      semanticType: "schema",
+      namespace: { users: ["id"] },
+    };
+    const html = render(item);
+    expect(html).toContain("Contains 1 table");
+    expect(html).not.toContain("1 tables");
+  });
+
+  it("renders a database with an empty namespace and no children line", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["db"],
+      type: "namespace",
+      semanticType: "database",
+      namespace: {} as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("Database</div>");
+    expect(html).not.toContain("Contains");
+  });
+
+  it("renders a schema with an empty path and empty namespace", () => {
+    const item: ResolvedNamespaceItem = {
+      path: [],
+      type: "namespace",
+      semanticType: "schema",
+      namespace: {} as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("Schema</div>");
+    // No path segment and no children => neither block is rendered
+    expect(html).not.toContain("sql-hover-path");
+    expect(html).not.toContain("Contains");
+  });
+
+  it("renders a table with an empty path and no schema line", () => {
+    const item: ResolvedNamespaceItem = {
+      path: [],
+      type: "namespace",
+      semanticType: "table",
+      namespace: ["id"] as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("Table</div>");
+    expect(html).not.toContain("Schema:");
+    expect(html).toContain("Columns (1)");
+  });
+
+  it("renders the default namespace branch with a detail and child count", () => {
+    const item: ResolvedNamespaceItem = {
+      path: ["misc"],
+      type: "completion",
+      semanticType: "namespace",
+      completion: { label: "misc", detail: "misc ns" },
+      namespace: { a: ["x"], b: ["y"] } as SQLNamespace,
+    };
+    const html = render(item);
+    expect(html).toContain("Namespace: misc ns");
+    expect(html).toContain("Contains 2 items");
   });
 });
 
@@ -410,5 +578,50 @@ describe("hover source tooltip DOM creation", () => {
     const view = mockView(doc);
     const tooltip = await source(view, doc.indexOf("SELECT") + 2, 1);
     expect(tooltip).toBeNull();
+  });
+
+  it("renders a default namespace tooltip DOM for a nested namespace item", async () => {
+    const nestedSchema: SQLNamespace = { mydb: { public: { users: ["id", "name"] } } };
+    const source = createHoverSource({ schema: nestedSchema, keywords: {} });
+    // "mydb" alone is not a parseable query, so the resolver falls back to the
+    // full schema and resolves the bare namespace name.
+    const doc = "mydb";
+    const view = mockView(doc);
+    const tooltip = await source(view, 2, 1);
+    expect(tooltip).not.toBeNull();
+    const { dom } = tooltip!.create(view);
+    expect(dom.className).toBe("cm-sql-hover-tooltip");
+    expect(dom.innerHTML).toContain("<strong>mydb</strong>");
+    expect(dom.innerHTML).toContain("namespace");
+  });
+
+  it("uses a custom namespace renderer for namespace/schema/database items", async () => {
+    const namespace = vi.fn().mockReturnValue("<div>custom namespace</div>");
+    const nestedSchema: SQLNamespace = { mydb: { public: { users: ["id"] } } };
+    const source = createHoverSource({
+      schema: nestedSchema,
+      keywords: {},
+      tooltipRenderers: { namespace },
+    });
+    const doc = "mydb";
+    const view = mockView(doc);
+    const tooltip = await source(view, 2, 1);
+    expect(tooltip).not.toBeNull();
+    const { dom } = tooltip!.create(view);
+    expect(namespace).toHaveBeenCalledOnce();
+    expect(dom.innerHTML).toContain("custom namespace");
+  });
+
+  it("prepends the alias notice to the default tooltip when hovering a bare alias", async () => {
+    const source = createHoverSource({ schema, keywords: {} });
+    const doc = "SELECT u.id FROM users u";
+    const view = mockView(doc);
+    const tooltip = await source(view, doc.length - 1, 1);
+    expect(tooltip).not.toBeNull();
+    const { dom } = tooltip!.create(view);
+    expect(dom.innerHTML).toContain("sql-hover-alias");
+    expect(dom.innerHTML).toContain("is an alias for");
+    expect(dom.innerHTML).toContain("<code>u</code>");
+    expect(dom.innerHTML).toContain("<code>users</code>");
   });
 });

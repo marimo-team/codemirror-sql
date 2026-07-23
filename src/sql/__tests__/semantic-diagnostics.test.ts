@@ -138,6 +138,32 @@ describe("unknown tables", () => {
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].message).toContain("psts");
   });
+
+  it("flags the source table of an INSERT ... SELECT", async () => {
+    const diagnostics = await lint("INSERT INTO users SELECT * FROM usres", { schema: SCHEMA });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("usres");
+  });
+
+  it("flags unknown REPLACE targets", async () => {
+    const diagnostics = await lint("REPLACE INTO usres (id) VALUES (1)", { schema: SCHEMA });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("usres");
+  });
+
+  it("flags over-qualified table references not present at that depth", async () => {
+    // `users` exists at the top level, but `wrongschema.users` requires a
+    // deeper match that the schema does not provide
+    const diagnostics = await lint("SELECT * FROM wrongschema.users", { schema: SCHEMA });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("wrongschema.users");
+  });
+
+  it("checks nested selects reached through non-standard statements (EXPLAIN)", async () => {
+    const diagnostics = await lint("EXPLAIN SELECT * FROM usres", { schema: SCHEMA });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("usres");
+  });
 });
 
 describe("unknown columns", () => {
@@ -199,6 +225,29 @@ describe("unknown columns", () => {
     });
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].message).toContain("nme");
+  });
+
+  it("checks columns inside an unaliased FROM subquery", async () => {
+    const diagnostics = await lint("SELECT * FROM (SELECT nme FROM users)", { schema: SCHEMA });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("nme");
+  });
+
+  it("checks fully qualified (db.table.column) column references", async () => {
+    const nested = { mydb: { users: ["id", "name"] } };
+    expect(await lint("SELECT mydb.users.name FROM mydb.users", { schema: nested })).toEqual([]);
+
+    const diagnostics = await lint("SELECT mydb.users.nme FROM mydb.users", { schema: nested });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("nme");
+    expect(diagnostics[0].message).toContain("mydb.users");
+  });
+
+  it("does not flag unqualified columns when a table is ambiguous across schemas", async () => {
+    // `users` matches two nested tables, so its column list is not trusted and
+    // the unknown-column check is skipped
+    const schema = { a: { users: ["id"] }, b: { users: ["id"] } };
+    expect(await lint("SELECT nme FROM users", { schema })).toEqual([]);
   });
 
   it("skips unqualified columns in correlated subqueries", async () => {
@@ -351,6 +400,28 @@ describe("severity configuration", () => {
         severity: { ambiguousColumn: "off" },
       }),
     ).toEqual([]);
+  });
+
+  it("turns the unknown-column check off independently", async () => {
+    expect(
+      await lint("SELECT nme FROM users", {
+        schema: SCHEMA,
+        severity: { unknownColumn: "off" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("applies distinct severities per check kind", async () => {
+    const doc = "SELECT nme FROM usres";
+    const diagnostics = await lint(doc, {
+      schema: SCHEMA,
+      severity: { unknownTable: "error", unknownColumn: "warning" },
+    });
+    // Only the unknown table is reported: `nme` cannot be checked because its
+    // single source table does not resolve
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].severity).toBe("error");
+    expect(diagnostics[0].message).toContain("usres");
   });
 });
 

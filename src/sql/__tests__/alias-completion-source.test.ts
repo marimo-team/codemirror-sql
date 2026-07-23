@@ -1,48 +1,12 @@
-import { CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { aliasColumnCompletionSource } from "../alias-completion-source.js";
-import { sqlSchemaFacet } from "../schema-facet.js";
+import { completeWith, labels, NESTED_SCHEMA, TEST_SCHEMA } from "./test-utils.js";
 
-const schema: SQLNamespace = {
-  users: ["id", "username", "email"],
-  orders: [
-    { label: "order_id", detail: "Order ID", type: "property" },
-    "total",
-  ],
-};
+const schema = TEST_SCHEMA;
+const nestedSchema = NESTED_SCHEMA;
 
-const nestedSchema: SQLNamespace = {
-  mydb: {
-    users: ["id", "username"],
-  },
-};
-
-async function complete(
-  doc: string,
-  opts: {
-    schema?: SQLNamespace;
-    pos?: number;
-    explicit?: boolean;
-    facetSchema?: SQLNamespace;
-  } = {},
-): Promise<CompletionResult | null> {
-  const source = aliasColumnCompletionSource(
-    opts.schema === undefined && opts.facetSchema !== undefined ? {} : { schema: opts.schema },
-  );
-  const state = EditorState.create({
-    doc,
-    extensions: opts.facetSchema !== undefined ? [sqlSchemaFacet.of(opts.facetSchema)] : [],
-  });
-  const pos = opts.pos ?? doc.length;
-  const context = new CompletionContext(state, pos, opts.explicit ?? false);
-  return (await source(context)) as CompletionResult | null;
-}
-
-function labels(result: CompletionResult | null): string[] {
-  return (result?.options ?? []).map((option) => option.label);
-}
+const complete = completeWith(aliasColumnCompletionSource);
 
 describe("aliasColumnCompletionSource", () => {
   it("offers the aliased table's columns after `alias.`", async () => {
