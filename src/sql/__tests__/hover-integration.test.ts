@@ -701,6 +701,48 @@ describe("Query-aware hover behavior", () => {
       expect(filteredSchema).toHaveProperty("orders");
       expect(filteredSchema).not.toHaveProperty("products");
     });
+
+    it("should keep parent namespaces that contain a referenced child table", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      // `mydb` itself is not referenced, but it holds `orders`, which is. The
+      // recursive branch keeps `mydb` with only its referenced children.
+      const nested: SQLNamespace = {
+        mydb: {
+          orders: ["id", "total"],
+          products: ["id", "name"],
+        },
+      };
+      const filtered = filterSchemaByTableRefs(nested, new Set(["orders"]));
+
+      expect(filtered).toHaveProperty("mydb");
+      const mydb = (filtered as { mydb: Record<string, unknown> }).mydb;
+      expect(mydb).toHaveProperty("orders");
+      expect(mydb).not.toHaveProperty("products");
+    });
+
+    it("should drop parent namespaces whose children are all unreferenced", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      const nested: SQLNamespace = {
+        mydb: { products: ["id"] },
+      };
+      const filtered = filterSchemaByTableRefs(nested, new Set(["orders"]));
+
+      expect(filtered).not.toHaveProperty("mydb");
+      expect(filtered).toEqual({});
+    });
+
+    it("should return an array namespace unchanged", async () => {
+      const { filterSchemaByTableRefs } = await import("../hover.js");
+
+      // A top-level array (column list) is not an object namespace, so it is
+      // returned as-is regardless of the table refs.
+      const arrayNamespace: SQLNamespace = ["id", "name", "email"];
+      const filtered = filterSchemaByTableRefs(arrayNamespace, new Set(["users"]));
+
+      expect(filtered).toBe(arrayNamespace);
+    });
   });
 
   describe("Query-aware column resolution", () => {
@@ -958,6 +1000,65 @@ describe("Query-aware hover behavior - edge cases", () => {
         const html = renderTooltip(tooltip, view);
         expect(html).toContain("<strong>name</strong>");
       });
+    });
+
+    it("returns null when the hovered word is empty (side === 0 on whitespace)", async () => {
+      // Between the two spaces neither boundary condition trips, so the sliced
+      // word is empty and the source returns null (word-length guard).
+      const source = createHoverSource({ schema: { users: ["id"] }, keywords: {} });
+      const doc = "SELECT  id FROM users";
+      const view = createMockView(doc);
+      // pos 7 sits on the second space with side 0
+      expect(await source(view, 7, 0)).toBeNull();
+    });
+
+    it("resolves the schema from the sqlSchemaFacet when no schema is configured", async () => {
+      const { sqlSchemaFacet } = await import("../schema-facet.js");
+      const schema = { users: ["id", "name"] };
+      const state = EditorState.create({
+        doc: "SELECT id FROM users",
+        extensions: [sqlSchemaFacet.of(schema)],
+      });
+      const view = { state } as unknown as EditorView;
+
+      // No `schema` in config: the source must fall back to the facet value
+      const source = createHoverSource({ keywords: {} });
+      const tooltip = await source(view, "SELECT id FROM users".indexOf("users") + 2, 1);
+      expect(tooltip).not.toBeNull();
+      const html = tooltip!.create(view).dom.innerHTML;
+      expect(html).toContain("users");
+      expect(html).toContain("table");
+    });
+
+    it("prefers the explicit config schema over the facet schema", async () => {
+      const { sqlSchemaFacet } = await import("../schema-facet.js");
+      const facetSchema = { facet_only: ["x"] };
+      const configSchema = { users: ["id", "name"] };
+      const state = EditorState.create({
+        doc: "SELECT id FROM users",
+        extensions: [sqlSchemaFacet.of(facetSchema)],
+      });
+      const view = { state } as unknown as EditorView;
+
+      const source = createHoverSource({ schema: configSchema, keywords: {} });
+      const tooltip = await source(view, "SELECT id FROM users".indexOf("users") + 2, 1);
+      expect(tooltip).not.toBeNull();
+      expect(tooltip!.create(view).dom.innerHTML).toContain("users");
+    });
+
+    it("resolves a nested database/schema/namespace item via the full-schema fallback", async () => {
+      // With no parseable tables in the doc, the resolver falls back to the full
+      // schema, letting a bare namespace name resolve to a non-table item.
+      const schema = { mydb: { public: { users: ["id", "name"] } } };
+      const source = createHoverSource({ schema, keywords: {} });
+      const doc = "mydb";
+      const view = createMockView(doc);
+
+      const tooltip = await source(view, 2, 1);
+      expect(tooltip).not.toBeNull();
+      const html = tooltip!.create(view).dom.innerHTML;
+      expect(html).toContain("<strong>mydb</strong>");
+      expect(html).toContain("namespace");
     });
 
     it("does not permanently disable hovers when the keywords promise rejects", async () => {

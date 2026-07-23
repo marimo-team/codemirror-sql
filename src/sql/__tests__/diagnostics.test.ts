@@ -232,4 +232,84 @@ describe("lint source", () => {
     expect(diagnostics).toHaveLength(2);
     expect(validateSpy).not.toHaveBeenCalled();
   });
+
+  it("should clamp the diagnostic span to the document end when the error column runs past it", async () => {
+    // A parser whose reported column points beyond the end of the document
+    // exercises the `from >= doc.length` branch in tokenEndAt, which clamps
+    // the span end to `doc.length`.
+    const doc = "SELECT 1";
+    const parser = {
+      validateSql: vi.fn(async () => [
+        { message: "unexpected end of input", line: 1, column: 999, severity: "error" as const },
+      ]),
+      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      extractTableReferences: vi.fn(async () => []),
+      extractColumnReferences: vi.fn(async () => []),
+    } as unknown as SqlParser;
+
+    const diagnostics = await lint(doc, { parser, perStatement: false });
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].from).toBe(doc.length);
+    expect(diagnostics[0].to).toBe(doc.length);
+  });
+
+  it("should preserve warning severity from the parser", async () => {
+    const parser = {
+      validateSql: vi.fn(async () => [
+        { message: "deprecated syntax", line: 1, column: 1, severity: "warning" as const },
+      ]),
+      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      extractTableReferences: vi.fn(async () => []),
+      extractColumnReferences: vi.fn(async () => []),
+    } as unknown as SqlParser;
+
+    const diagnostics = await lint("SELECT 1", { parser, perStatement: false });
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].severity).toBe("warning");
+    expect(diagnostics[0].message).toBe("deprecated syntax");
+  });
+
+  it("should emit multiple diagnostics from a single statement when the parser returns several", async () => {
+    const parser = {
+      validateSql: vi.fn(async () => [
+        { message: "first", line: 1, column: 1, severity: "error" as const },
+        { message: "second", line: 1, column: 8, severity: "error" as const },
+      ]),
+      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      extractTableReferences: vi.fn(async () => []),
+      extractColumnReferences: vi.fn(async () => []),
+    } as unknown as SqlParser;
+
+    const diagnostics = await lint("SELECT badcol", { parser, perStatement: false });
+
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.map((d) => d.message)).toEqual(["first", "second"]);
+  });
+
+  it("clamps a statement-relative error column that overshoots to the statement end", async () => {
+    // perStatement path: an error with a large column is clamped within the
+    // statement bounds by convertStatementErrorToDiagnostic.
+    const doc = "SELECT 1;";
+    const parser = {
+      validateSql: vi.fn(async () => []),
+      // The structure analyzer derives per-statement errors from parse().
+      parse: vi.fn(async () => ({
+        success: false,
+        errors: [{ message: "boom", line: 1, column: 999, severity: "error" as const }],
+      })),
+      extractTableReferences: vi.fn(async () => []),
+      extractColumnReferences: vi.fn(async () => []),
+    } as unknown as SqlParser;
+
+    const diagnostics = await lint(doc, { parser });
+
+    expect(diagnostics.length).toBeGreaterThanOrEqual(1);
+    for (const d of diagnostics) {
+      expect(d.from).toBeLessThanOrEqual(doc.length);
+      expect(d.to).toBeLessThanOrEqual(doc.length);
+      expect(d.to).toBeGreaterThanOrEqual(d.from);
+    }
+  });
 });

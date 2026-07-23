@@ -112,6 +112,23 @@ describe("findReferences", () => {
       const result = await resolveAt(doc, "t AS (");
       expect(result).toBeNull();
     });
+
+    it("refuses when a CTE name is also a table alias in the same statement", async () => {
+      // `x` is a CTE name and also an alias bound to `users` — two distinct
+      // bindings, so it refuses rather than mixing them
+      const doc = "WITH x AS (SELECT 1) SELECT * FROM users x";
+      const result = await resolveAt(doc, "x AS");
+      expect(result).toBeNull();
+    });
+
+    it("does not count a comma-separated select-list entry as a relation use", async () => {
+      // The `t` after `SELECT a, ` is a column, not a FROM-list relation
+      const doc = "WITH t AS (SELECT 1) SELECT a, t FROM t";
+      const result = await resolveAt(doc, "t AS");
+      // definition + `FROM t` only
+      expect(result?.references).toHaveLength(2);
+      expect(result?.references.some((r) => r.from === doc.indexOf("t FROM"))).toBe(false);
+    });
   });
 
   describe("table aliases", () => {
@@ -152,6 +169,24 @@ describe("findReferences", () => {
       const result = await resolveAt(sql, "x.a");
       expect(result).toBeNull();
     });
+
+    it("resolves an alias whose table has a quoted qualifier", async () => {
+      const sql = 'SELECT u.name FROM "mydb".users AS u';
+      const result = await resolveAt(sql, "u.name");
+      expect(result?.kind).toBe("table-alias");
+      expect(result?.name).toBe("u");
+      expect(result?.definition.from).toBe(sql.indexOf("AS u") + "AS ".length);
+      // definition + u.name
+      expect(result?.references).toHaveLength(2);
+    });
+
+    it("returns null when the cursor is on a bare (non-qualifier) alias name", async () => {
+      // The select-list `u` is not a `u.column` qualifier use, so the cursor
+      // there does not resolve to the alias
+      const sql = "SELECT u FROM users u";
+      const result = await resolveAt(sql, "u FROM");
+      expect(result).toBeNull();
+    });
   });
 
   describe("select aliases", () => {
@@ -177,6 +212,29 @@ describe("findReferences", () => {
       // definition + ORDER BY only; WHERE resolves to a column in SQL
       expect(result?.references).toHaveLength(2);
       expect(result?.references.some((r) => r.from === sql.indexOf("total > 5"))).toBe(false);
+    });
+
+    it("returns null when the cursor is on a same-named column in WHERE", async () => {
+      // The WHERE occurrence is a column, not the select alias, so the cursor
+      // there is not a resolvable reference
+      const sql = "SELECT x AS total FROM t WHERE total > 5 ORDER BY total";
+      const result = await resolveAt(sql, "total", 1);
+      expect(result).toBeNull();
+    });
+
+    it("resolves a select alias in ORDER BY when there is no FROM clause", async () => {
+      const sql = "SELECT 1 AS total ORDER BY total";
+      const result = await resolveAt(sql, "total", 1);
+      expect(result?.kind).toBe("select-alias");
+      expect(result?.references).toHaveLength(2);
+    });
+
+    it("returns null for an alias declared without the AS keyword", async () => {
+      // The definition is only located via `AS <alias>`; without AS there is
+      // no confidently-resolvable declaration token
+      const sql = "SELECT count(*) total FROM users GROUP BY total";
+      const result = await resolveAt(sql, "total", 1);
+      expect(result).toBeNull();
     });
   });
 
@@ -212,6 +270,26 @@ describe("findReferences", () => {
     it("resolves mid-edit statements via the regex fallback", async () => {
       const sql = "WITH recent AS (SELECT x FROM logs) SELECT r. FROM recent r";
       const result = await resolveAt(sql, "recent", 1);
+      expect(result?.kind).toBe("cte");
+      expect(result?.references).toHaveLength(2);
+    });
+
+    it("returns null for a token trailing after the final statement", async () => {
+      // `zzz` sits past the terminating `;`, outside the (preceding) statement
+      const sql = "WITH t AS (SELECT 1) SELECT * FROM t; zzz";
+      const result = await resolveAt(sql, "zzz");
+      expect(result).toBeNull();
+    });
+
+    it("returns null on an empty document", async () => {
+      const state = EditorState.create({ doc: "" });
+      expect(await findReferences(state, 0)).toBeNull();
+    });
+
+    it("accepts an explicit config object", async () => {
+      const sql = "WITH recent AS (SELECT 1) SELECT * FROM recent";
+      const state = EditorState.create({ doc: sql });
+      const result = await findReferences(state, sql.indexOf("recent"), {});
       expect(result?.kind).toBe("cte");
       expect(result?.references).toHaveLength(2);
     });
