@@ -1,6 +1,7 @@
 import type { Extension } from "@codemirror/state";
 import { type SqlLinterConfig, sqlLinter } from "./diagnostics.js";
 import { defaultSqlHoverTheme, type SqlHoverConfig, sqlHover } from "./hover.js";
+import { type SqlNavigationConfig, sqlNavigation } from "./navigation-extension.js";
 import { type SqlSchemaSource, sqlSchemaFacet } from "./schema-facet.js";
 import { type SqlSemanticLinterConfig, sqlSemanticLinter } from "./semantic-diagnostics.js";
 import { type SqlGutterConfig, sqlStructureGutter } from "./structure-extension.js";
@@ -42,6 +43,15 @@ export interface SqlExtensionConfig {
   enableHover?: boolean;
   /** Configuration for hover tooltips */
   hoverConfig?: SqlHoverConfig;
+
+  /**
+   * Whether to enable navigation features — reference highlights and
+   * Mod-click go-to-definition for CTEs and aliases (default: true).
+   * Keybindings (F12/Mod-b/F2) are opt-in via `navigationConfig.keymap`.
+   */
+  enableNavigation?: boolean;
+  /** Configuration for navigation features */
+  navigationConfig?: SqlNavigationConfig;
 }
 
 /**
@@ -78,10 +88,12 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
     enableSemanticLinting = true,
     enableGutterMarkers = true,
     enableHover = true,
+    enableNavigation = true,
     linterConfig,
     semanticLinterConfig,
     gutterConfig,
     hoverConfig,
+    navigationConfig,
   } = config;
 
   if (schema != null) {
@@ -119,6 +131,10 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
   if (enableHover) {
     extensions.push(sqlHover(hoverConfig));
     extensions.push(hoverConfig?.theme ?? defaultSqlHoverTheme());
+  }
+
+  if (enableNavigation) {
+    extensions.push(...sqlNavigation(navigationConfig));
   }
 
   return extensions;

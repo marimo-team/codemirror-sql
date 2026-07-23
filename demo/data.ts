@@ -4,9 +4,20 @@ import type { Schema } from "./custom-renderers";
 export const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
 -- Try editing the queries below to see real-time validation
 
-WITH cte_name AS (
-  SELECT * FROM users
+-- Put the cursor on a CTE name or alias to highlight its references;
+-- Cmd/Ctrl-click (or F12) jumps to the definition, F2 renames.
+WITH recent_orders AS (
+  SELECT customer_id, total_amount FROM orders WHERE order_date >= '2024-01-01'
+),
+top_customers AS (
+  SELECT customer_id, SUM(total_amount) AS total_spent
+  FROM recent_orders
+  GROUP BY customer_id
 )
+SELECT c.first_name, t.total_spent AS amount
+FROM customers c
+JOIN top_customers t ON t.customer_id = c.id
+ORDER BY amount DESC;
 
 -- Valid queries (no errors):
 SELECT id, name, email
