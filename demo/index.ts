@@ -5,7 +5,7 @@ import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import {
   aliasColumnCompletionSource,
-  cteCompletionSource,
+  createCteCompletionSource,
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
@@ -174,9 +174,16 @@ function initializeEditor() {
         theme: defaultSqlHoverTheme("light"),
         parser,
       },
+      // Reference highlighting and go-to-definition for CTEs/aliases
+      enableNavigation: true,
+      navigationConfig: {
+        keymap: true, // F12/Mod-b go-to-definition, F2 rename
+        parser,
+      },
     }),
     defaultDialect.language.data.of({
-      autocomplete: cteCompletionSource,
+      // Statement-scoped CTE names and their output columns
+      autocomplete: createCteCompletionSource({ parser }),
     }),
     defaultDialect.language.data.of({
       // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`

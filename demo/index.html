@@ -28,9 +28,14 @@
       <div class="grid gap-8">
         <section>
           <h2 class="text-2xl font-bold mb-4">SQL Editor with Diagnostics</h2>
-          <p class="mb-4 text-gray-600">
+          <p class="mb-2 text-gray-600">
             Try typing invalid SQL syntax to see real-time error highlighting and messages.
             Valid tables are: <span class="font-bold">users, posts, orders, customers, categories</span>
+          </p>
+          <p class="mb-4 text-gray-600">
+            Put the cursor on a CTE name or alias to highlight its references,
+            <span class="font-bold">Cmd/Ctrl-click</span> (or <span class="font-bold">F12</span>) to jump to its
+            definition, and press <span class="font-bold">F2</span> to rename it everywhere in the statement.
           </p>
 
           <div class="flex justify-end items-center mb-2">
@@ -63,6 +68,9 @@
               </button>
               <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
                 <code class="text-sm">INSERT INTO products (name, price) VALUES ('Laptop', 999.99)</code>
+              </button>
+              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
+                <code class="text-sm">WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT a.name FROM active_users a ORDER BY a.name</code>
               </button>
               <button class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded">
                 <code class="text-sm">from nyc.rideshare select * limit 100</code>
@@ -101,6 +109,20 @@
             <div class="p-4 bg-blue-50 rounded-lg">
               <h3 class="font-semibold mb-2">DuckDB Support</h3>
               <p class="text-sm text-gray-700">Special support for DuckDB-specific syntax like "from table select * limit 100".</p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">CTE &amp; Alias Navigation</h3>
+              <p class="text-sm text-gray-700">
+                Go-to-definition (Cmd/Ctrl-click or F12), reference highlighting, and rename (F2) for CTE names,
+                table aliases, and select aliases.
+              </p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">CTE Autocomplete</h3>
+              <p class="text-sm text-gray-700">
+                Statement-scoped completion of CTE names and their output columns, including after
+                <code>my_cte.</code>.
+              </p>
             </div>
             <div class="p-4 bg-blue-50 rounded-lg">
               <h3 class="font-semibold mb-2">TypeScript Support</h3>

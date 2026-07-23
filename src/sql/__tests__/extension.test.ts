@@ -40,8 +40,20 @@ describe("sqlExtension", () => {
       enableSemanticLinting: false,
       enableGutterMarkers: false,
       enableHover: false,
+      enableNavigation: false,
     });
     expect(extensions).toEqual([]);
+  });
+
+  it("should include navigation extensions by default", () => {
+    const onlyNavigation = sqlExtension({
+      enableLinting: false,
+      enableSemanticLinting: false,
+      enableGutterMarkers: false,
+      enableHover: false,
+    });
+    expect(onlyNavigation.length).toBeGreaterThan(0);
+    expect(() => EditorState.create({ extensions: onlyNavigation })).not.toThrow();
   });
 
   it("should register the shared schema facet when a schema is provided", () => {
@@ -52,6 +64,7 @@ describe("sqlExtension", () => {
       enableSemanticLinting: false,
       enableGutterMarkers: false,
       enableHover: false,
+      enableNavigation: false,
     });
     expect(withSchema).toHaveLength(1);
 
@@ -63,6 +76,7 @@ describe("sqlExtension", () => {
       enableSemanticLinting: false,
       enableGutterMarkers: false,
       enableHover: false,
+      enableNavigation: false,
     });
     const emptyState = EditorState.create({ extensions: withoutSchema });
     expect(emptyState.facet(sqlSchemaFacet)).toBeNull();

@@ -23,9 +23,9 @@ function createMockContext(doc: string, pos: number, explicit = false): Completi
     matchBefore: (pattern: RegExp) => {
       const before = doc.slice(0, pos);
 
-      // For \w* pattern, find the word at the end
-      if (pattern.source === "\\w*") {
-        const wordMatch = before.match(/(\w*)$/);
+      // For word patterns, find the word at the end
+      if (pattern.source === "\\w*" || pattern.source === "[\\w$]*") {
+        const wordMatch = before.match(/([\w$]*)$/);
         if (!wordMatch) return null;
 
         const text = wordMatch[1] || "";
@@ -182,7 +182,7 @@ describe("cteCompletionSource", () => {
       expect(result?.options[0].label).toBe("filtered_users");
     });
 
-    it("should handle multiple WITH clauses in different statements", async () => {
+    it("scopes CTEs to the statement containing the cursor", async () => {
       const sql = `WITH first_cte AS (SELECT 1)
       SELECT * FROM first_cte;
 
@@ -193,10 +193,22 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
-      expect(result?.options).toHaveLength(2);
+      // first_cte belongs to the previous statement and must not leak in
+      expect(result?.options.map((opt) => opt.label)).toEqual(["second_cte"]);
+    });
 
-      const labels = result?.options.map((opt) => opt.label).sort();
-      expect(labels).toEqual(["first_cte", "second_cte"]);
+    it("offers the first statement's CTE when the cursor is in it", async () => {
+      const sql = `WITH first_cte AS (SELECT 1)
+      SELECT * FROM first_;
+
+      WITH second_cte AS (SELECT 2)
+      SELECT * FROM second_cte`;
+
+      const pos = sql.indexOf("first_;") + "first_".length;
+      const context = createMockContext(sql, pos, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.options.map((opt) => opt.label)).toEqual(["first_cte"]);
     });
   });
 
@@ -315,6 +327,128 @@ describe("cteCompletionSource", () => {
       const labels = result?.options.map((option) => option.label) ?? [];
       expect(labels).toContain("a");
       expect(labels).toContain("b");
+    });
+
+    it("detects 3+ comma-separated CTEs with nested parens mid-edit", async () => {
+      const sql =
+        "WITH a AS (SELECT max(x) FROM (SELECT 1) s), b AS (SELECT count(*) FROM t), c AS (SELECT 3) SELECT * FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      const labels = result?.options.map((option) => option.label) ?? [];
+      expect(labels).toEqual(["a", "b", "c"]);
+    });
+  });
+
+  describe("quoted CTE names", () => {
+    it("detects quoted CTE names", async () => {
+      const sql = `WITH "My Stats" AS (SELECT 1) SELECT * FROM `;
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.options.map((opt) => opt.label)).toEqual(["My Stats"]);
+      expect(result?.options[0].apply).toBe('"My Stats"');
+    });
+
+    it("does not add an apply override for bare names", async () => {
+      const sql = "WITH stats AS (SELECT 1) SELECT * FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.options[0].apply).toBeUndefined();
+    });
+
+    it("completes names containing $ as one token", async () => {
+      const sql = "WITH t$1 AS (SELECT 1) SELECT * FROM t$";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.from).toBe(sql.lastIndexOf("t$"));
+      expect(result?.options[0].label).toBe("t$1");
+    });
+
+    it("quotes non-bare column labels on apply", async () => {
+      const sql = 'WITH t("My Col", b) AS (SELECT 1, 2) SELECT t. FROM t';
+      const pos = sql.indexOf("t. FROM") + 2;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      const myCol = result?.options.find((opt) => opt.label === "My Col");
+      expect(myCol?.apply).toBe('"My Col"');
+      expect(result?.options.find((opt) => opt.label === "b")?.apply).toBeUndefined();
+    });
+  });
+
+  describe("CTE column completion", () => {
+    it("completes columns after <cte>. from a declared column list", async () => {
+      const sql = "WITH t(a, b) AS (SELECT 1, 2) SELECT t. FROM t";
+      const pos = sql.indexOf("t. FROM") + 2;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      expect(result).toBeTruthy();
+      expect(result?.from).toBe(pos);
+      expect(result?.options.map((opt) => opt.label)).toEqual(["a", "b"]);
+      expect(result?.options[0].type).toBe("property");
+      expect(result?.options[0].detail).toBe("column of t");
+    });
+
+    it("completes columns after <cte>. inferred from the select list", async () => {
+      const sql = "WITH t AS (SELECT id, name AS n FROM users) SELECT t. FROM t";
+      const pos = sql.indexOf("t. FROM") + 2;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      expect(result?.options.map((opt) => opt.label)).toEqual(["id", "n"]);
+    });
+
+    it("offers no columns for a SELECT * CTE", async () => {
+      const sql = "WITH t AS (SELECT * FROM users) SELECT t. FROM t";
+      const pos = sql.indexOf("t. FROM") + 2;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      expect(result).toBeNull();
+    });
+
+    it("does not complete columns for a multi-segment qualifier", async () => {
+      const sql = "WITH t(a) AS (SELECT 1) SELECT db.t. FROM t";
+      const pos = sql.indexOf("db.t. FROM") + "db.t.".length;
+
+      const context = createMockContext(sql, pos, false);
+      const result = await getCompletionResult(context);
+
+      expect(result).toBeNull();
+    });
+
+    it("offers CTE columns unqualified in a column position", async () => {
+      const sql = "WITH t(a, b) AS (SELECT 1, 2) SELECT  FROM t";
+      const pos = sql.indexOf("SELECT  FROM") + "SELECT ".length;
+
+      const context = createMockContext(sql, pos, true);
+      const result = await getCompletionResult(context);
+
+      const labels = result?.options.map((opt) => opt.label) ?? [];
+      expect(labels).toContain("t");
+      expect(labels).toContain("a");
+      expect(labels).toContain("b");
+    });
+
+    it("does not offer columns right after FROM", async () => {
+      const sql = "WITH t(a, b) AS (SELECT 1, 2) SELECT a FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      expect(result?.options.map((opt) => opt.label)).toEqual(["t"]);
     });
   });
 });

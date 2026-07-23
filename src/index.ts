@@ -2,7 +2,11 @@ export {
   type AliasCompletionConfig,
   aliasColumnCompletionSource,
 } from "./sql/alias-completion-source.js";
-export { cteCompletionSource } from "./sql/cte-completion-source.js";
+export {
+  createCteCompletionSource,
+  type CteCompletionConfig,
+  cteCompletionSource,
+} from "./sql/cte-completion-source.js";
 export { type SqlLinterConfig, sqlLinter } from "./sql/diagnostics.js";
 export { type SqlExtensionConfig, sqlExtension } from "./sql/extension.js";
 export type {
@@ -12,6 +16,15 @@ export type {
   SqlKeywordInfo,
 } from "./sql/hover.js";
 export { DefaultSqlTooltipRenders, defaultSqlHoverTheme, sqlHover } from "./sql/hover.js";
+export {
+  gotoSqlDefinition,
+  renameSqlIdentifier,
+  type SqlNavigationConfig,
+  sqlGotoDefinition,
+  sqlHighlightReferences,
+  sqlNavigation,
+  sqlNavigationKeymap,
+} from "./sql/navigation-extension.js";
 export {
   NodeSqlParser,
   type NodeSqlParserOptions,
@@ -26,6 +39,14 @@ export {
   type QueryContextCte,
   type QueryContextTable,
 } from "./sql/query-context.js";
+export {
+  findReferences,
+  type SqlIdentifierKind,
+  type SqlRange,
+  type SqlReferenceConfig,
+  SqlReferenceResolver,
+  type SqlReferenceResult,
+} from "./sql/references.js";
 export { resolveSqlSchema, type SqlSchemaSource, sqlSchemaFacet } from "./sql/schema-facet.js";
 export {
   type SemanticSeverity,

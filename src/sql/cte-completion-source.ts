@@ -1,56 +1,163 @@
 import type { Completion, CompletionContext, CompletionSource } from "@codemirror/autocomplete";
+import { NodeSqlParser } from "./parser.js";
+import {
+  QueryContextAnalyzer,
+  type QueryContextCte,
+  stripIdentifierQuotes,
+} from "./query-context.js";
+import { statementAt } from "./references.js";
+import { SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlParser } from "./types.js";
 
 /**
- * Extracts the names of all CTEs declared in WITH clauses in the document
+ * Configuration for the CTE completion source
  */
-function extractCteNames(doc: string): Set<string> {
-  const cteNames = new Set<string>();
+export interface CteCompletionConfig {
+  /** Custom SQL parser instance to use for query analysis */
+  parser?: SqlParser;
+  /**
+   * Query-context analyzer to reuse (e.g. shared with hover and
+   * `aliasColumnCompletionSource`), so each statement is only analyzed once.
+   */
+  contextAnalyzer?: QueryContextAnalyzer;
+  /** Structure analyzer to reuse for statement boundary detection */
+  structureAnalyzer?: SqlStructureAnalyzer;
+}
 
-  // Start of a WITH clause (optionally recursive)
-  const withPattern = /\bWITH\s+(?:RECURSIVE\s+)?/gi;
-  // CTE name with an optional column list, followed by AS (
-  const ctePattern = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\)\s*)?\bAS\s*\(/i;
+/** Matches a (possibly quoted) identifier at the end of the text */
+const QUALIFIER_PATTERN = /([\w$]+|"[^"]+"|`[^`]+`|\[[^\]]+\])$/;
 
-  let withMatch = withPattern.exec(doc);
-  while (withMatch !== null) {
-    let pos = withMatch.index + withMatch[0].length;
+/** True when the cursor is right after FROM/JOIN, i.e. a table-name position */
+function isTableNamePosition(textBefore: string): boolean {
+  return /\b(?:from|join)\s+$/i.test(textBefore);
+}
 
-    for (;;) {
-      const cteMatch = ctePattern.exec(doc.slice(pos));
-      const cteName = cteMatch?.[1];
-      if (!cteName) {
-        break;
-      }
-      cteNames.add(cteName);
+/** True when `name` can be written bare (no quoting needed) */
+function isBareIdentifier(name: string): boolean {
+  return /^[A-Za-z_][\w$]*$/.test(name);
+}
 
-      // Skip past the CTE body, tracking nested parentheses
-      let i = pos + cteMatch[0].length;
-      let depth = 1;
-      while (i < doc.length && depth > 0) {
-        if (doc[i] === "(") depth++;
-        else if (doc[i] === ")") depth--;
-        i++;
-      }
+function cteNameCompletion(cte: QueryContextCte): Completion {
+  return {
+    label: cte.name,
+    type: "variable", // CTEs are like temporary tables/variables
+    info: `Common Table Expression: ${cte.name}`,
+    boost: 10, // Give CTEs higher priority than regular completions
+    ...(isBareIdentifier(cte.name) ? {} : { apply: `"${cte.name}"` }),
+  };
+}
 
-      // A comma introduces the next CTE in the same WITH clause
-      const separator = /^\s*,\s*/.exec(doc.slice(i));
-      if (!separator) {
-        break;
-      }
-      pos = i + separator[0].length;
+function cteColumnCompletions(cte: QueryContextCte): Completion[] {
+  return cte.columns.map((column) => ({
+    label: column,
+    type: "property",
+    detail: `column of ${cte.name}`,
+    boost: 5,
+    ...(isBareIdentifier(column) ? {} : { apply: `"${column}"` }),
+  }));
+}
+
+/**
+ * Creates a completion source for Common Table Expressions (CTEs), scoped to
+ * the statement containing the cursor:
+ * - CTE names declared in the statement's WITH clauses
+ * - a CTE's output columns after `<cte>.`
+ * - a CTE's output columns unqualified, when the statement selects FROM it
+ *
+ * Statements that don't parse (mid-edit) fall back to a regex-based scan.
+ */
+export function createCteCompletionSource(config: CteCompletionConfig = {}): CompletionSource {
+  const parser = config.parser ?? new NodeSqlParser();
+  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
+  const structureAnalyzer = config.structureAnalyzer ?? new SqlStructureAnalyzer(parser);
+
+  return async (context: CompletionContext) => {
+    const word = context.matchBefore(/[\w$]*/);
+    if (!word) {
+      return null;
     }
 
-    withMatch = withPattern.exec(doc);
-  }
+    const charBefore = context.state.sliceDoc(Math.max(0, word.from - 1), word.from);
+    const qualified = charBefore === ".";
 
-  return cteNames;
+    // A `<cte>.` qualifier triggers even without a typed word or explicit mode
+    if (word.from === word.to && !context.explicit && !qualified) {
+      return null;
+    }
+
+    // Scope the analysis to the statement containing the cursor, so CTEs from
+    // other statements in a multi-statement doc don't leak in
+    const statement = await statementAt(structureAnalyzer, context.state, context.pos);
+    const statementSql = statement
+      ? context.state.sliceDoc(statement.from, statement.to)
+      : context.state.doc.toString();
+    const queryContext = await contextAnalyzer.getContext(statementSql, {
+      state: context.state,
+    });
+    if (queryContext.ctes.length === 0) {
+      return null;
+    }
+
+    if (qualified) {
+      // `<cte>.<partial>` — offer the CTE's output columns
+      const line = context.state.doc.lineAt(word.from);
+      const prefix = context.state.sliceDoc(line.from, word.from - 1);
+      const qualifierMatch = QUALIFIER_PATTERN.exec(prefix);
+      if (!qualifierMatch || !qualifierMatch[1]) {
+        return null;
+      }
+      // Multi-segment paths like `db.cte.` can't reference a CTE
+      const beforeQualifier = prefix.slice(0, prefix.length - qualifierMatch[1].length);
+      if (beforeQualifier.endsWith(".")) {
+        return null;
+      }
+      const qualifier = stripIdentifierQuotes(qualifierMatch[1]).toLowerCase();
+      const cte = queryContext.ctes.find((c) => c.name.toLowerCase() === qualifier);
+      if (!cte || cte.columns.length === 0) {
+        return null;
+      }
+      return {
+        from: word.from,
+        options: cteColumnCompletions(cte),
+        validFor: /^[\w$]*$/,
+      };
+    }
+
+    const options: Completion[] = queryContext.ctes.map(cteNameCompletion);
+
+    // In column positions (not right after FROM/JOIN), also offer the output
+    // columns of CTEs the statement actually selects from
+    const textBefore = context.state.sliceDoc(Math.max(0, word.from - 64), word.from);
+    if (!isTableNamePosition(textBefore)) {
+      const referenced = new Set(queryContext.tables.map((table) => table.name.toLowerCase()));
+      const seenColumns = new Set<string>();
+      for (const cte of queryContext.ctes) {
+        if (!referenced.has(cte.name.toLowerCase())) {
+          continue;
+        }
+        for (const completion of cteColumnCompletions(cte)) {
+          const key = completion.label.toLowerCase();
+          if (!seenColumns.has(key)) {
+            seenColumns.add(key);
+            options.push(completion);
+          }
+        }
+      }
+    }
+
+    return {
+      from: word.from,
+      options,
+      validFor: /^[\w$]*$/,
+    };
+  };
 }
 
 /**
  * A completion source for Common Table Expressions (CTEs) in SQL
  *
- * This function provides autocomplete suggestions for CTE references based on
- * WITH clauses found in the current SQL document.
+ * This function provides autocomplete suggestions for CTE names and columns
+ * based on WITH clauses in the statement containing the cursor.
  *
  * @param context The completion context from CodeMirror
  * @returns Completion result with CTE suggestions or null if no completions available
@@ -66,36 +173,10 @@ function extractCteNames(doc: string): Set<string> {
  * })
  * ```
  */
-export const cteCompletionSource: CompletionSource = (context: CompletionContext) => {
-  const doc = context.state.doc.toString();
-  const cteNames = extractCteNames(doc);
-
-  // If no CTEs found, return null (no completions)
-  if (cteNames.size === 0) {
-    return null;
-  }
-
-  // Get the word being typed
-  const word = context.matchBefore(/\w*/);
-  if (!word) {
-    return null;
-  }
-
-  // If no word is being typed and not in explicit mode, don't show completions
-  if (word.from === word.to && !context.explicit) {
-    return null;
-  }
-
-  // Create completion objects for each CTE
-  const completions: Completion[] = Array.from(cteNames).map((cteName) => ({
-    label: cteName,
-    type: "variable", // CTEs are like temporary tables/variables
-    info: `Common Table Expression: ${cteName}`,
-    boost: 10, // Give CTEs higher priority than regular completions
-  }));
-
-  return {
-    from: word.from,
-    options: completions,
+export const cteCompletionSource: CompletionSource = (() => {
+  let source: CompletionSource | null = null;
+  return (context: CompletionContext) => {
+    source ??= createCteCompletionSource();
+    return source(context);
   };
-};
+})();
