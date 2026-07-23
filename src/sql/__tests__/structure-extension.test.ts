@@ -1,7 +1,17 @@
 import { EditorState, Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
 import { sqlStructureGutter } from "../structure-extension.js";
+
+async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 // Type for gutter extension with markers function
 interface GutterExtension {
@@ -122,5 +132,41 @@ DELETE FROM users WHERE id = 2;`;
         expect(() => markersFn(view)).not.toThrow();
       }
     }).not.toThrow();
+  });
+
+  it("renders gutter markers for pre-filled content without user interaction", async () => {
+    const view = new EditorView({
+      doc: "SELECT 1;\nSELECT 2;",
+      extensions: [sqlStructureGutter()],
+      parent: document.body,
+    });
+
+    try {
+      await waitFor(() => view.dom.querySelectorAll(".cm-sql-gutter-marker").length >= 2);
+      expect(view.dom.querySelectorAll(".cm-sql-gutter-marker").length).toBeGreaterThanOrEqual(2);
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it("honors an explicit inactiveOpacity of 0", async () => {
+    const view = new EditorView({
+      doc: "SELECT 1;\nSELECT 2;",
+      extensions: [sqlStructureGutter({ inactiveOpacity: 0 })],
+      parent: document.body,
+    });
+
+    try {
+      // Put the cursor in the first statement so the second one is inactive
+      view.dispatch({ selection: { anchor: 0 } });
+      await waitFor(() => view.dom.querySelectorAll(".cm-sql-gutter-marker").length >= 2);
+
+      const opacities = Array.from(
+        view.dom.querySelectorAll<HTMLElement>(".cm-sql-gutter-marker"),
+      ).map((marker) => marker.style.opacity);
+      expect(opacities).toContain("0");
+    } finally {
+      view.destroy();
+    }
   });
 });

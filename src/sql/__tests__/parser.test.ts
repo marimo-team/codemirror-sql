@@ -372,3 +372,38 @@ describe("replaceBracketsWithQuotes", () => {
     expect(result.sql).toBe("SELECT 'user\\'s {id}' FROM users");
   });
 });
+
+describe("error positions with ignoreBrackets", () => {
+  const bracketParser = new NodeSqlParser({
+    getParserOptions: () => ({
+      database: "PostgreSQL",
+      ignoreBrackets: true,
+    }),
+  });
+  const state = EditorState.create({ doc: "" });
+
+  it("adjusts the column for errors after a bracket on the same line", async () => {
+    // Sanitized to "SELECT '{id}' FRO users"; the parser's column 19 maps back to 17
+    const result = await bracketParser.parse("SELECT {id} FRO users", { state });
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0].line).toBe(1);
+    expect(result.errors[0].column).toBe(17);
+  });
+
+  it("does not shift error columns on lines after a replaced bracket", async () => {
+    // Line 2 is unmodified, so the parser's column 22 must not shift
+    const result = await bracketParser.parse("SELECT {id}\nFROM users WHERE xyz abc", { state });
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0].line).toBe(2);
+    expect(result.errors[0].column).toBe(22);
+  });
+
+  it("never reports a column below 1", async () => {
+    const result = await bracketParser.parse("{x}\nFROM WHERE", { state });
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0].column).toBeGreaterThanOrEqual(1);
+  });
+});

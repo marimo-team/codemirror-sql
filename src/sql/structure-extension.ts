@@ -1,5 +1,5 @@
 import { type Extension, RangeSet, StateEffect, StateField } from "@codemirror/state";
-import { EditorView, GutterMarker, gutter, type ViewUpdate } from "@codemirror/view";
+import { EditorView, GutterMarker, gutter, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { NodeSqlParser } from "./parser.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SqlParser } from "./types.js";
@@ -86,11 +86,11 @@ class SqlGutterMarker extends GutterMarker {
         opacity = "0";
       } else {
         // Default behavior when not focused - use normal opacity
-        opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity || "0.3").toString();
+        opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity ?? 0.3).toString();
       }
     } else {
       // Normal focused behavior
-      opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity || "0.3").toString();
+      opacity = this.isCurrent ? "1" : (this.config.inactiveOpacity ?? 0.3).toString();
     }
 
     el.style.cssText = `
@@ -183,32 +183,41 @@ function createSqlGutterMarkers(
   return markers;
 }
 
-function createUpdateListener(analyzer: SqlStructureAnalyzer): Extension {
-  return EditorView.updateListener.of(async (update: ViewUpdate) => {
-    // Update on document changes, selection changes, or focus changes
-    if (!update.docChanged && !update.selectionSet && !update.focusChanged) {
-      return;
-    }
+async function analyzeAndDispatch(view: EditorView, analyzer: SqlStructureAnalyzer): Promise<void> {
+  const { state } = view;
+  const cursorPosition = state.selection.main.head;
 
-    const { state } = update.view;
-    const { main } = state.selection;
-    const cursorPosition = main.head;
+  // Analyze the document for SQL statements
+  const allStatements = await analyzer.analyzeDocument(state);
+  const currentStatement = await analyzer.getStatementAtPosition(state, cursorPosition);
 
-    // Analyze the document for SQL statements
-    const allStatements = await analyzer.analyzeDocument(state);
-    const currentStatement = await analyzer.getStatementAtPosition(state, cursorPosition);
+  const newState: SqlGutterState = {
+    currentStatement,
+    allStatements,
+    cursorPosition,
+    isFocused: view.hasFocus,
+  };
 
-    const newState: SqlGutterState = {
-      currentStatement,
-      allStatements,
-      cursorPosition,
-      isFocused: update.view.hasFocus,
+  // Dispatch the update
+  view.dispatch({
+    effects: updateSqlStatementsEffect.of(newState),
+  });
+}
+
+function createStructurePlugin(analyzer: SqlStructureAnalyzer): Extension {
+  return ViewPlugin.define((view: EditorView) => {
+    // Analyze on creation so pre-filled documents get markers immediately
+    void analyzeAndDispatch(view, analyzer);
+
+    return {
+      update(update: ViewUpdate) {
+        // Update on document changes, selection changes, or focus changes
+        if (!update.docChanged && !update.selectionSet && !update.focusChanged) {
+          return;
+        }
+        void analyzeAndDispatch(update.view, analyzer);
+      },
     };
-
-    // Dispatch the update
-    update.view.dispatch({
-      effects: updateSqlStatementsEffect.of(newState),
-    });
   });
 }
 
@@ -256,7 +265,7 @@ export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension[] {
 
   return [
     sqlGutterStateField,
-    createUpdateListener(analyzer),
+    createStructurePlugin(analyzer),
     createGutterTheme(config),
     createSqlGutter(config),
   ];

@@ -2,7 +2,8 @@ import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { defaultSqlHoverTheme, sqlHover } from "../hover.js";
+import type { EditorView } from "@codemirror/view";
+import { defaultSqlHoverTheme, exportedForTesting, sqlHover } from "../hover.js";
 import { resolveNamespaceItem } from "../namespace-utils.js";
 
 // Helper function to create completion objects
@@ -797,6 +798,63 @@ describe("Query-aware hover behavior - edge cases", () => {
       expect(columnResult).toBeTruthy();
       expect(columnResult?.semanticType).toBe("column");
       expect(columnResult?.completion?.label).toBe("username");
+    });
+  });
+
+  describe("hover source keyword handling", () => {
+    const { createHoverSource } = exportedForTesting;
+
+    function createMockView(doc: string): EditorView {
+      const state = EditorState.create({ doc });
+      return { state } as unknown as EditorView;
+    }
+
+    it("does not show keyword tooltips for Object.prototype members", async () => {
+      const source = createHoverSource({ keywords: {}, schema: {} });
+
+      for (const word of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+        const doc = `SELECT ${word} FROM users`;
+        const view = createMockView(doc);
+        const pos = doc.indexOf(word) + 2;
+
+        const tooltip = await source(view, pos, 1);
+        expect(tooltip, `hovering '${word}' must not produce a tooltip`).toBeNull();
+      }
+    });
+
+    it("still shows tooltips for real custom keywords", async () => {
+      const source = createHoverSource({
+        keywords: { select: { description: "Selects rows" } },
+      });
+      const doc = "SELECT id FROM users";
+      const view = createMockView(doc);
+
+      const tooltip = await source(view, doc.indexOf("SELECT") + 2, 1);
+      expect(tooltip).not.toBeNull();
+    });
+
+    it("does not permanently disable hovers when the keywords promise rejects", async () => {
+      const keywords = vi.fn(async (): Promise<Record<string, { description: string }>> => {
+        if (keywords.mock.calls.length === 1) {
+          throw new Error("network");
+        }
+        return { select: { description: "Selects rows" } };
+      });
+      const source = createHoverSource({
+        keywords,
+        schema: { users: ["id", "name"] },
+      });
+      const doc = "SELECT id FROM users";
+      const view = createMockView(doc);
+
+      // First hover: the keywords fetch fails, but schema hovers must still work
+      const tableTooltip = await source(view, doc.indexOf("users") + 2, 1);
+      expect(tableTooltip).not.toBeNull();
+
+      // Second hover: the failed fetch is retried and keyword tooltips recover
+      const keywordTooltip = await source(view, doc.indexOf("SELECT") + 2, 1);
+      expect(keywordTooltip).not.toBeNull();
+      expect(keywords).toHaveBeenCalledTimes(2);
     });
   });
 });

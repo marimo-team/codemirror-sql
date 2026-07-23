@@ -280,4 +280,41 @@ describe("cteCompletionSource", () => {
       expect(completion?.boost).toBe(10);
     });
   });
+
+  describe("CTE bodies containing parentheses", () => {
+    it("detects CTEs after a body with a function call", async () => {
+      const sql = "WITH a AS (SELECT max(x) FROM t), b AS (SELECT 1) SELECT * FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      const labels = result?.options.map((option) => option.label) ?? [];
+      expect(labels).toContain("a");
+      expect(labels).toContain("b");
+    });
+
+    it("detects CTEs after a body with a nested subquery", async () => {
+      const sql =
+        "WITH a AS (SELECT * FROM (SELECT 1) sub), b AS (SELECT 2), c AS (SELECT 3) SELECT * FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      const labels = result?.options.map((option) => option.label) ?? [];
+      expect(labels).toContain("a");
+      expect(labels).toContain("b");
+      expect(labels).toContain("c");
+    });
+
+    it("detects CTEs declared with a column list", async () => {
+      const sql = "WITH a(x, y) AS (SELECT 1, 2), b AS (SELECT 3) SELECT * FROM ";
+
+      const context = createMockContext(sql, sql.length, true);
+      const result = await getCompletionResult(context);
+
+      const labels = result?.options.map((option) => option.label) ?? [];
+      expect(labels).toContain("a");
+      expect(labels).toContain("b");
+    });
+  });
 });

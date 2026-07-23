@@ -44,7 +44,9 @@ export interface NamespaceSearchConfig {
 export function isObjectNamespace(
   namespace: SQLNamespace,
 ): namespace is { [name: string]: SQLNamespace } {
-  return typeof namespace === "object" && !Array.isArray(namespace) && !("self" in namespace);
+  return (
+    typeof namespace === "object" && !Array.isArray(namespace) && !isSelfChildrenNamespace(namespace)
+  );
 }
 
 /**
@@ -53,11 +55,19 @@ export function isObjectNamespace(
 export function isSelfChildrenNamespace(
   namespace: SQLNamespace,
 ): namespace is { self: Completion; children: SQLNamespace } {
+  if (typeof namespace !== "object" || Array.isArray(namespace)) {
+    return false;
+  }
+  if (!("self" in namespace) || !("children" in namespace)) {
+    return false;
+  }
+  // A self tag is a Completion; a table named "self" holds a namespace instead
+  const self: unknown = namespace.self;
   return (
-    typeof namespace === "object" &&
-    !Array.isArray(namespace) &&
-    "self" in namespace &&
-    "children" in namespace
+    typeof self === "object" &&
+    self !== null &&
+    !Array.isArray(self) &&
+    typeof (self as { label?: unknown }).label === "string"
   );
 }
 

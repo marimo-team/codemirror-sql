@@ -616,3 +616,32 @@ describe("performance and memory", () => {
     expect(true).toBe(true);
   });
 });
+
+describe("namespaces containing a table named 'self'", () => {
+  const schemaWithSelfTable: SQLNamespace = {
+    self: ["id", "name"],
+    users: ["id", "email"],
+  };
+
+  it("treats a plain object with a 'self' key (but no 'children') as an object namespace", () => {
+    expect(isObjectNamespace(schemaWithSelfTable)).toBe(true);
+    expect(isSelfChildrenNamespace(schemaWithSelfTable)).toBe(false);
+  });
+
+  it("does not treat tables literally named 'self' and 'children' as a self-children namespace", () => {
+    const schema: SQLNamespace = { self: ["id"], children: ["id"] };
+    expect(isSelfChildrenNamespace(schema)).toBe(false);
+    expect(isObjectNamespace(schema)).toBe(true);
+  });
+
+  it("resolves a table literally named 'self'", () => {
+    const result = resolveNamespaceItem(schemaWithSelfTable, "self");
+    expect(result).toBeTruthy();
+    expect(result?.semanticType).toBe("table");
+  });
+
+  it("still detects real self-children namespaces", () => {
+    expect(isSelfChildrenNamespace(mockNamespaces.selfChildren)).toBe(true);
+    expect(isObjectNamespace(mockNamespaces.selfChildren)).toBe(false);
+  });
+});
