@@ -8,9 +8,10 @@ A CodeMirror extension for SQL linting and visual gutter indicators. Built by an
 - 🧠 **Schema-aware linting** - Warns about unknown tables, unknown columns, and ambiguous column references based on your schema
 - 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
-- 🔮 **CTE autocomplete** - Auto-complete support for CTEs
+- 🔮 **CTE autocomplete** - Statement-scoped completion of CTE names and their output columns
 - 🏷️ **Alias resolution** - Hover and completion understand table aliases (`SELECT u.name FROM users u`)
 - 📇 **FROM-aware column completion** - Unqualified prefixes complete the columns of the tables in the statement's FROM clause (`SELECT e` -> `email` with `FROM users`), even with many tables in the schema
+- 🧭 **Navigation** - Go-to-definition, reference highlighting, and rename for CTEs and aliases
 - 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
 - 🔍 **Additional dialects** - DuckDB, BigQuery, Dremio
 - 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
@@ -114,6 +115,36 @@ outer scopes), preferring under-reporting over false positives. Semantic
 diagnostics carry `source: "sql-schema"`; syntax diagnostics use
 `source: "sql-parser"`. If the schema is provided as a function, it is called
 on every lint pass and should be cheap/memoized.
+
+### Navigation: go-to-definition, highlights, rename
+
+`sqlExtension` includes navigation for statement-local identifiers (CTE names,
+table aliases, select aliases) by default: the references of the identifier
+under the cursor are highlighted, and Mod-click (Cmd/Ctrl-click) on a
+resolvable identifier jumps to its definition. Keybindings (`F12`/`Mod-b` for
+go-to-definition, `F2` for rename) are opt-in:
+
+```ts
+import { renameSqlIdentifier, sqlExtension } from "@marimo-team/codemirror-sql";
+
+sqlExtension({
+  enableNavigation: true, // default
+  navigationConfig: {
+    keymap: true, // enable F12 / Mod-b / F2
+    // Supply your own rename UI (defaults to window.prompt)
+    prompt: (currentName) => window.prompt(`Rename '${currentName}' to:`, currentName),
+  },
+});
+
+// Rename programmatically: rewrites the definition and all references
+// in a single undo step
+await renameSqlIdentifier(view, { prompt: () => "new_name" });
+```
+
+The pieces are also exported individually: `sqlHighlightReferences`,
+`sqlGotoDefinition`, `sqlNavigationKeymap`, `gotoSqlDefinition`, and
+`findReferences`. Rename returns `false` when the identifier can't be
+confidently resolved — it never falls back to text search-and-replace.
 
 ## Additional Dialects
 

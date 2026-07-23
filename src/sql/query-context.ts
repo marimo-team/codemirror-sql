@@ -127,7 +127,8 @@ function cteColumns(cte: AstNode): string[] {
       columns.push(col.as);
     } else {
       const name = columnRefName(col.expr);
-      if (name) {
+      // `SELECT *` (or `t.*`) doesn't name an output column
+      if (name && name !== "*") {
         columns.push(name);
       }
     }
@@ -230,16 +231,19 @@ function collectSelectAliases(ast: AstNode, ctx: MutableContext): void {
 
 /**
  * Locates CTE name definitions (`name [(cols)] AS (`) in the statement text so
- * `QueryContextCte.from/to` can point at the declaration.
+ * `QueryContextCte.from/to` can point at the declaration. The name may appear
+ * bare or quoted; the returned span covers the token as written (quotes
+ * included).
  */
 function findCteSpan(sql: string, name: string): { from: number; to: number } {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`\\b(${escaped})\\s*(?:\\([^)]*\\)\\s*)?AS\\s*\\(`, "i");
+  const token = `(?:"${escaped}"|\`${escaped}\`|\\[${escaped}\\]|\\b${escaped})`;
+  const pattern = new RegExp(`(${token})\\s*(?:\\([^)]*\\)\\s*)?AS\\s*\\(`, "i");
   const match = pattern.exec(sql);
-  if (!match || match.index < 0) {
+  if (!match || match.index < 0 || !match[1]) {
     return { from: -1, to: -1 };
   }
-  return { from: match.index, to: match.index + name.length };
+  return { from: match.index, to: match.index + match[1].length };
 }
 
 /** Keywords that can directly follow a table reference and are never aliases */
@@ -415,7 +419,7 @@ function buildContextByRegex(rawSql: string): QueryContext {
  */
 function extractCtesByRegex(sql: string, ctx: MutableContext): void {
   const withPattern = /\bWITH\s+(?:RECURSIVE\s+)?/gi;
-  const ctePattern = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(([^)]*)\)\s*)?AS\s*\(/i;
+  const ctePattern = new RegExp(String.raw`^(${IDENT})\s*(?:\(([^)]*)\)\s*)?AS\s*\(`, "i");
 
   let withMatch = withPattern.exec(sql);
   while (withMatch !== null) {
@@ -423,8 +427,9 @@ function extractCtesByRegex(sql: string, ctx: MutableContext): void {
 
     for (;;) {
       const cteMatch = ctePattern.exec(sql.slice(pos));
-      const cteName = cteMatch?.[1];
-      if (!cteMatch || !cteName) {
+      const rawName = cteMatch?.[1];
+      const cteName = rawName ? stripIdentifierQuotes(rawName) : undefined;
+      if (!cteMatch || !rawName || !cteName) {
         break;
       }
       // Skip past the CTE body, tracking nested parentheses
@@ -450,7 +455,7 @@ function extractCtesByRegex(sql: string, ctx: MutableContext): void {
               ? declared
               : inferColumnsFromSelectBody(sql.slice(bodyStart, Math.max(bodyStart, i - 1))),
           from: pos,
-          to: pos + cteName.length,
+          to: pos + rawName.length,
         });
       }
 
@@ -576,8 +581,11 @@ export async function analyzeQueryContext(
       }
     }
     walkAst(ast, ctx, new Set());
+    // Search the masked text (offsets preserved) so `AS (` inside a string
+    // literal or comment can't be mistaken for a declaration
+    const maskedSql = maskLiteralsAndComments(sql);
     for (const cte of ctx.ctes) {
-      const span = findCteSpan(sql, cte.name);
+      const span = findCteSpan(maskedSql, cte.name);
       cte.from = span.from;
       cte.to = span.to;
     }
