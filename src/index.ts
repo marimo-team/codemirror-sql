@@ -3,6 +3,10 @@ export {
   aliasColumnCompletionSource,
 } from "./sql/alias-completion-source.js";
 export {
+  type ColumnCompletionConfig,
+  unqualifiedColumnCompletionSource,
+} from "./sql/column-completion-source.js";
+export {
   createCteCompletionSource,
   type CteCompletionConfig,
   cteCompletionSource,

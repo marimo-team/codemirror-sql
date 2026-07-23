@@ -172,19 +172,22 @@ function determineSemanticType(
 /**
  * Traverses a namespace following a dotted path
  * @param namespace The root namespace to search in
- * @param path The dotted path to traverse (e.g., "db.catalog.table.column")
+ * @param path The dotted path to traverse (e.g., "db.catalog.table.column"), or
+ *   pre-split segments (preserves identifier boundaries when a segment
+ *   contains a dot, e.g. a `"my.db"` quoted identifier)
  * @param config Configuration options
  * @returns The resolved item or null if not found
  */
 export function traverseNamespacePath(
   namespace: SQLNamespace,
-  path: string,
+  path: string | readonly string[],
   config: NamespaceSearchConfig = {},
 ): ResolvedNamespaceItem | null {
   const { maxDepth = 10 } = config;
+  const isEmptyPath = typeof path === "string" ? path === "" : path.length === 0;
 
   // Handle special case of empty path for self-children namespace
-  if (path === "" && isSelfChildrenNamespace(namespace)) {
+  if (isEmptyPath && isSelfChildrenNamespace(namespace)) {
     const semanticType = determineSemanticType([], "completion", namespace.children);
     return {
       completion: namespace.self,
@@ -195,7 +198,9 @@ export function traverseNamespacePath(
     };
   }
 
-  const pathParts = path.split(".").filter((part) => part.length > 0);
+  const pathParts = (typeof path === "string" ? path.split(".") : path).filter(
+    (part) => part.length > 0,
+  );
 
   if (pathParts.length === 0) {
     // Empty path returns null for non-self-children namespaces
