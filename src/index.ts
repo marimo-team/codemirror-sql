@@ -1,3 +1,7 @@
+export {
+  type AliasCompletionConfig,
+  aliasColumnCompletionSource,
+} from "./sql/alias-completion-source.js";
 export { cteCompletionSource } from "./sql/cte-completion-source.js";
 export { type SqlLinterConfig, sqlLinter } from "./sql/diagnostics.js";
 export { type SqlExtensionConfig, sqlExtension } from "./sql/extension.js";
@@ -15,6 +19,13 @@ export {
   type ParserOption,
   type SupportedDialects,
 } from "./sql/parser.js";
+export {
+  analyzeQueryContext,
+  type QueryContext,
+  QueryContextAnalyzer,
+  type QueryContextCte,
+  type QueryContextTable,
+} from "./sql/query-context.js";
 export { resolveSqlSchema, type SqlSchemaSource, sqlSchemaFacet } from "./sql/schema-facet.js";
 export {
   type SemanticSeverity,

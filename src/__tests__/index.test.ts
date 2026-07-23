@@ -11,7 +11,10 @@ describe("index.ts exports", () => {
       [
         "DefaultSqlTooltipRenders",
         "NodeSqlParser",
+        "QueryContextAnalyzer",
         "SqlStructureAnalyzer",
+        "aliasColumnCompletionSource",
+        "analyzeQueryContext",
         "cteCompletionSource",
         "defaultSqlHoverTheme",
         "resolveSqlSchema",

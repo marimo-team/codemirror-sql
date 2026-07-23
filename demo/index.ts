@@ -4,6 +4,7 @@ import { Compartment, type EditorState, StateEffect, StateField } from "@codemir
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import {
+  aliasColumnCompletionSource,
   cteCompletionSource,
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
@@ -176,6 +177,10 @@ function initializeEditor() {
     }),
     defaultDialect.language.data.of({
       autocomplete: cteCompletionSource,
+    }),
+    defaultDialect.language.data.of({
+      // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
+      autocomplete: aliasColumnCompletionSource({ schema, parser }),
     }),
     // Custom theme for better SQL editing
     EditorView.theme({

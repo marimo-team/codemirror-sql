@@ -9,6 +9,7 @@ A CodeMirror extension for SQL linting and visual gutter indicators. Built by an
 - 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
 - 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
 - 🔮 **CTE autocomplete** - Auto-complete support for CTEs
+- 🏷️ **Alias resolution** - Hover and completion understand table aliases (`SELECT u.name FROM users u`)
 - 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
 - 🔍 **Additional dialects** - DuckDB, BigQuery, Dremio
 - 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
@@ -28,7 +29,7 @@ pnpm add @marimo-team/codemirror-sql
 ```ts
 import { sql, StandardSQL } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
-import { sqlExtension, cteCompletionSource } from "@marimo-team/codemirror-sql";
+import { sqlExtension, cteCompletionSource, aliasColumnCompletionSource } from "@marimo-team/codemirror-sql";
 
 const schema = {
   users: ["id", "name", "email", "active"],
@@ -46,6 +47,10 @@ const editor = new EditorView({
     }),
     StandardSQL.language.data.of({
       autocomplete: cteCompletionSource,
+    }),
+    StandardSQL.language.data.of({
+      // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
+      autocomplete: aliasColumnCompletionSource({ schema }),
     }),
     sqlExtension({
       // Shared by hover tooltips and semantic linting
