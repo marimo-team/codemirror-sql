@@ -8,11 +8,13 @@ const REQUEST_TIMEOUT_MS = 10_000;
 function request(worker, requestValue) {
   return new Promise((resolve, reject) => {
     const startedAt = performance.now();
-    const timeout = setTimeout(() => {
-      reject(new Error(`Worker request ${requestValue.id} timed out`));
-    }, REQUEST_TIMEOUT_MS);
-    const onError = (event) => {
+    const cleanup = () => {
       clearTimeout(timeout);
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("message", onMessage);
+    };
+    const onError = (event) => {
+      cleanup();
       reject(
         new Error(
           event.message ||
@@ -24,14 +26,16 @@ function request(worker, requestValue) {
       if (event.data?.id !== requestValue.id) {
         return;
       }
-      clearTimeout(timeout);
-      worker.removeEventListener("error", onError);
-      worker.removeEventListener("message", onMessage);
+      cleanup();
       resolve({
         response: event.data,
         roundTripMs: performance.now() - startedAt,
       });
     };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Worker request ${requestValue.id} timed out`));
+    }, REQUEST_TIMEOUT_MS);
     worker.addEventListener("error", onError, { once: true });
     worker.addEventListener("message", onMessage);
     worker.postMessage(requestValue);
@@ -40,11 +44,13 @@ function request(worker, requestValue) {
 
 function waitForReady(worker) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Parser worker ready handshake timed out"));
-    }, REQUEST_TIMEOUT_MS);
-    const onError = (event) => {
+    const cleanup = () => {
       clearTimeout(timeout);
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("message", onMessage);
+    };
+    const onError = (event) => {
+      cleanup();
       reject(
         new Error(event.message || "Parser worker startup failed"),
       );
@@ -53,11 +59,13 @@ function waitForReady(worker) {
       if (event.data?.kind !== "ready") {
         return;
       }
-      clearTimeout(timeout);
-      worker.removeEventListener("error", onError);
-      worker.removeEventListener("message", onMessage);
+      cleanup();
       resolve(event.data);
     };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Parser worker ready handshake timed out"));
+    }, REQUEST_TIMEOUT_MS);
     worker.addEventListener("error", onError, { once: true });
     worker.addEventListener("message", onMessage);
   });

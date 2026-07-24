@@ -241,7 +241,7 @@ A representative local Node 24 / Chromium 149 / arm64 macOS sample recorded:
 | Core-only fixture | 24,056 B | 7,497 B |
 | PostgreSQL transitive worker graph | 321,156 B | 67,396 B |
 | BigQuery transitive worker graph | 225,309 B | 50,389 B |
-| Complete worker fixture | 549,885 B | 118,160 B |
+| Complete worker fixture | 549,893 B | 118,170 B |
 
 The core module trace contained no `node-sql-parser` module. No dialect
 resource loaded before explicit construction. A single static module worker

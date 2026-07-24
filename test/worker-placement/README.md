@@ -11,7 +11,7 @@ can run offline after a clean root CI install.
 
 The minified Vite 8 single-worker baseline is 67,396 gzip bytes for the
 PostgreSQL transitive graph, 50,389 gzip bytes for the BigQuery transitive
-graph, and 118,160 gzip/549,885 raw bytes for the complete worker build output.
+graph, and 118,170 gzip/549,893 raw bytes for the complete worker build output.
 The PostgreSQL and BigQuery figures each include their transitive shared
 chunks; the report also identifies those shared chunks explicitly. The
 fail-closed ceilings include small explicit headroom over that measured
