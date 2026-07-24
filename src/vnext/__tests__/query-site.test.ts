@@ -93,8 +93,8 @@ function decodeStandardPath(
   };
 }
 
-function classifyRelationAlias(
-  rawAlias: string,
+function classifyIdentifierToken(
+  rawIdentifier: string,
   quoted: boolean,
 ):
   | {
@@ -105,21 +105,27 @@ function classifyRelationAlias(
       readonly status: "unsupported";
     } {
   if (quoted) {
-    const delimiter = rawAlias.at(0) ?? "";
-    const value = rawAlias
+    const delimiter = rawIdentifier.at(0) ?? "";
+    const value = rawIdentifier
       .slice(1, -1)
       .replaceAll(`${delimiter}${delimiter}`, delimiter);
     return value.length > 0
       ? { status: "identifier", value }
       : { status: "unsupported" };
   }
-  const word = rawAlias.toLowerCase();
+  const word = rawIdentifier.toLowerCase();
   const unsupported =
     word === "assert_rows_modified" ||
     word === "as" ||
+    word === "collate" ||
     word === "cross" ||
+    word === "default" ||
+    word === "distinct" ||
+    word === "end" ||
+    word === "escape" ||
     word === "except" ||
     word === "fetch" ||
+    word === "filter" ||
     word === "for" ||
     word === "from" ||
     word === "full" ||
@@ -137,6 +143,7 @@ function classifyRelationAlias(
     word === "offset" ||
     word === "order" ||
     word === "outer" ||
+    word === "over" ||
     word === "pivot" ||
     word === "qualify" ||
     word === "right" ||
@@ -146,14 +153,15 @@ function classifyRelationAlias(
     word === "union" ||
     word === "using" ||
     word === "where" ||
-    word === "window";
+    word === "window" ||
+    word === "within";
   return unsupported
     ? { status: "unsupported" }
-    : { status: "identifier", value: rawAlias };
+    : { status: "identifier", value: rawIdentifier };
 }
 
 const postgresDialect: SqlQuerySiteDialect = {
-  classifyRelationAlias,
+  classifyIdentifierToken,
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
   maximumPathDepth: 4,
@@ -161,7 +169,7 @@ const postgresDialect: SqlQuerySiteDialect = {
 };
 
 const duckdbDialect: SqlQuerySiteDialect = {
-  classifyRelationAlias,
+  classifyIdentifierToken,
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
   maximumPathDepth: 16,
@@ -169,7 +177,7 @@ const duckdbDialect: SqlQuerySiteDialect = {
 };
 
 const bigQueryDialect: SqlQuerySiteDialect = {
-  classifyRelationAlias,
+  classifyIdentifierToken,
   decodeRelationPath: (rawPath, cursorOffset) => {
     if (!rawPath.startsWith("`")) {
       if (!rawPath.includes("-")) {
@@ -290,21 +298,13 @@ describe("partial SELECT relation query sites", () => {
     ["SELECT * FROM |, other", "from"],
     ["SELECT * FROM a, |, b", "comma"],
     ["SELECT * FROM a JOIN |, b", "join"],
-    ["SELECT * FROM a JOIN b ON a.id = b.id JOIN |", "join"],
-    ["SELECT * FROM a JOIN b ON true LEFT JOIN |", "join"],
-    ["SELECT * FROM a JOIN b ON true LEFT OUTER JOIN |", "join"],
-    ["SELECT * FROM a JOIN b ON true RIGHT OUTER JOIN |", "join"],
-    ["SELECT * FROM a JOIN b ON true FULL OUTER JOIN |", "join"],
-    [
-      "SELECT * FROM a JOIN b ON LEFT(a.name, 1) = 'x' LEFT JOIN |",
-      "join",
-    ],
-    [
-      "SELECT * FROM a JOIN b ON RIGHT(a.name, 1) = 'x' CROSS JOIN |",
-      "join",
-    ],
-    ["SELECT * FROM a JOIN b ON a.id=b.id, |", "comma"],
     ["SELECT * FROM a JOIN b USING(id), |", "comma"],
+    ["SELECT * FROM a JOIN b USING(id) LEFT JOIN |", "join"],
+    ['SELECT * FROM a JOIN b USING("id", other) JOIN |', "join"],
+    [
+      "SELECT * FROM a JOIN b USING(id) WHERE EXISTS (SELECT * FROM |)",
+      "from",
+    ],
     ["SELECT (SELECT * FROM |)", "from"],
     ["SELECT * FROM (SELECT * FROM |) q", "from"],
     ["SELECT * FROM /* closed */ |", "from"],
@@ -527,10 +527,99 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT * FROM LATERAL users JOIN |", "unavailable"],
     ["SELECT * FROM users LATERAL JOIN |", "unavailable"],
     ["SELECT * FROM users ON true JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a JOIN b ON a.id = b.id JOIN |",
+      "unavailable",
+    ],
+    [
+      "SELECT * FROM a JOIN b ON (SELECT true) JOIN |",
+      "unavailable",
+    ],
+    [
+      "SELECT * FROM a JOIN b ON true WHERE EXISTS (SELECT * FROM |)",
+      "unavailable",
+    ],
     ["SELECT * FROM a CROSS JOIN b ON true JOIN |", "unavailable"],
     ["SELECT * FROM a NATURAL JOIN b USING(x) JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b ON x ON y JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b USING(x) USING(y) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON LEFT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON () JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON + JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON true + JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON true AND JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a = JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON (a =) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON (JOIN) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON END JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON DISTINCT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON DEFAULT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a IS DISTINCT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a NOT DISTINCT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a SIMILAR TO JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a COLLATE JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a AT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON a LIKE 'x' ESCAPE JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON COLLATE x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON DISTINCT x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON ESCAPE x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON TO x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON ZONE x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON AT x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON BETWEEN x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON AND x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON IS x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON WHEN x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON THEN x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON ELSE x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON (AND x) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON = x JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON true LEFT() JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON WHERE JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING WHERE JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING id JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING() JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id,) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(, id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id.name) JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a JOIN b USING((SELECT * FROM |))",
+      "unavailable",
+    ],
+    ["SELECT * FROM a JOIN b USING('id') JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(JOIN) JOIN |", "unavailable"],
+    ['SELECT * FROM a JOIN b USING("") JOIN |', "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id other) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id) other JOIN |", "unavailable"],
+    ['SELECT * FROM a JOIN b USING(id) "other" JOIN |', "unavailable"],
+    ["SELECT * FROM a JOIN b USING 'id' JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING FETCH JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING GROUP JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING HAVING JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING LIMIT JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING OFFSET JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING ORDER JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING LEFT(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING RIGHT(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING FULL(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING INNER(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING CROSS(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING NATURAL(id) JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a JOIN b USING LEFT OUTER(id) JOIN |",
+      "unavailable",
+    ],
+    ["SELECT * FROM a JOIN b LEFT USING(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b RIGHT USING(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b FULL USING(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b INNER USING(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b CROSS USING(id) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b NATURAL USING(id) JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a JOIN b LEFT OUTER USING(id) JOIN |",
+      "unavailable",
+    ],
     [
       "SELECT * FROM a JOIN b ON true CROSS JOIN c ON true JOIN |",
       "unavailable",
@@ -554,6 +643,18 @@ describe("fail-closed query-site behavior", () => {
       "unavailable",
     ],
     ["SELECT * FROM a LEFT /*x*/, |", "unavailable"],
+    [
+      "SELECT * FROM a LEFT WHERE EXISTS (SELECT * FROM |)",
+      "unavailable",
+    ],
+    [
+      "SELECT * FROM a JOIN b USING(id) LEFT WHERE EXISTS (SELECT * FROM |)",
+      "unavailable",
+    ],
+    [
+      "SELECT * FROM a JOIN b USING(id) NATURAL GROUP BY (SELECT * FROM |)",
+      "unavailable",
+    ],
     ["SELECT * FROM users + JOIN |", "unavailable"],
     ["SELECT * FROM users 'garbage' JOIN |", "unavailable"],
     ["SELECT * FROM users . junk JOIN |", "unavailable"],
@@ -597,7 +698,7 @@ describe("fail-closed query-site behavior", () => {
   it("fails closed when dialect continuation policy is malformed", () => {
     const throwingDialect: SqlQuerySiteDialect = {
       ...postgresDialect,
-      classifyRelationAlias: () => {
+      classifyIdentifierToken: () => {
         throw new Error("classification failed");
       },
     };
@@ -610,7 +711,7 @@ describe("fail-closed query-site behavior", () => {
     const malformedDialect: SqlQuerySiteDialect = {
       ...postgresDialect,
     };
-    Object.defineProperty(malformedDialect, "classifyRelationAlias", {
+    Object.defineProperty(malformedDialect, "classifyIdentifierToken", {
       value: () => "bogus",
     });
     expect(
@@ -642,7 +743,7 @@ describe("fail-closed query-site behavior", () => {
       };
       Object.defineProperty(
         invalidShapeDialect,
-        "classifyRelationAlias",
+        "classifyIdentifierToken",
         {
           value: () => result,
         },
@@ -660,7 +761,7 @@ describe("fail-closed query-site behavior", () => {
     ]) {
       const invalidDecodedDialect: SqlQuerySiteDialect = {
         ...postgresDialect,
-        classifyRelationAlias: () => ({
+        classifyIdentifierToken: () => ({
           status: "identifier",
           value,
         }),
@@ -677,15 +778,21 @@ describe("fail-closed query-site behavior", () => {
     const calls: {
       rawAlias: string;
       quoted: boolean;
-      role: "explicit-alias" | "implicit-alias";
+      role:
+        | "explicit-alias"
+        | "implicit-alias"
+        | "using-column";
     }[] = [];
     const dialect: SqlQuerySiteDialect = {
       ...postgresDialect,
-      classifyRelationAlias: (rawAlias, quoted, role) => {
-        calls.push({ quoted, rawAlias, role });
-        return rawAlias === '"blocked"'
+      classifyIdentifierToken: (rawIdentifier, quoted, role) => {
+        calls.push({ quoted, rawAlias: rawIdentifier, role });
+        return rawIdentifier === '"blocked"'
           ? { status: "unsupported" }
-          : { status: "identifier", value: rawAlias.toLowerCase() };
+          : {
+              status: "identifier",
+              value: rawIdentifier.toLowerCase(),
+            };
       },
     };
     expect(
@@ -703,6 +810,11 @@ describe("fail-closed query-site behavior", () => {
         dialect,
       }).status,
     ).toBe("unavailable");
+    expect(
+      recognize("SELECT * FROM users JOIN other USING(CamelColumn) JOIN |", {
+        dialect,
+      }).status,
+    ).toBe("ready");
     expect(calls).toEqual([
       {
         quoted: false,
@@ -718,6 +830,11 @@ describe("fail-closed query-site behavior", () => {
         quoted: true,
         rawAlias: '"blocked"',
         role: "explicit-alias",
+      },
+      {
+        quoted: false,
+        rawAlias: "CamelColumn",
+        role: "using-column",
       },
     ]);
   });
@@ -860,7 +977,6 @@ describe("fail-closed query-site behavior", () => {
 
   it.each([
     "SELECT (SELECT {x}) FROM |",
-    "SELECT * FROM users JOIN orders ON (SELECT {x}) JOIN |",
     "{x} (SELECT * FROM |)",
   ])("retains embedded-region evidence across nested frames in %s", (marked) => {
     const regionFrom = marked.indexOf("{x}");
@@ -999,7 +1115,7 @@ describe("fail-closed query-site behavior", () => {
     const dialectWith = (
       decodeRelationPath: SqlQuerySiteDialect["decodeRelationPath"],
     ): SqlQuerySiteDialect => ({
-      classifyRelationAlias,
+      classifyIdentifierToken,
       decodeRelationPath,
       lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
       maximumPathDepth: 4,
@@ -1287,6 +1403,30 @@ describe("query-site resource limits", () => {
     expect(
       recognize(`${"(".repeat(MAX_QUERY_SITE_DEPTH)}SELECT * FROM |`).status,
     ).toBe("ready");
+  });
+
+  it("keeps authenticated USING-list work linear and bounded", () => {
+    let usingColumnCalls = 0;
+    const dialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+      classifyIdentifierToken: (rawIdentifier, quoted, role) => {
+        if (role === "using-column") {
+          usingColumnCalls += 1;
+        }
+        return classifyIdentifierToken(rawIdentifier, quoted);
+      },
+    };
+    const columns = Array.from(
+      { length: 1_000 },
+      (_, index) => `column_${index}`,
+    ).join(", ");
+    expect(
+      recognize(
+        `SELECT * FROM a JOIN b USING(${columns}) JOIN |`,
+        { dialect },
+      ).status,
+    ).toBe("ready");
+    expect(usingColumnCalls).toBe(1_000);
   });
 
   it("bounds path depth and decoded identifier length", () => {

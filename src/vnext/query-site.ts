@@ -104,11 +104,14 @@ export type SqlDecodedQueryPath =
     };
 
 export interface SqlQuerySiteDialect {
-  /** Accepts only a dialect-valid alias and returns its decoded value. */
-  readonly classifyRelationAlias: (
-    rawAlias: string,
+  /** Accepts only a dialect-valid identifier and returns its decoded value. */
+  readonly classifyIdentifierToken: (
+    rawIdentifier: string,
     quoted: boolean,
-    role: "explicit-alias" | "implicit-alias",
+    role:
+      | "explicit-alias"
+      | "implicit-alias"
+      | "using-column",
   ) =>
     | {
         readonly status: "identifier";
@@ -172,12 +175,20 @@ type JoinPrefix =
   | "right-outer"
   | null;
 
+interface UsingConstraint {
+  complete: boolean;
+  expectIdentifier: boolean;
+  identifierCount: number;
+  listDepth: number | null;
+}
+
 interface QueryFrame {
   readonly baseDepth: number;
   anchor: "comma" | "from" | "join";
+  blocksNestedQuery: boolean;
   joinPrefix: JoinPrefix;
+  joinConstraint: UsingConstraint | null;
   joinConstraintAllowed: boolean;
-  joinConstraintSeen: boolean;
   selectWords: [string | null, string | null, string | null];
   state: FrameState;
   tainted: boolean;
@@ -500,8 +511,9 @@ function createFrame(depth: number, tainted: boolean): QueryFrame {
   return {
     anchor: "from",
     baseDepth: depth,
+    blocksNestedQuery: false,
+    joinConstraint: null,
     joinConstraintAllowed: false,
-    joinConstraintSeen: false,
     joinPrefix: null,
     selectWords: [null, null, null],
     state: "select-list",
@@ -627,21 +639,24 @@ function processJoinPrefixWord(
   return false;
 }
 
-function classifyRelationAlias(
+function classifyIdentifierToken(
   dialect: SqlQuerySiteDialect,
-  rawAlias: string,
+  rawIdentifier: string,
   quoted: boolean,
-  role: "explicit-alias" | "implicit-alias",
+  role:
+    | "explicit-alias"
+    | "implicit-alias"
+    | "using-column",
 ): "identifier" | "unsupported" | null {
   if (
-    rawAlias.length === 0 ||
-    (quoted && rawAlias.length <= 2)
+    rawIdentifier.length === 0 ||
+    (quoted && rawIdentifier.length <= 2)
   ) {
     return null;
   }
   try {
-    const classification = dialect.classifyRelationAlias(
-      rawAlias,
+    const classification = dialect.classifyIdentifierToken(
+      rawIdentifier,
       quoted,
       role,
     );
@@ -683,7 +698,7 @@ function processFrameWord(
       markUnavailable(frame, "ambiguous-query-site");
       return;
     }
-    const classification = classifyRelationAlias(
+    const classification = classifyIdentifierToken(
       dialect,
       text.slice(token.from, token.to),
       false,
@@ -701,6 +716,18 @@ function processFrameWord(
     );
     return;
   }
+  if (
+    frame.state === "join-constraint" &&
+    !frame.joinConstraint?.complete &&
+    (isSetOperation(word) ||
+      isClauseCloser(word) ||
+      word === "lateral" ||
+      word === "qualify" ||
+      word === "window")
+  ) {
+    markUnavailable(frame, "ambiguous-query-site");
+    return;
+  }
   if (isSetOperation(word)) {
     markUnavailable(frame, "unsupported-query-site");
     return;
@@ -710,6 +737,17 @@ function processFrameWord(
     return;
   }
   if (isClauseCloser(word)) {
+    if (frame.joinPrefix !== null) {
+      frame.blocksNestedQuery = true;
+      markUnavailable(frame, "ambiguous-query-site");
+      return;
+    }
+    if (
+      frame.state === "join-constraint" &&
+      frame.joinConstraint?.complete
+    ) {
+      frame.blocksNestedQuery = false;
+    }
     frame.state = "closed";
     frame.joinPrefix = null;
     return;
@@ -717,8 +755,9 @@ function processFrameWord(
   if (frame.state === "select-list") {
     if (word === "from" && !isExpressionFrom(frame)) {
       frame.anchor = "from";
+      frame.blocksNestedQuery = false;
       frame.joinConstraintAllowed = false;
-      frame.joinConstraintSeen = false;
+      frame.joinConstraint = null;
       frame.state = "expect-relation";
       frame.joinPrefix = null;
       return;
@@ -727,6 +766,15 @@ function processFrameWord(
     return;
   }
   if (frame.state === "join-constraint") {
+    const constraint = frame.joinConstraint;
+    if (!constraint) {
+      markUnavailable(frame, "ambiguous-query-site");
+      return;
+    }
+    if (!constraint.complete) {
+      markUnavailable(frame, "ambiguous-query-site");
+      return;
+    }
     if (word === "on" || word === "using") {
       markUnavailable(frame, "ambiguous-query-site");
       return;
@@ -736,38 +784,49 @@ function processFrameWord(
     }
     if (word === "join") {
       frame.anchor = "join";
+      frame.blocksNestedQuery = false;
       frame.joinConstraintAllowed = joinAllowsConstraint(frame.joinPrefix);
-      frame.joinConstraintSeen = false;
+      frame.joinConstraint = null;
       frame.joinPrefix = null;
       frame.state = "expect-relation";
       return;
     }
-    if (frame.joinPrefix !== null) {
-      markUnavailable(frame, "ambiguous-query-site");
-    }
+    markUnavailable(frame, "ambiguous-query-site");
     return;
   }
   if (frame.state !== "after-relation" && frame.state !== "after-alias") {
     return;
   }
-  if (word === "on" || word === "using") {
+  if (word === "on") {
+    frame.blocksNestedQuery = true;
+    markUnavailable(frame, "unsupported-query-site");
+    return;
+  }
+  if (word === "using") {
     if (
       frame.anchor !== "join" ||
       !frame.joinConstraintAllowed ||
-      frame.joinConstraintSeen
+      frame.joinConstraint !== null ||
+      frame.joinPrefix !== null
     ) {
       markUnavailable(frame, "ambiguous-query-site");
       return;
     }
     frame.state = "join-constraint";
-    frame.joinConstraintSeen = true;
-    frame.joinPrefix = null;
+    frame.blocksNestedQuery = true;
+    frame.joinConstraint = {
+      complete: false,
+      expectIdentifier: true,
+      identifierCount: 0,
+      listDepth: null,
+    };
     return;
   }
   if (word === "join") {
     frame.anchor = "join";
+    frame.blocksNestedQuery = false;
     frame.joinConstraintAllowed = joinAllowsConstraint(frame.joinPrefix);
-    frame.joinConstraintSeen = false;
+    frame.joinConstraint = null;
     frame.state = "expect-relation";
     frame.joinPrefix = null;
     return;
@@ -788,7 +847,7 @@ function processFrameWord(
       markUnavailable(frame, "ambiguous-query-site");
       return;
     }
-    const classification = classifyRelationAlias(
+    const classification = classifyIdentifierToken(
       dialect,
       text.slice(token.from, token.to),
       false,
@@ -818,6 +877,11 @@ function processBarrier(frame: QueryFrame | null): void {
   if (frame.state === "expect-relation") {
     frame.state = "after-relation";
   } else if (frame.state === "expect-alias") {
+    markUnavailable(frame, "ambiguous-query-site");
+  } else if (
+    frame.state === "join-constraint" &&
+    !frame.joinConstraint?.complete
+  ) {
     markUnavailable(frame, "ambiguous-query-site");
   }
 }
@@ -1332,8 +1396,49 @@ export function recognizeSqlRelationQuerySite(
       queryCandidates.delete(depth);
       continue;
     }
+    if (
+      cursorInside &&
+      frame?.state === "unavailable" &&
+      frame.blocksNestedQuery
+    ) {
+      return unavailable(frame.unavailableReason);
+    }
 
     const active = topFrame(frames);
+    const activeConstraint = active?.joinConstraint;
+    if (
+      active?.state === "join-constraint" &&
+      activeConstraint &&
+      activeConstraint.listDepth === depth &&
+      token.kind !== "punctuation"
+    ) {
+      if (cursorInside) {
+        return inactive("not-relation-position");
+      }
+      queryCandidates.delete(depth);
+      if (
+        activeConstraint.expectIdentifier &&
+        (token.kind === "word" ||
+          token.kind === "quoted-identifier")
+      ) {
+        const rawIdentifier = token.closed
+          ? source.analysisText.slice(token.from, token.to)
+          : "";
+        const classification = classifyIdentifierToken(
+          dialect,
+          rawIdentifier,
+          token.kind === "quoted-identifier",
+          "using-column",
+        );
+        if (classification === "identifier") {
+          activeConstraint.expectIdentifier = false;
+          activeConstraint.identifierCount += 1;
+          continue;
+        }
+      }
+      markUnavailable(active, "ambiguous-query-site");
+      continue;
+    }
     if (
       active?.state === "expect-relation" &&
       (token.kind === "word" || token.kind === "quoted-identifier")
@@ -1380,6 +1485,64 @@ export function recognizeSqlRelationQuerySite(
       const code = source.analysisText.charCodeAt(token.from);
       const punctuationFrame = topFrame(frames);
       queryCandidates.delete(depth);
+      const usingConstraint =
+        punctuationFrame?.state === "join-constraint" &&
+        punctuationFrame.joinConstraint
+          ? punctuationFrame.joinConstraint
+          : null;
+      if (usingConstraint && punctuationFrame) {
+        if (
+          usingConstraint.listDepth === null &&
+          !usingConstraint.complete &&
+          punctuationFrame.baseDepth === depth
+        ) {
+          if (code === 40) {
+            usingConstraint.listDepth = depth + 1;
+          } else {
+            markUnavailable(
+              punctuationFrame,
+              "ambiguous-query-site",
+            );
+          }
+        } else if (usingConstraint.listDepth === depth) {
+          if (code === 44) {
+            if (usingConstraint.expectIdentifier) {
+              markUnavailable(
+                punctuationFrame,
+                "ambiguous-query-site",
+              );
+            } else {
+              usingConstraint.expectIdentifier = true;
+            }
+          } else if (code === 41) {
+            if (
+              usingConstraint.identifierCount === 0 ||
+              usingConstraint.expectIdentifier
+            ) {
+              markUnavailable(
+                punctuationFrame,
+                "ambiguous-query-site",
+              );
+            } else {
+              usingConstraint.complete = true;
+              usingConstraint.listDepth = null;
+            }
+          } else {
+            markUnavailable(
+              punctuationFrame,
+              "ambiguous-query-site",
+            );
+          }
+        } else if (
+          usingConstraint.complete &&
+          punctuationFrame.baseDepth === depth &&
+          code !== 41 &&
+          code !== 44 &&
+          code !== 59
+        ) {
+          markUnavailable(punctuationFrame, "ambiguous-query-site");
+        }
+      }
       if (
         punctuationFrame?.baseDepth === depth &&
         punctuationFrame.state === "join-constraint" &&
@@ -1448,15 +1611,19 @@ export function recognizeSqlRelationQuerySite(
           commaFrame?.baseDepth === depth &&
           (commaFrame.state === "after-relation" ||
             commaFrame.state === "after-alias" ||
-            (commaFrame.state === "join-constraint" &&
-              commaFrame.joinConstraintSeen))
+            commaFrame.state === "join-constraint")
         ) {
-          if (commaFrame.joinPrefix !== null) {
+          if (
+            commaFrame.joinPrefix !== null ||
+            (commaFrame.state === "join-constraint" &&
+              !commaFrame.joinConstraint?.complete)
+          ) {
             markUnavailable(commaFrame, "ambiguous-query-site");
           } else {
             commaFrame.anchor = "comma";
+            commaFrame.blocksNestedQuery = false;
             commaFrame.joinConstraintAllowed = false;
-            commaFrame.joinConstraintSeen = false;
+            commaFrame.joinConstraint = null;
             commaFrame.state = "expect-relation";
           }
         }
@@ -1477,7 +1644,10 @@ export function recognizeSqlRelationQuerySite(
       const isSelect = wordEquals(source.analysisText, token, "select");
       if (queryCandidates.has(depth)) {
         queryCandidates.delete(depth);
-        if (isSelect) {
+        if (
+          isSelect &&
+          !topFrame(frames)?.blocksNestedQuery
+        ) {
           frames.push(createFrame(depth, statementTainted));
           sawSelect = true;
           if (token.to === position) {
@@ -1523,7 +1693,7 @@ export function recognizeSqlRelationQuerySite(
         const rawAlias = token.closed
           ? source.analysisText.slice(token.from, token.to)
           : "";
-        const classification = classifyRelationAlias(
+        const classification = classifyIdentifierToken(
           dialect,
           rawAlias,
           true,
@@ -1541,8 +1711,7 @@ export function recognizeSqlRelationQuerySite(
         }
       } else if (
         activeFrame?.baseDepth === depth &&
-        activeFrame.state === "join-constraint" &&
-        activeFrame.joinPrefix !== null
+        activeFrame.state === "join-constraint"
       ) {
         markUnavailable(activeFrame, "ambiguous-query-site");
       } else if (
@@ -1558,8 +1727,7 @@ export function recognizeSqlRelationQuerySite(
     if (
       (token.kind === "other" || token.kind === "string") &&
       remainingFrame?.baseDepth === depth &&
-      remainingFrame.state === "join-constraint" &&
-      remainingFrame.joinPrefix !== null
+      remainingFrame.state === "join-constraint"
     ) {
       markUnavailable(remainingFrame, "ambiguous-query-site");
     }
@@ -1571,15 +1739,6 @@ export function recognizeSqlRelationQuerySite(
         remainingFrame.state === "expect-alias")
     ) {
       markUnavailable(remainingFrame, "ambiguous-query-site");
-    }
-    if (
-      token.kind === "other" &&
-      remainingFrame?.baseDepth === depth &&
-      remainingFrame.state === "join-constraint" &&
-      (source.analysisText.charCodeAt(token.from) === 91 ||
-        source.analysisText.charCodeAt(token.from) === 93)
-    ) {
-      markUnavailable(remainingFrame, "unsupported-query-site");
     }
     if (token.to === position) {
       return resultAtGap(slot, topFrame(frames), position, sawSelect);

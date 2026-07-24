@@ -11,9 +11,9 @@ import {
 } from "../statement-index.js";
 
 const dialect: SqlQuerySiteDialect = {
-  classifyRelationAlias: (rawAlias) => ({
+  classifyIdentifierToken: (rawIdentifier) => ({
     status: "identifier",
-    value: rawAlias,
+    value: rawIdentifier,
   }),
   decodeRelationPath: (rawPath, cursorOffset) => ({
     finalSegment: { from: 0, to: rawPath.length },
@@ -29,10 +29,20 @@ const dialect: SqlQuerySiteDialect = {
   maximumPathDepth: 16,
   supportsNaturalJoin: true,
 };
-const tenKilobyteQuery = `SELECT ${Array.from(
-  { length: 1_100 },
-  (_, index) => `value_${index}`,
-).join(", ")} FROM schema_prefix`;
+const TEN_KIBIBYTES = 10 * 1_024;
+const queryPrefix = "SELECT ";
+const querySuffix = " FROM schema_prefix";
+const projectedListLength =
+  TEN_KIBIBYTES - queryPrefix.length - querySuffix.length;
+const projectedList = `${"x,".repeat(
+  Math.floor((projectedListLength - 1) / 2),
+)}x`;
+const tenKilobyteQuery = `${queryPrefix}${projectedList}${" ".repeat(
+  projectedListLength - projectedList.length,
+)}${querySuffix}`;
+if (tenKilobyteQuery.length !== TEN_KIBIBYTES) {
+  throw new Error("Query benchmark fixture must be exactly 10 KiB");
+}
 const source = createIdentitySqlSource(tenKilobyteQuery);
 const index = buildSqlStatementIndex(
   source.analysisText,
@@ -55,6 +65,21 @@ const aliasHeavySlot = findSqlStatementSlot(
   aliasHeavyPosition,
   "left",
 );
+const usingHeavyQuery = `SELECT * FROM first_table JOIN second_table USING(${Array.from(
+  { length: 1_000 },
+  (_, columnIndex) => `column_${columnIndex}`,
+).join(", ")}) JOIN target`;
+const usingHeavySource = createIdentitySqlSource(usingHeavyQuery);
+const usingHeavyIndex = buildSqlStatementIndex(
+  usingHeavySource.analysisText,
+  dialect.lexicalProfile,
+);
+const usingHeavyPosition = usingHeavyQuery.length;
+const usingHeavySlot = findSqlStatementSlot(
+  usingHeavyIndex,
+  usingHeavyPosition,
+  "left",
+);
 
 describe("query-site recognizer", () => {
   bench("10 KiB active statement", () => {
@@ -66,6 +91,15 @@ describe("query-site recognizer", () => {
       aliasHeavySource,
       aliasHeavySlot,
       aliasHeavyPosition,
+      dialect,
+    );
+  });
+
+  bench("1,000 authenticated USING columns", () => {
+    recognizeSqlRelationQuerySite(
+      usingHeavySource,
+      usingHeavySlot,
+      usingHeavyPosition,
       dialect,
     );
   });
