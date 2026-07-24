@@ -746,7 +746,7 @@ describe("lexical eligibility states", () => {
 });
 
 describe("parser request boundary", () => {
-  it("runs an authentic parser with exact text and cancellation", async () => {
+  it("runs an authentic parser with exact text and signal", async () => {
     const authority = createParserAuthority();
     const controller = new AbortController();
     const expected = createUnsupportedParserAnalysis(
@@ -774,6 +774,33 @@ describe("parser request boundary", () => {
     expect(Object.isFrozen(parser)).toBe(true);
     const result = await runSqlStatementParser(parser, request);
     expect(result.state).toBe("analyzed");
+    expect(result.analysis).toBe(expected);
+  });
+
+  it("passes an already-aborted signal to the parser callback", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
+    const reason = new Error("superseded");
+    controller.abort(reason);
+    const expected = createUnsupportedParserAnalysis(
+      "backend-capability",
+      "SELECT 1",
+      authority.authority,
+    );
+    const parser = createSqlStatementParser(
+      authority.authority,
+      async (request) => {
+        expect(request.signal).toBe(controller.signal);
+        expect(request.signal.aborted).toBe(true);
+        expect(request.signal.reason).toBe(reason);
+        return expected;
+      },
+    );
+
+    const result = await runSqlStatementParser(
+      parser,
+      createSqlStatementParseRequest("SELECT 1", controller.signal),
+    );
     expect(result.analysis).toBe(expected);
   });
 
