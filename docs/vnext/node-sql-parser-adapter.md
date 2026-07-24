@@ -60,7 +60,43 @@ bundle. This blocks browser windows and Node DOM shims from exposing an
 unguarded secondary target. Pure Node loads restore the exact prior descriptors
 synchronously after module evaluation, including removing names that were
 previously absent. Cleanup failure permanently poisons loading. A
-dedicated-worker loader remains future work.
+dedicated-worker loader uses the same exact descriptor restoration rule within
+its isolated realm.
+
+### Private browser worker endpoint
+
+The package contains a production-shaped but private module-worker endpoint.
+It is not exported from the package and is not reachable through `/vnext`.
+There is no public worker constructor, executor, queue, language-service
+module, or session integration yet.
+
+The endpoint:
+
+- uses only the extension-qualified PostgreSQL and BigQuery builds above;
+- loads each grammar lazily after a valid request;
+- reuses the realm-neutral backend engine for module, AST, and parser-error
+  normalization;
+- accepts and emits only a closed, versioned plain-data protocol;
+- returns normalized statement kind, bounded unsupported or failure evidence,
+  and never returns source text, raw errors, or backend ASTs;
+- derives retryability from the closed failure code instead of trusting a
+  separate wire flag;
+- restores the exact prior `NodeSQLParser` and `global` descriptors around
+  each dynamic import; and
+- permanently poisons and closes its worker realm if cleanup cannot be proven
+  exact.
+
+The endpoint accepts only one request at a time. Overlap and malformed messages
+fail closed instead of creating an implicit worker-side queue. The future
+service-owned executor is responsible for serialization, correlation,
+deadlines, cancellation, generation replacement, and disposal.
+
+Direct Chromium tests construct this source module worker and exercise both
+real grammar builds. The separate worker-placement fixture remains
+diagnostic packaging evidence: it records resource timing, emitted chunk
+reachability, and bundle sizes with a fixture-owned protocol. It is not the
+public integration boundary and must not be read as evidence that an executor
+or session API already exists.
 
 Approximate local Node 24 arm64 measurements for the installed package were:
 

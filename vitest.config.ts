@@ -10,6 +10,7 @@ export default defineConfig({
         "src/**/__tests__/**",
         "src/**/browser_tests/**",
         "src/debug.ts",
+        "src/vnext/node-sql-parser-browser-worker.ts",
       ],
       excludeAfterRemap: true,
       include: ["src/**/*.ts"],

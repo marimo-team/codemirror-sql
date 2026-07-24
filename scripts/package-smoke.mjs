@@ -169,6 +169,21 @@ try {
   if (typeof packedPackage.dependencies?.["node-sql-parser"] !== "string") {
     throw new Error("Packed manifest does not declare node-sql-parser");
   }
+  const privateWorkerArtifacts = [
+    "dist/vnext/node-sql-parser-browser-worker.d.ts",
+    "dist/vnext/node-sql-parser-browser-worker.js",
+    "dist/vnext/node-sql-parser-browser-worker-endpoint.d.ts",
+    "dist/vnext/node-sql-parser-browser-worker-endpoint.js",
+    "dist/vnext/node-sql-parser-wire.d.ts",
+    "dist/vnext/node-sql-parser-wire.js",
+  ];
+  for (const artifact of privateWorkerArtifacts) {
+    if (!existsSync(join(packageDirectory, artifact))) {
+      throw new Error(
+        `Packed archive omitted private worker artifact ${artifact}`,
+      );
+    }
+  }
 
   writeFileSync(
     join(temporaryDirectory, "vnext-consumer.mjs"),
