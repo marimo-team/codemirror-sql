@@ -69,7 +69,7 @@ parsing, and output normalization.
 The package contains a production-shaped but private module-worker endpoint.
 It is not exported from the package and is not reachable through `/vnext`.
 There is no public worker constructor, executor, queue, language-service
-module, or session integration yet.
+module, or session integration.
 
 The endpoint:
 
@@ -88,16 +88,27 @@ The endpoint:
   exact.
 
 The endpoint accepts only one request at a time. Overlap and malformed messages
-fail closed instead of creating an implicit worker-side queue. The future
-service-owned executor is responsible for serialization, correlation,
-deadlines, cancellation, generation replacement, and disposal.
+fail closed instead of creating an implicit worker-side queue. A private
+main-realm executor now provides bounded FIFO admission, serialization,
+correlation, startup/queue/execution deadlines, prompt consumer cancellation,
+generation replacement, and disposal. It creates the production module worker
+lazily and keeps cancelled posted work in a draining lane until the worker
+responds or its safety deadline retires that generation. Posted work is never
+replayed. Every worker-reported failure retires the generation because a
+`backend` failure may be indistinguishable from endpoint cleanup poisoning;
+never-posted queued work retains its original deadline on the replacement.
+
+The executor remains implementation infrastructure only. It is not exported
+from the root package or `/vnext`, is not owned by `SqlLanguageService`, and
+does not yet create authenticated syntax analyses or relation facts for a
+session.
 
 Direct Chromium tests construct this source module worker and exercise both
-real grammar builds. The separate worker-placement fixture remains
-diagnostic packaging evidence: it records resource timing, emitted chunk
-reachability, and bundle sizes with a fixture-owned protocol. It is not the
-public integration boundary and must not be read as evidence that an executor
-or session API already exists.
+real grammar builds, including the private executor's production worker path.
+The separate worker-placement fixture remains diagnostic packaging evidence:
+it records resource timing, emitted chunk reachability, and bundle sizes with
+a fixture-owned protocol. It is not the public integration boundary and must
+not be read as evidence that a session API already exists.
 
 Approximate local Node 24 arm64 measurements for the installed package were:
 

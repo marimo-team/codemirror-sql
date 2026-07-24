@@ -170,6 +170,8 @@ try {
     throw new Error("Packed manifest does not declare node-sql-parser");
   }
   const privateWorkerArtifacts = [
+    "dist/vnext/node-sql-parser-browser-executor.d.ts",
+    "dist/vnext/node-sql-parser-browser-executor.js",
     "dist/vnext/node-sql-parser-browser-worker.d.ts",
     "dist/vnext/node-sql-parser-browser-worker.js",
     "dist/vnext/node-sql-parser-browser-worker-endpoint.d.ts",
