@@ -34,7 +34,8 @@ const changedProductionFiles = execFileSync(
       !path.endsWith(".test.ts") &&
       !path.includes("/__tests__/") &&
       !path.includes("/browser_tests/") &&
-      path !== "src/debug.ts",
+      path !== "src/debug.ts" &&
+      path !== "src/vnext/node-sql-parser-browser-worker.ts",
   );
 const changedRuntimeFiles = (
   await Promise.all(
