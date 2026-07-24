@@ -77,7 +77,6 @@ const hostUpdate = {
   hostMetadata: { cellId: "cell-1" },
 };
 session.update(hostUpdate);
-// @ts-expect-error an explicitly undefined context is not an omitted context
 session.update({
   embeddedRegions: [],
   baseRevision: session.revision,
@@ -106,7 +105,7 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT 2" },
 });
-// @ts-expect-error present undefined regions are not omission
+// @ts-expect-error document mutations require defined post-edit regions
 session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT 2" },

@@ -111,14 +111,14 @@ type SqlDocumentMutationUpdate<Context extends SqlDocumentContext> =
   SqlDocumentUpdateBase & {
     readonly document: SqlDocumentEdit;
     readonly embeddedRegions: readonly SqlEmbeddedRegion[];
-    readonly context?: SqlContextInput<Context>;
+    readonly context?: SqlContextInput<Context> | undefined;
   };
 
 type SqlContextUpdate<Context extends SqlDocumentContext> =
   SqlDocumentUpdateBase & {
     readonly document?: never;
     readonly context: SqlContextInput<Context>;
-    readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
+    readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
   };
 
 type SqlEmbeddedRegionUpdate =
@@ -137,7 +137,7 @@ export type SqlDocumentUpdate<Context extends SqlDocumentContext> =
 export interface OpenSqlDocument<Context extends SqlDocumentContext> {
   readonly text: string;
   readonly context: SqlContextInput<Context>;
-  readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
+  readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
 }
 
 /** Owns all mutable state for one open SQL document. */

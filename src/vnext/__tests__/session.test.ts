@@ -727,15 +727,6 @@ describe("embedded-region session transactions", () => {
   });
 
   it("rejects malformed open and update region contracts", () => {
-    const service = createService();
-    expectSessionError("invalid-document", () => {
-      service.openDocument({
-        context: { dialect: "duckdb", engine: "local" },
-        embeddedRegions: undefined,
-        text: "",
-      } as never);
-    });
-
     const { session } = openSession("SELECT 1");
     const snapshot = session.snapshotForTesting;
     expectSessionError("invalid-update", () => {
@@ -1091,20 +1082,9 @@ describe("document changes", () => {
     expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
-  it("rejects undefined and accessor optional update fields", () => {
+  it("rejects accessor optional update fields", () => {
     const { session } = openSession("ABC");
     const revision = session.revision;
-    expectSessionError("invalid-update", () => {
-      session.update({
-        embeddedRegions: [],
-        baseRevision: revision,
-        context: undefined,
-        document: { kind: "replace", text: "changed" },
-      } as never);
-    });
-    expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
-
     let invoked = false;
     const update = {
       baseRevision: session.revision,
@@ -1121,6 +1101,32 @@ describe("document changes", () => {
     expect(invoked).toBe(false);
     expect(session.revision).toBe(revision);
     expect(session.snapshotForTesting.source.originalText).toBe("ABC");
+  });
+
+  it("treats undefined optional state fields as omission", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: undefined,
+      text: "SELECT 1",
+    });
+
+    const contextRevision = session.update({
+      baseRevision: session.revision,
+      context: { dialect: "duckdb", engine: "warehouse" },
+      embeddedRegions: undefined,
+    });
+    expect(session.revision).toBe(contextRevision);
+    expect(session.snapshotForTesting.context.engine).toBe("warehouse");
+
+    const documentRevision = session.update({
+      baseRevision: session.revision,
+      context: undefined,
+      document: { kind: "replace", text: "SELECT 2" },
+      embeddedRegions: [],
+    });
+    expect(session.revision).toBe(documentRevision);
+    expect(session.snapshotForTesting.source.originalText).toBe("SELECT 2");
   });
 
   it("rejects accessor document fields without invoking them", () => {
@@ -1471,6 +1477,18 @@ describe("document context", () => {
       createService().openDocument({ context, text: "" });
     });
     expect(invoked).toBe(false);
+  });
+
+  it("reports non-enumerable context properties accurately", () => {
+    const context = { dialect: "duckdb" };
+    Object.defineProperty(context, "engine", {
+      enumerable: false,
+      value: "local",
+    });
+
+    expect(() => {
+      createService().openDocument({ context: context as TestContext, text: "" });
+    }).toThrowError("SQL document context cannot contain non-enumerable properties");
   });
 
   it("rejects symbol keys", () => {

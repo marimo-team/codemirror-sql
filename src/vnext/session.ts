@@ -155,14 +155,16 @@ function getDataProperties(value: object): DataProperties {
       );
     }
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
+    if (!descriptor || !("value" in descriptor)) {
       throw new SqlSessionError(
         "invalid-context",
         "SQL document context cannot contain accessors",
+      );
+    }
+    if (!descriptor.enumerable) {
+      throw new SqlSessionError(
+        "invalid-context",
+        "SQL document context cannot contain non-enumerable properties",
       );
     }
     values.push(descriptor.value);
@@ -713,26 +715,20 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       "invalid-update",
       "SQL document update",
     );
-    if (!document.found && !context.found && !embeddedRegions.found) {
+    const hasDocument = document.found && document.value !== undefined;
+    const hasContext = context.found && context.value !== undefined;
+    const hasEmbeddedRegions =
+      embeddedRegions.found && embeddedRegions.value !== undefined;
+    if (!hasDocument && !hasContext && !hasEmbeddedRegions) {
       throw new SqlSessionError(
         "invalid-update",
         "SQL document update must change document, context, or embedded regions",
       );
     }
-    if (document.found && !embeddedRegions.found) {
+    if (hasDocument && !hasEmbeddedRegions) {
       throw new SqlSessionError(
         "invalid-update",
         "SQL document mutations require the complete resulting embedded regions",
-      );
-    }
-    if (
-      (document.found && document.value === undefined) ||
-      (context.found && context.value === undefined) ||
-      (embeddedRegions.found && embeddedRegions.value === undefined)
-    ) {
-      throw new SqlSessionError(
-        "invalid-update",
-        "SQL document update values cannot be undefined",
       );
     }
 
@@ -745,7 +741,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     let trustedAnalysisChanges: readonly SqlTextChange[] | null = null;
 
     let nextText = this.#snapshot.source.originalText;
-    if (document.found) {
+    if (hasDocument) {
       if (document.value === null || typeof document.value !== "object") {
         throw new SqlSessionError(
           "invalid-update",
@@ -818,7 +814,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextDocumentSequence += 1;
     }
 
-    if (embeddedRegions.found) {
+    if (hasEmbeddedRegions) {
       const candidateSource = createMaskedSqlSource(
         nextText,
         embeddedRegions.value,
@@ -841,13 +837,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       }
     }
 
-    if (context.found) {
-      if (context.value === undefined) {
-        throw new SqlSessionError(
-          "invalid-update",
-          "SQL document update context cannot be undefined",
-        );
-      }
+    if (hasContext) {
       nextContext = cloneContext<Context>(context.value);
       nextContextSequence += 1;
     }
@@ -1035,13 +1025,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         "invalid-document",
         "Open SQL document input",
       );
-      if (embeddedRegions.found && embeddedRegions.value === undefined) {
-        throw new SqlSessionError(
-          "invalid-document",
-          "Open SQL document embedded regions cannot be undefined",
-        );
-      }
-      const source = embeddedRegions.found
+      const source = embeddedRegions.found && embeddedRegions.value !== undefined
         ? createMaskedSqlSource(text, embeddedRegions.value)
         : createIdentitySqlSource(text);
       const candidateContext = readRequiredDataProperty(

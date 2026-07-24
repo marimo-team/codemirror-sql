@@ -163,7 +163,9 @@ region set for its resulting text. Without a document mutation, an explicit
 complete region set can change alone or together with context; omission
 preserves the current regions. An explicit empty set clears them. Opening a
 document accepts the same optional complete set, with omission or an empty set
-meaning identity source.
+meaning identity source. For compatibility with consumers regardless of their
+`exactOptionalPropertyTypes` setting, `undefined` on optional state fields has
+the same meaning as omission.
 
 A full-text replacement is available for simple consumers. Incremental changes
 are ordered, non-overlapping, absolute UTF-16 ranges in the current document.
