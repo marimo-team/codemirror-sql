@@ -45,6 +45,14 @@ statement slice. Locations remain partial: PostgreSQL commonly omits root and
 identifier locations, while BigQuery provides broader but still incomplete
 coverage.
 
+Module-shape decoding, parser invocation, result validation, and error
+normalization live in a realm-neutral internal backend engine. That engine has
+no Node, browser-window, or worker dependency. The Node adapter remains
+responsible for realm validation, module loading, cleanup, parser authority,
+and private AST ownership. A browser worker can therefore reuse the same
+backend semantics without importing Node globals or weakening main-realm
+artifact authenticity.
+
 Loading the distributed bundles may write `NodeSQLParser` or `global` on a
 global object. The adapter rejects parser loads whenever `window` or `self`
 exists, or `global` does not resolve exactly to `globalThis`, before loading a
