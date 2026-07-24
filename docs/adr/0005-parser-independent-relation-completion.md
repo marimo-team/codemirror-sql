@@ -577,15 +577,25 @@ context, query, captured epoch, and work identity when work exists. It expires
 no later than the service-supplied completion-intent lease. On
 `catalog-availability` or a service higher-epoch catalog revision notification
 caused by either an accepted response or invalidation, the adapter aborts stale
-captured work and coalesces exactly one scheduled refresh when either the
-active menu still represents the captured loading request or its no-menu
-intent remains valid.
+captured work and coalesces exactly one scheduled refresh when the matching
+view state has any of:
+
+- an active completion invocation that has not yet installed a result;
+- an active menu representing the captured loading request; or
+- a valid no-menu loading intent.
+
+If notification arrives while the invocation is active, the adapter records a
+one-shot pending-refresh latch before aborting or allowing the stale invocation
+to settle. It clears the latch before the scheduled replacement starts. A
+later loading settlement or intent installation observes the latch and cannot
+schedule a duplicate refresh.
 
 A newer completion, selection/document/context change, explicit completion
 cancel or Escape, configured blur policy, lease expiry, or view/session
-disposal clears the intent. Consuming it clears it before dispatch, preventing
-reopen loops. The adapter never synchronously dispatches from a CodeMirror
-update or provider callback.
+disposal clears the active invocation, latch, and intent. Consuming either
+one-shot refresh marker clears it before dispatch, preventing reopen loops. The
+adapter never synchronously dispatches from a CodeMirror update or provider
+callback.
 
 A supplied language service is caller-owned. Each view plugin owns exactly one
 session, revision subscription, debounce set, active request, and any UI
@@ -629,7 +639,10 @@ handoff without abort/restart.
 They also cover immediate empty terminal loading followed by a higher ready
 epoch before intent expiry with exactly one no-typing refresh, and the same
 event after intent expiry, Escape, movement, blur, or destruction with no
-reopen.
+reopen. Coordinator/adapter ordering cases include a higher-epoch response
+before soft expiry and a revision notification delivered before loading-intent
+installation; each preserves the original invocation with exactly one
+replacement request.
 
 ## Parser semantics remain separate
 
