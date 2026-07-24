@@ -36,7 +36,10 @@ interface DataProperties {
 function getDataProperties(value: object): DataProperties {
   const values: unknown[] = [];
   const isArray = Array.isArray(value);
-  if (isArray && value.length > MAX_CONTEXT_ARRAY_LENGTH) {
+  const arrayLength = isArray
+    ? readArrayLength(value, "invalid-context", "SQL document context array")
+    : undefined;
+  if (arrayLength !== undefined && arrayLength > MAX_CONTEXT_ARRAY_LENGTH) {
     throw new SqlSessionError(
       "invalid-context",
       "SQL document context arrays are too large",
@@ -55,8 +58,8 @@ function getDataProperties(value: object): DataProperties {
     }
     keyLength += key.length;
     if (
-      isArray &&
-      (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)
+      arrayLength !== undefined &&
+      (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= arrayLength)
     ) {
       throw new SqlSessionError(
         "invalid-context",
@@ -567,7 +570,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         "invalid-update",
         "SQL document update",
       );
-      if (context.found && context.value !== undefined) {
+      if (context.found) {
+        if (context.value === undefined) {
+          throw new SqlSessionError(
+            "invalid-update",
+            "SQL document update context cannot be undefined",
+          );
+        }
         nextContext = cloneContext(context.value);
         nextContextSequence += 1;
       }

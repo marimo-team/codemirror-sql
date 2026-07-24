@@ -459,13 +459,17 @@ describe("document changes", () => {
 
   it("rejects undefined and accessor optional update fields", () => {
     const { session } = openSession("ABC");
+    const revision = session.revision;
     expectSessionError("invalid-update", () => {
       session.update({
         kind: "document",
-        baseRevision: session.revision,
+        baseRevision: revision,
         context: undefined,
+        document: { kind: "replace", text: "changed" },
       } as never);
     });
+    expect(session.revision).toBe(revision);
+    expect(session.snapshotForTesting.text).toBe("ABC");
 
     let invoked = false;
     const update = {
@@ -837,6 +841,29 @@ describe("document context", () => {
     expectSessionError("invalid-context", () => {
       createService().openDocument({ context, text: "" });
     });
+  });
+
+  it("does not read array length through a proxy", () => {
+    let invoked = false;
+    const flags = new Proxy([true], {
+      get(target, property, receiver) {
+        if (property === "length") {
+          invoked = true;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expectSessionError("invalid-context", () => {
+      createService().openDocument({
+        context: {
+          dialect: "duckdb",
+          engine: "local",
+          settings: { flags },
+        },
+        text: "",
+      });
+    });
+    expect(invoked).toBe(false);
   });
 
   it("enforces depth for nested paths", () => {

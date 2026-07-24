@@ -85,7 +85,7 @@ export type SqlDocumentUpdate<Context extends SqlDocumentContext> =
       readonly kind: "document";
       readonly baseRevision: SqlRevision;
       readonly document: SqlDocumentEdit;
-      readonly context?: SqlContextInput<Context> | undefined;
+      readonly context?: SqlContextInput<Context>;
     }
   | {
       readonly kind: "context";

@@ -45,6 +45,13 @@ session.update({
   context: { dialect: "duckdb", engine: "local" },
   document: { kind: "changes", changes: [{ from: 0, insert: "SELECT 1", to: 0 }] },
 });
+// @ts-expect-error an explicitly undefined context is not an omitted context
+session.update({
+  kind: "document",
+  baseRevision: session.revision,
+  context: undefined,
+  document: { kind: "replace", text: "SELECT 1" },
+});
 
 const change: SqlTextChange = { from: 0, insert: "", to: 0 };
 
