@@ -55,21 +55,26 @@ Each `SqlLanguageService` will lazily own at most one dedicated parser worker.
 All sessions opened by that service share it. The worker is neither a
 `SharedWorker` nor a module-global singleton.
 
-The first executor is single-lane:
+The private browser executor is single-lane:
 
 - At most one request is posted at a time.
 - The host queue is bounded independently by request count and retained UTF-16
   text units.
-- A service owns construction, listeners, timers, termination, and disposal.
+- Worker construction is lazy and the executor owns listeners, timers,
+  termination, and disposal.
 - No worker pool or idle shutdown is introduced without profile evidence.
-- Service disposal terminates the worker and settles every pending consumer.
+- Executor disposal terminates the worker and settles every pending consumer.
+
+The executor and its worker factory remain package-private. No package export,
+`/vnext` export, language-service module, session ownership, or public
+configuration surface is introduced by this slice.
 
 Ordinary caller cancellation and supersession settle the consumer promptly
 without relying on a worker message that cannot run during synchronous
 parsing. The executor may drain and discard that active result. A hard
 wall-clock deadline, worker crash, malformed protocol, or service disposal
-terminates the generation. The placement benchmark must compare drain versus
-restart under rapid edits before the executor policy is frozen.
+terminates the generation. Never-posted queued requests may continue on a
+fresh generation, but a posted request is never replayed.
 
 The execution deadline belongs to the posted worker job, not to any attached
 consumer. Consumer cancellation never clears it. A draining operation retains
@@ -154,16 +159,20 @@ Messages do not contain:
 
 The wire does not transport an independently supplied retryability boolean.
 The host treats only `module-load` as retryable; `backend` and
-`malformed-output` are terminal. A module-load failure closes the current
-worker generation so a retry cannot reuse a rejected dynamic-import realm.
+`malformed-output` are terminal. Every worker-reported failure retires the
+current generation. In particular, `backend` cannot distinguish an ordinary
+parse failure from descriptor-cleanup poisoning that closes the endpoint, and
+`module-load` must not reuse a rejected dynamic-import realm. Never-posted
+queued requests may continue on a fresh generation; the failed posted request
+is never replayed.
 
 The host requires the current protocol version and correlation ID, validates
 all keys and closed values, and copies accepted data into new frozen objects.
-It then constructs an authentic `SqlParserAnalysis` with the exact pending
-request text and the host-owned authority. PostgreSQL and BigQuery rejection
-remain uncovered constructs; DuckDB rejection remains compatibility rejection.
-Worker isolation does not strengthen the compatibility-only evidence recorded
-by ADR 0003.
+A future statement coordinator will construct an authentic
+`SqlParserAnalysis` with the exact pending request text and the host-owned
+authority. PostgreSQL and BigQuery rejection remain uncovered constructs;
+DuckDB rejection remains compatibility rejection. Worker isolation does not
+strengthen the compatibility-only evidence recorded by ADR 0003.
 
 Old-generation events are ignored by generation-owned listeners. A malformed,
 duplicate, unsolicited, or mismatched response kills the generation and
@@ -211,7 +220,7 @@ prove:
   recorded.
 - Raw and gzip worker sizes are recorded.
 
-The executor and semantic slices additionally require:
+The semantic and session-integration slices additionally require:
 
 - Main-thread long-task and event-loop responsiveness evidence.
 - Malformed message, crash, timeout, late-event, and restart tests.
@@ -280,7 +289,7 @@ optional-integration bundle budget.
 
 1. Add this ADR and the packed-consumer browser placement harness.
 2. Extract a realm-neutral backend engine and add strict protocol codecs.
-3. Add the minimal browser worker and single-lane executor.
+3. Add the minimal browser worker and private bounded single-lane executor.
 4. Add in-worker normalized relation extraction.
 5. Add the pure statement coordinator, bounded cache, in-flight sharing, and
    atomic session ownership.
