@@ -83,6 +83,18 @@ session.update({
   context: undefined,
   document: { kind: "replace", text: "SELECT 1" },
 });
+session.update({
+  baseRevision: session.revision,
+  context: { dialect: "duckdb", engine: "local" },
+  document: undefined,
+  embeddedRegions: undefined,
+});
+session.update({
+  baseRevision: session.revision,
+  context: undefined,
+  document: undefined,
+  embeddedRegions: [],
+});
 
 const change: SqlTextChange = { from: 0, insert: "", to: 0 };
 const range: SqlTextRange = change;

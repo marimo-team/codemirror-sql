@@ -1114,19 +1114,40 @@ describe("document changes", () => {
     const contextRevision = session.update({
       baseRevision: session.revision,
       context: { dialect: "duckdb", engine: "warehouse" },
+      document: undefined,
       embeddedRegions: undefined,
     });
     expect(session.revision).toBe(contextRevision);
     expect(session.snapshotForTesting.context.engine).toBe("warehouse");
 
-    const documentRevision = session.update({
+    const regionRevision = session.update({
+      baseRevision: session.revision,
+      context: undefined,
+      document: undefined,
+      embeddedRegions: [{ from: 7, language: "python", to: 8 }],
+    });
+    expect(session.revision).toBe(regionRevision);
+    expect(session.snapshotForTesting.source.embeddedRegions).toEqual([
+      { from: 7, language: "python", to: 8 },
+    ]);
+
+    const replacementRevision = session.update({
       baseRevision: session.revision,
       context: undefined,
       document: { kind: "replace", text: "SELECT 2" },
       embeddedRegions: [],
     });
-    expect(session.revision).toBe(documentRevision);
+    expect(session.revision).toBe(replacementRevision);
     expect(session.snapshotForTesting.source.originalText).toBe("SELECT 2");
+
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: session.revision,
+        context: undefined,
+        document: undefined,
+        embeddedRegions: undefined,
+      } as never);
+    });
   });
 
   it("rejects accessor document fields without invoking them", () => {

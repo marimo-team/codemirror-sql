@@ -116,15 +116,15 @@ type SqlDocumentMutationUpdate<Context extends SqlDocumentContext> =
 
 type SqlContextUpdate<Context extends SqlDocumentContext> =
   SqlDocumentUpdateBase & {
-    readonly document?: never;
+    readonly document?: undefined;
     readonly context: SqlContextInput<Context>;
     readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
   };
 
 type SqlEmbeddedRegionUpdate =
   SqlDocumentUpdateBase & {
-    readonly document?: never;
-    readonly context?: never;
+    readonly document?: undefined;
+    readonly context?: undefined;
     readonly embeddedRegions: readonly SqlEmbeddedRegion[];
   };
 

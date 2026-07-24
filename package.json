@@ -13,10 +13,11 @@
   },
   "scripts": {
     "dev": "vite",
-    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:tests && pnpm run typecheck:vnext-tests && pnpm run typecheck:demo",
+    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:tests && pnpm run typecheck:vnext-tests && pnpm run typecheck:vnext-tests:loose-optional && pnpm run typecheck:demo",
     "typecheck:src": "tsc --project tsconfig.json --noEmit",
     "typecheck:tests": "tsc --project tsconfig.tests.json",
     "typecheck:vnext-tests": "tsc --project tsconfig.vnext-tests.json",
+    "typecheck:vnext-tests:loose-optional": "tsc --project tsconfig.vnext-tests.loose-optional.json",
     "typecheck:demo": "tsc --project tsconfig.demo.json",
     "lint": "oxlint --fix",
     "test": "vitest run --config vitest.config.ts",

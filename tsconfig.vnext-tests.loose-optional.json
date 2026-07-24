@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.vnext-tests.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": false
+  }
+}

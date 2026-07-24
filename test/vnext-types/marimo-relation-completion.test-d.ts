@@ -289,10 +289,10 @@ const contradictoryIncompleteList = {
 } satisfies SqlRelationCompletionList;
 // @ts-expect-error timeouts are unavailable evidence, not cancellation
 const invalidCancellation: SqlCompletionCancellationReason = "timeout";
-// @ts-expect-error a document transaction cannot explicitly omit context
 const undefinedContext: SqlDocumentUpdate<MarimoSqlContext> = {
   baseRevision: session.revision,
   context: undefined,
+  document: undefined,
   embeddedRegions: [],
 };
 
