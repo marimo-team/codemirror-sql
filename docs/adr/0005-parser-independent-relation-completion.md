@@ -70,8 +70,8 @@ It will combine:
 5. a separate CodeMirror adapter.
 
 Parser execution remains the selected boundary for syntax evidence and future
-scope-dependent semantics. A later semantic protocol will use a scoped IR and
-will not expose raw ASTs or flat relation-name lists.
+general scope-dependent semantics. A later semantic protocol will use a scoped
+IR and will not expose raw ASTs or flat relation-name lists.
 
 The single configured provider may itself be a host-owned composite. The first
 slice does not define provider fan-out, cross-provider deduplication, or
@@ -252,7 +252,6 @@ A returned relation contains:
   and closed semantic roles;
 - a `completionPathStart` index selecting an exact suffix of that canonical
   path, positively proven addressable for the request scope and search path;
-  and
 - a closed provider-proven match quality, initially `exact` or `equivalent`;
   and
 - optional bounded plain-text detail.
@@ -308,13 +307,17 @@ Epochs are monotonic per provider ID and catalog scope and contain:
 - a non-negative safe generation; and
 - an opaque bounded non-secret token.
 
+They identify observable catalog search state, including loading versus ready
+availability, not only the underlying database schema snapshot.
+
 Every response and invalidation passes through one serialized gate for the
 configured provider identity and scope. A subscription callback is always a
 change event, never an initial snapshot. The first accepted invalidation
 establishes its epoch and advances all sessions already subscribed to that
 scope. A first successful search response may establish a baseline without a
 revision advance only when no invalidation has been accepted since the request
-captured its revision.
+captured its revision and no soft-settled refresh observer requires the
+availability notification defined below.
 
 After a baseline exists, lower generations are discarded with closed stale
 evidence. Equal generation and token is a duplicate. Equal generation with a
@@ -382,8 +385,9 @@ outcomes settle through a discriminated request result.
 Completion is latest-wins per session:
 
 - a new completion request supersedes the previous request;
-- supersession removes any refresh observer retained by the previous request
-  before optionally transferring ownership to identical new work;
+- same-key supersession atomically attaches the new request consumer, or
+  retags the existing observer as that consumer, before removing old request
+  ownership; different-key supersession revokes the old observer first;
 - text, context, embedded-region, relevant catalog, or provider-configuration
   changes supersede captured work;
 - caller cancellation and session/service disposal settle promptly;
@@ -392,13 +396,15 @@ Completion is latest-wins per session:
 - the adapter checks revision currency immediately before returning or
   applying a result.
 
-Shared in-flight catalog work detaches each consumer independently. The service
-aborts the provider only after an atomic consumer-set mutation observes that
-the last consumer left. A new same-key latest-wins request attaches to shared
-work before the old request detaches, so supersession cannot abort and restart
-identical provider work. Ownership is removed before any abort or external
-callback. All cancellation, supersession, disposal, deadline, and completion
-races pass one settle-once transition and leave no timer or listener behind.
+Shared in-flight catalog work has one atomic owner set containing request
+consumers and refresh observers. Request cancellation detaches that consumer
+independently. The service aborts the provider only after one combined mutation
+observes no owners of either kind. A same-key latest-wins request attaches or
+transfers its owner before the old owner detaches, then evaluates abort once,
+so a soft-expiry observer cannot lose and restart identical work. Ownership is
+removed before any abort or external callback. All cancellation, supersession,
+disposal, deadline, and completion races pass one settle-once transition and
+leave no timer or listener behind.
 
 Ranking is independent of asynchronous completion order:
 
@@ -435,25 +441,35 @@ settles every attached consumer, removes its refresh observers, aborts once,
 and drains a late resolve or reject. Earlier caller cancellation detaches only
 that consumer.
 
+At a recognized site, queue overload or hard expiry still settles each attached
+completion request with its composed local/CTE result, `isIncomplete: true`,
+and a closed `catalog-overloaded`, `catalog-queue-timeout`, or
+`catalog-timeout` reason. Catalog lifecycle failure never converts proven
+query-site evidence into unavailable analysis.
+
 Hard safety deadlines do not define interactive latency. Each completion
 request has a checked catalog response budget, default 40 ms and configurable
 from 0 through 50 ms, measured from the start of the complete request. Local
 and CTE evidence is composed first and never waits past the remaining response
 budget. On soft expiry the request settles ready, possibly empty, with
-`isIncomplete: true` and `catalog-loading`; its session may atomically transfer
-from request consumer to a service-owned refresh observer before detaching.
+`isIncomplete: true`, `catalog-loading`, and bounded remaining refresh-lease
+metadata; its session may atomically retag the request consumer as a
+service-owned refresh observer.
 That bounded refresh lease can retain the shared operation only until its
 existing hard deadline and active/queued service limits. With no consumers or
 live observers, the service removes and aborts the work. An observer is bound
 to the captured session revision and exact work key; any session change,
 supersession, or disposal removes it.
 
-If leased work resolves ready at the same epoch, the service decodes and caches
-it, removes the observers, and advances each still-subscribed observing session
-once with the closed reason `catalog-availability`. The adapter coalesces that
-notification into a new completion request. This is service-owned evidence
-readiness, not a provider epoch invalidation, so equal-epoch duplicate rules do
-not suppress it. Hard queue or execution expiry removes observers without a
+If leased work resolves ready compatibly with the captured state—either
+`UNOBSERVED` to its first baseline epoch or at the already-observed equal
+epoch—the service decodes and caches it, re-keys first-baseline work, removes
+the observers, and advances each still-current observing session once with the
+closed reason `catalog-availability`. A higher epoch follows the epoch-change
+path and clears the same observers without a second availability notification.
+The adapter coalesces the resulting notification into a new completion request.
+This is service-owned evidence readiness, not a duplicate provider
+invalidation. Hard queue or execution expiry removes observers without a
 refresh notification and leaves the already-returned incomplete result valid.
 No optional catalog promise can keep `complete()` pending indefinitely or
 block the local baseline past its product response budget.
@@ -548,10 +564,20 @@ facets, DOM nodes, or renderer callbacks. The first adapter omits reusable
 without revalidation. It checks `session.isCurrent()` both before returning and
 immediately before applying a result.
 
-When a catalog epoch advances without an editor transaction, the adapter
-aborts captured work, invalidates stale completion state, and coalesces a
-scheduled refresh if a completion UI is open. It never synchronously dispatches
-from a CodeMirror update or a provider callback.
+For every recognized incomplete `catalog-loading` result, including an empty
+list that opens no menu, the adapter retains at most one bounded completion
+intent. The one-shot intent records the exact view, document, selection,
+context, and work identity and expires no later than the service-supplied
+remaining refresh lease. On `catalog-availability` or a catalog invalidation
+that can make evidence ready, the adapter aborts stale captured work and
+coalesces exactly one scheduled refresh when either the menu remains active or
+that intent is still valid.
+
+A newer completion, selection/document/context change, explicit completion
+cancel or Escape, configured blur policy, lease expiry, or view/session
+disposal clears the intent. Consuming it clears it before dispatch, preventing
+reopen loops. The adapter never synchronously dispatches from a CodeMirror
+update or provider callback.
 
 A supplied language service is caller-owned. Each view plugin owns exactly one
 session, revision subscription, debounce set, active request, and any UI
@@ -584,6 +610,13 @@ leave no stale apply, late dispatch, unresolved promise, unhandled rejection,
 listener, subscription, React root, or unbounded cache retention. GC-capable
 runs record retained resources, while 10 KiB documents enforce the capability
 charter's main-thread and completion-latency envelopes.
+
+Browser cases include empty soft result to first-baseline and same-epoch ready
+with exactly one no-typing refresh; cursor movement, Escape, blur policy, hard
+expiry, or destruction before readiness with no reopen; a nonempty CTE plus
+loading catalog whose open menu refreshes once; and bounded 50-view fan-out.
+The coordinator suite also covers soft-expiry observer to same-key consumer
+handoff without abort/restart.
 
 ## Parser semantics remain separate
 
