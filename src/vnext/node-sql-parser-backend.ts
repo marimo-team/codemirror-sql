@@ -255,7 +255,11 @@ function decodeRoot(
   }
   if (rootIsArray && isRecordObject(root)) {
     const length = readOwnDataProperty(root, "length");
-    if (length.kind !== "value") {
+    if (
+      length.kind !== "value" ||
+      !Number.isSafeInteger(length.value) ||
+      Number(length.value) < 0
+    ) {
       return failed("malformed-output", false);
     }
     if (length.value !== 1) {

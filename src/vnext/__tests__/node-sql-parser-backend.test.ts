@@ -569,6 +569,32 @@ describe("node-sql-parser backend output decoding", () => {
     });
   });
 
+  it.each(["1", Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an array with a spoofed length descriptor %#",
+    async (length) => {
+      const root = new Proxy([{ type: "select" }], {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "length") {
+            return {
+              configurable: false,
+              enumerable: false,
+              value: length,
+              writable: true,
+            };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+      const backend = backendFor(() => root);
+
+      await expect(backend.parse("SELECT 1")).resolves.toStrictEqual({
+        code: "malformed-output",
+        kind: "failed",
+        retryable: false,
+      });
+    },
+  );
+
   it("does not invoke an accessor-backed root type", async () => {
     let invoked = false;
     const root = {};
