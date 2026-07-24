@@ -309,6 +309,28 @@ describe("node-sql-parser wire request codec", () => {
     hostile.assertAccessorsUntouched();
   });
 
+  it("rejects oversized records before inspecting property descriptors", () => {
+    const oversizedPlainRecord = {
+      ...validRequest,
+      extra: true,
+    };
+    let descriptorInspections = 0;
+    const oversizedProxyRecord = new Proxy(oversizedPlainRecord, {
+      getOwnPropertyDescriptor(target, key) {
+        descriptorInspections += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(
+      decodeNodeSqlParserWireRequest(oversizedPlainRecord),
+    ).toBeNull();
+    expect(
+      decodeNodeSqlParserWireRequest(oversizedProxyRecord),
+    ).toBeNull();
+    expect(descriptorInspections).toBe(0);
+  });
+
   it("rejects invalid values at the encoder boundary", () => {
     expect(() =>
       encodeNodeSqlParserWireRequest(
@@ -681,5 +703,36 @@ describe("node-sql-parser wire message codec", () => {
         retryable: false,
       }),
     ).toThrow(TypeError);
+  });
+
+  it("fails closed without reflecting an unknown runtime outcome kind", () => {
+    const privateKind = "__private_backend_outcome_kind__";
+    const outcome: NodeSqlParserBackendOutcome = {
+      kind: "syntax-rejected",
+    };
+    Object.defineProperty(outcome, "kind", {
+      value: privateKind,
+    });
+
+    expect(() =>
+      Reflect.apply(
+        encodeNodeSqlParserWireBackendOutcome,
+        undefined,
+        [1, outcome],
+      ),
+    ).toThrowError(
+      new TypeError(
+        "node-sql-parser wire backend outcome kind must be closed",
+      ),
+    );
+    try {
+      Reflect.apply(
+        encodeNodeSqlParserWireBackendOutcome,
+        undefined,
+        [1, outcome],
+      );
+    } catch (error) {
+      expect(String(error)).not.toContain(privateKind);
+    }
   });
 });

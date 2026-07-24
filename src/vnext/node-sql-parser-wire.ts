@@ -6,6 +6,9 @@ import type { SqlStatementKind } from "./syntax.js";
 
 export const NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION = 1 as const;
 
+// The parse request is the largest closed protocol shape.
+const MAX_NODE_SQL_PARSER_WIRE_RECORD_KEYS = 5;
+
 export type NodeSqlParserWireGrammar = "bigquery" | "postgresql";
 
 export type NodeSqlParserWireFailureCode =
@@ -73,6 +76,9 @@ function inspectRecord(value: unknown): InspectedRecord | null {
     }
 
     const keys = Reflect.ownKeys(value);
+    if (keys.length > MAX_NODE_SQL_PARSER_WIRE_RECORD_KEYS) {
+      return null;
+    }
     const values = new Map<string, unknown>();
     for (const key of keys) {
       if (typeof key !== "string") {
@@ -329,6 +335,10 @@ export function encodeNodeSqlParserWireBackendOutcome(
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
         requestId,
       });
+    default:
+      throw new TypeError(
+        "node-sql-parser wire backend outcome kind must be closed",
+      );
   }
 }
 

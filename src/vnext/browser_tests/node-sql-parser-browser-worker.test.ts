@@ -133,8 +133,9 @@ test(
     );
     Object.defineProperty(globalThis, "global", globalDescriptor);
 
-    const worker = createParserWorker();
+    let worker: Worker | undefined;
     try {
+      worker = createParserWorker();
       await expect(waitForWireMessage(worker)).resolves.toStrictEqual({
         kind: "ready",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
@@ -216,7 +217,7 @@ test(
       ).toStrictEqual(globalDescriptor);
       expect(activeMessageWaits).toBe(0);
     } finally {
-      worker.terminate();
+      worker?.terminate();
       for (const { descriptor, key } of originalDescriptors) {
         if (descriptor === undefined) {
           Reflect.deleteProperty(globalThis, key);
