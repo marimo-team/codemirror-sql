@@ -4,10 +4,16 @@ on:
   push:
     branches:
       - main
+      - dev-refactor
 
   pull_request:
     branches:
       - main
+      - dev-refactor
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CLICOLOR: 1
@@ -22,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       - name: ⎔ Setup pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
@@ -38,17 +46,103 @@ jobs:
       - name: 🧹 Lint
         run: pnpm exec oxlint
 
+      - name: 🧪 Test Integrity
+        run: pnpm run test:integrity
+
       - name: 🔍 Type Check
         run: pnpm run typecheck
 
-      - name: 🧪 Test
-        run: pnpm run test
+      - name: 🧪 Unit Tests and Coverage
+        run: pnpm run test:coverage
+
+      - name: 📈 Changed-Code Coverage
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: >-
+          pnpm run test:coverage:changed
+          "${{ github.event.pull_request.base.sha || github.event.before }}"
 
       - name: 📊 Report Coverage
-        if: always()
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
         uses: davelosert/vitest-coverage-report-action@3c50566c523e04813df28de8f7c48dd97d663f1c # v2
         with:
           pr-number: auto
+
+  browser:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: ⎔ Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
+
+      - name: ⎔ Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 📥 Install dependencies
+        run: pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: 🎭 Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: 🧪 Browser Tests
+        run: pnpm run test:browser
+
+  package:
+    env:
+      EXPECTED_PNPM_VERSION: ${{ matrix.pnpm-version }}
+      npm_config_manage_package_manager_versions: "false"
+      npm_config_package_manager_strict_version: "false"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node-version: "20.19.0"
+            pnpm-manifest: "test/package-smoke/package.json"
+            pnpm-version: "10.28.2"
+          - node-version: "24"
+            pnpm-manifest: "package.json"
+            pnpm-version: "11.4.0"
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: ⎔ Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
+        with:
+          package_json_file: ${{ matrix.pnpm-manifest }}
+          version: ${{ matrix.pnpm-version }}
+
+      - name: ⎔ Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: 🔒 Verify pnpm version
+        shell: bash
+        run: test "$(pnpm --version)" = "${{ matrix.pnpm-version }}"
+
+      - name: 📥 Install dependencies
+        run: pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: 📦 Packed Package Smoke Test
+        run: pnpm run test:package
 
   security:
     runs-on: ubuntu-latest

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.tests.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true
+  },
+  "include": [
+    "./src/vnext/**/*.ts",
+    "./vitest.browser.config.ts",
+    "./vitest.config.ts"
+  ]
+}

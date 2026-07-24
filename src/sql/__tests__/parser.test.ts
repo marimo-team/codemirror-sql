@@ -445,7 +445,7 @@ describe("replaceBracketsWithQuotes", () => {
     expect(result.offsetRecord).toEqual({});
   });
 
-  it.fails("should handle escaped quotes", () => {
+  it.fails("[known-failure: parser-escaped-quotes] should handle escaped quotes", () => {
     const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
     const result = replaceBracketsWithQuotes(sql);
     expect(result.sql).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
