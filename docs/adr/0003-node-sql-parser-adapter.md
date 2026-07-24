@@ -167,6 +167,11 @@ follow-up decision records one of:
 That decision must include browser measurements, cancellation behavior,
 worker/module failure recovery, and the effect of many mounted editors.
 
+[ADR 0004](./0004-isolated-parser-execution.md) selects a dedicated,
+service-owned browser worker and defines the remaining evidence gates. It does
+not authorize session wiring until those gates and in-worker semantic
+normalization pass.
+
 The current production loader supports pure Node only. A future browser
 integration must invoke parsing from a dedicated worker whose global object is
 not shared with application code, the legacy parser, or another installed copy.

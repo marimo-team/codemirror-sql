@@ -114,3 +114,7 @@ without importing a backend.
 For that reason, this adapter remains unwired. A worker-versus-main-thread ADR,
 with browser latency, memory, hostile-input, timeout, and recovery evidence, is
 required before interactive sessions may call it.
+
+[ADR 0004](../adr/0004-isolated-parser-execution.md) chooses isolated
+browser-worker execution and records the packaging, performance, memory, and
+semantic-reuse gates that still block session wiring.

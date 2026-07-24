@@ -1,0 +1,15 @@
+{
+  "name": "codemirror-sql-worker-placement-fixture",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.4.0",
+  "scripts": {
+    "build:core": "vite build --config vite.core.config.mjs",
+    "build:workers": "vite build --config vite.workers.config.mjs"
+  },
+  "dependencies": {
+    "node-sql-parser": "5.4.0",
+    "playwright": "1.61.1",
+    "vite": "8.0.13"
+  }
+}
