@@ -900,14 +900,14 @@ describe("real node-sql-parser builds", () => {
       "SELECT value FROM dataset.table QUALIFY ROW_NUMBER() OVER () = 1",
     ],
     [
-      "PostgreSQL typo",
+      "PostgreSQL malformed query",
       getPostgresqlNodeSqlStatementParser,
-      "SELEC 1",
+      "SELECT FROM",
     ],
     [
-      "BigQuery typo",
+      "BigQuery malformed query",
       getBigQueryNodeSqlStatementParser,
-      "SELEC 1",
+      "SELECT FROM",
     ],
   ] as const)(
     "classifies %s syntax rejection as unsupported",
