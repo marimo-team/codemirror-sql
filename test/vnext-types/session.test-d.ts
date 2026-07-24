@@ -3,6 +3,7 @@ import {
   duckdbDialect,
   type SqlDialect,
   type SqlDocumentContext,
+  type SqlDocumentEdit,
   type SqlDocumentSession,
   type SqlEmbeddedRegion,
   type SqlLanguageService,
@@ -46,6 +47,8 @@ const hostOpen = {
 };
 service.openDocument(hostOpen);
 const revision: SqlRevision = session.revision;
+declare const maybeContext: HostContext | undefined;
+declare const maybeDocument: SqlDocumentEdit | undefined;
 
 // @ts-expect-error host service cannot be widened and fed a weaker context
 const widenedService: SqlLanguageService<SqlDocumentContext> = service;
@@ -94,6 +97,12 @@ session.update({
   context: undefined,
   document: undefined,
   embeddedRegions: [],
+});
+session.update({
+  baseRevision: session.revision,
+  context: maybeContext,
+  document: maybeDocument,
+  embeddedRegions: hostRegions,
 });
 
 const change: SqlTextChange = { from: 0, insert: "", to: 0 };

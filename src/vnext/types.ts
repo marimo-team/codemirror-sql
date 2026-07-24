@@ -107,9 +107,9 @@ interface SqlDocumentUpdateBase {
   readonly kind?: never;
 }
 
-type SqlDocumentMutationUpdate<Context extends SqlDocumentContext> =
+type SqlSourceUpdate<Context extends SqlDocumentContext> =
   SqlDocumentUpdateBase & {
-    readonly document: SqlDocumentEdit;
+    readonly document?: SqlDocumentEdit | undefined;
     readonly embeddedRegions: readonly SqlEmbeddedRegion[];
     readonly context?: SqlContextInput<Context> | undefined;
   };
@@ -121,18 +121,10 @@ type SqlContextUpdate<Context extends SqlDocumentContext> =
     readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
   };
 
-type SqlEmbeddedRegionUpdate =
-  SqlDocumentUpdateBase & {
-    readonly document?: undefined;
-    readonly context?: undefined;
-    readonly embeddedRegions: readonly SqlEmbeddedRegion[];
-  };
-
 /** An atomic transaction changing any non-empty subset of session inputs. */
 export type SqlDocumentUpdate<Context extends SqlDocumentContext> =
-  | SqlDocumentMutationUpdate<Context>
-  | SqlContextUpdate<Context>
-  | SqlEmbeddedRegionUpdate;
+  | SqlSourceUpdate<Context>
+  | SqlContextUpdate<Context>;
 
 export interface OpenSqlDocument<Context extends SqlDocumentContext> {
   readonly text: string;

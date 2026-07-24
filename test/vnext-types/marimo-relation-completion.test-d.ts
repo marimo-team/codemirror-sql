@@ -1,6 +1,7 @@
 import type {
   SqlCatalogContext,
   SqlDocumentContext,
+  SqlDocumentEdit,
   SqlDocumentUpdate,
   SqlEmbeddedRegion,
   SqlIdentifierComponent,
@@ -40,6 +41,8 @@ const context: MarimoSqlContext = {
   dialect: "duckdb",
   engine: "local",
 };
+declare const maybeContext: MarimoSqlContext | undefined;
+declare const maybeDocument: SqlDocumentEdit | undefined;
 const regions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
 ];
@@ -76,6 +79,12 @@ session.update({
 session.update({
   baseRevision: session.revision,
   context,
+  embeddedRegions: regions,
+});
+session.update({
+  baseRevision: session.revision,
+  context: maybeContext,
+  document: maybeDocument,
   embeddedRegions: regions,
 });
 
@@ -179,7 +188,7 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT 1" },
 });
-// @ts-expect-error present undefined is not omission
+// @ts-expect-error undefined omission leaves an empty transaction
 session.update({ baseRevision: session.revision, context: undefined });
 const missingEngine: OpenSqlDocument<MarimoSqlContext> = {
   // @ts-expect-error marimo contexts always identify their engine
