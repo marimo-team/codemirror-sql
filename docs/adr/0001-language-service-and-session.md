@@ -91,7 +91,8 @@ service.dispose();
 `syntax` is an opaque module accepted by the stable service factory. Its parser
 and semantic-model SPI is not stable in this ADR. Official adapters can use an
 experimental subpath until two materially different backends validate the
-normalized artifacts.
+normalized artifacts. The first internal boundary is specified by
+[ADR 0002](./0002-normalized-syntax-contract.md).
 
 ## Document context
 
