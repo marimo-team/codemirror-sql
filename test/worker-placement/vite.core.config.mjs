@@ -1,6 +1,15 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
+const fixtureRoot = `${import.meta.dirname.replaceAll("\\", "/")}/`;
+
+function normalizeModuleId(moduleId) {
+  const normalized = moduleId.replaceAll("\\", "/");
+  return normalized.startsWith(fixtureRoot)
+    ? normalized.slice(fixtureRoot.length)
+    : normalized;
+}
+
 function moduleTrace() {
   return {
     name: "worker-placement-core-module-trace",
@@ -13,7 +22,7 @@ function moduleTrace() {
           imports: [...chunk.imports].sort(),
           isEntry: chunk.isEntry,
           moduleIds: Object.keys(chunk.modules)
-            .map((moduleId) => moduleId.replaceAll("\\", "/"))
+            .map(normalizeModuleId)
             .sort(),
         }))
         .sort((left, right) =>

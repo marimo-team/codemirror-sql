@@ -5,7 +5,9 @@ exact tarball created by `pnpm pack`. It is intentionally not a workspace
 package. Its direct `node-sql-parser` dependency is intentional: the frozen
 fixture dependencies are installed before the exact tarball is extracted, and
 the harness verifies that its exact `5.4.0` version matches the packed
-package's dependency.
+package's dependency. The fixture workspace pins Vite's floating transitive
+versions to the exact versions in the root lock, so the nested frozen install
+can run offline after a clean root CI install.
 
 The minified Vite 8 single-worker baseline is 67,396 gzip bytes for the
 PostgreSQL transitive graph, 50,389 gzip bytes for the BigQuery transitive

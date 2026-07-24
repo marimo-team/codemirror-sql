@@ -234,11 +234,11 @@ that entry does not exist. The protocol PR must move the worker implementation
 behind the packed package boundary and remove the fixture's direct parser
 dependency before making a public packaging claim.
 
-The latest local Node 24 / Chromium 149 / arm64 macOS sample recorded:
+A representative local Node 24 / Chromium 149 / arm64 macOS sample recorded:
 
 | Output | Raw | gzip |
 | --- | ---: | ---: |
-| Core-only fixture | 24,680 B | 7,572 B |
+| Core-only fixture | 24,056 B | 7,497 B |
 | PostgreSQL transitive worker graph | 321,156 B | 67,396 B |
 | BigQuery transitive worker graph | 225,309 B | 50,389 B |
 | Complete worker fixture | 549,885 B | 118,160 B |
@@ -254,10 +254,10 @@ One sequential cold/warm run on the shared worker measured:
 
 | Dialect | Grammar load and initialization | First parse | First round trip | Warm parse | Warm round trip |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| PostgreSQL | 8.2 ms | 2.3 ms | 10.7 ms | 0.2 ms | 0.2 ms |
-| BigQuery | 4.3 ms | 2.2 ms | 6.7 ms | 0.3 ms | 0.3 ms |
+| PostgreSQL | 8.0 ms | 2.4 ms | 10.6 ms | 0.1 ms | 0.3 ms |
+| BigQuery | 4.2 ms | 2.5 ms | 6.7 ms | 0.2 ms | 0.4 ms |
 
-The worker ready handshake took 7.4 ms in that run.
+The worker ready handshake took 10.3 ms in that run.
 
 These numbers establish packaging feasibility and initial size guards. They
 are not percentile claims. Stable latency decisions require repeated,
