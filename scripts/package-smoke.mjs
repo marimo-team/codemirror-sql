@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -40,7 +41,66 @@ function runPackageManager(args, cwd) {
   run(process.execPath, [packageManagerExecutable, ...args], cwd);
 }
 
+function withRenamedPaths(paths, operation) {
+  const renamedPaths = [];
+  let operationError;
+  let operationFailed = false;
+  try {
+    for (const path of paths) {
+      renameSync(path, `${path}.isolated`);
+      renamedPaths.push(path);
+    }
+    operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+
+  const restorationErrors = [];
+  for (const path of renamedPaths.reverse()) {
+    try {
+      renameSync(`${path}.isolated`, path);
+    } catch (error) {
+      restorationErrors.push(error);
+    }
+  }
+  if (restorationErrors.length > 0) {
+    throw new AggregateError(
+      operationFailed
+        ? [operationError, ...restorationErrors]
+        : restorationErrors,
+      "Package isolation failed and could not restore every dependency",
+    );
+  }
+  if (operationFailed) {
+    throw operationError;
+  }
+}
+
+function verifyRenameRollback(directory) {
+  const existingPath = join(directory, "isolation-rollback");
+  mkdirSync(existingPath);
+  let failed = false;
+  try {
+    withRenamedPaths(
+      [existingPath, join(directory, "missing-isolation-path")],
+      () => {},
+    );
+  } catch {
+    failed = true;
+  }
+  if (
+    !failed ||
+    !existsSync(existingPath) ||
+    existsSync(`${existingPath}.isolated`)
+  ) {
+    throw new Error("Package isolation did not roll back a partial rename");
+  }
+  rmSync(existingPath, { recursive: true });
+}
+
 try {
+  verifyRenameRollback(temporaryDirectory);
   const packageManagerVersion = execFileSync(
     process.execPath,
     [packageManagerExecutable, "--version"],
@@ -261,16 +321,9 @@ service.dispose();
     join(temporaryDirectory, "node_modules", "node-sql-parser"),
     join(temporaryDirectory, "node_modules", "@codemirror"),
   ];
-  for (const dependency of isolatedDependencies) {
-    renameSync(dependency, `${dependency}.isolated`);
-  }
-  try {
+  withRenamedPaths(isolatedDependencies, () => {
     run(process.execPath, ["vnext-consumer.mjs"], temporaryDirectory);
-  } finally {
-    for (const dependency of isolatedDependencies) {
-      renameSync(`${dependency}.isolated`, dependency);
-    }
-  }
+  });
   run(process.execPath, ["consumer.mjs"], temporaryDirectory);
 } finally {
   if (basename(temporaryDirectory).startsWith("codemirror-sql-package-")) {
