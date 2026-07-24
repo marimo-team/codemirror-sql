@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  bigQueryDialect,
   createSqlLanguageService,
-  defineSqlDialect,
+  dremioDialect,
+  duckdbDialect,
+  postgresDialect,
   SqlSessionError,
 } from "../index.js";
 import { DefaultSqlLanguageService } from "../session.js";
+import {
+  BIGQUERY_SQL_LEXICAL_PROFILE,
+  buildSqlStatementIndex,
+  DREMIO_SQL_LEXICAL_PROFILE,
+  DUCKDB_SQL_LEXICAL_PROFILE,
+  POSTGRESQL_SQL_LEXICAL_PROFILE,
+} from "../statement-index.js";
 import type {
   SqlDocumentContext,
   SqlDocumentReplacement,
@@ -17,14 +27,8 @@ interface TestContext extends SqlDocumentContext {
   };
 }
 
-const duckdb = defineSqlDialect({
-  displayName: "DuckDB",
-  id: "duckdb",
-});
-const postgres = defineSqlDialect({
-  displayName: "PostgreSQL",
-  id: "postgres",
-});
+const duckdb = duckdbDialect();
+const postgres = postgresDialect();
 
 function createService() {
   return new DefaultSqlLanguageService<TestContext>({
@@ -53,69 +57,220 @@ function expectSessionError(code: SqlSessionError["code"], callback: () => unkno
 }
 
 describe("dialect definitions", () => {
-  it("creates immutable definitions", () => {
-    expect(duckdb).toEqual({ displayName: "DuckDB", id: "duckdb" });
+  it("creates immutable singleton definitions", () => {
+    expect(duckdb).toEqual({
+      displayName: "DuckDB",
+      id: "duckdb",
+    });
     expect(Object.isFrozen(duckdb)).toBe(true);
-  });
-
-  it.each([
-    [{ displayName: "DuckDB", id: " " }, "SQL dialect id must contain 1 to 256"],
-    [
-      { displayName: " ", id: "duckdb" },
-      "SQL dialect display name must contain 1 to 1024",
-    ],
-  ])("rejects invalid definitions", (definition, message) => {
-    expect(() => defineSqlDialect(definition)).toThrow(message);
+    expect(duckdbDialect()).toBe(duckdb);
+    expect(postgresDialect()).toBe(postgres);
+    expect(bigQueryDialect()).toBe(bigQueryDialect());
+    expect(dremioDialect()).toBe(dremioDialect());
   });
 
   it("rejects duplicate IDs", () => {
     expectSessionError("duplicate-dialect", () => {
       createSqlLanguageService({
-        dialects: [duckdb, { displayName: "Other", id: "duckdb" }],
+        dialects: [duckdb, duckdbDialect()],
       });
     });
   });
 
-  it("normalizes malformed definitions without invoking accessors", () => {
+  it("rejects copied and fabricated definitions without invoking traps", () => {
     let invoked = false;
     expectSessionError("invalid-dialect", () => {
-      defineSqlDialect({
-        displayName: "DuckDB",
-        get id() {
-          invoked = true;
-          return "duckdb";
-        },
+      createSqlLanguageService({
+        dialects: [{ ...duckdb }],
       });
     });
-    expect(invoked).toBe(false);
     expectSessionError("invalid-dialect", () => {
-      defineSqlDialect({ displayName: "DuckDB", id: 42 } as never);
+      createSqlLanguageService({
+        dialects: [{ displayName: "DuckDB", id: "duckdb" } as never],
+      });
     });
     expectSessionError("invalid-dialect", () => {
-      defineSqlDialect(null as never);
+      createSqlLanguageService({ dialects: [null as never] });
     });
     expectSessionError("invalid-dialect", () => {
-      defineSqlDialect(
-        new Proxy(
-          {},
-          {
+      createSqlLanguageService({
+        dialects: [
+          new Proxy(duckdb, {
+            get() {
+              invoked = true;
+              throw new Error("hostile");
+            },
             getOwnPropertyDescriptor() {
+              invoked = true;
+              throw new Error("hostile");
+            },
+            ownKeys() {
+              invoked = true;
               throw new Error("hostile");
             },
           },
-        ) as never,
-      );
+          ) as never,
+        ],
+      });
     });
+    expect(invoked).toBe(false);
+  });
+});
+
+describe("statement-index session cache", () => {
+  it("binds lexical behavior through authentic dialect handles", () => {
+    const service = new DefaultSqlLanguageService<TestContext>({
+      dialects: [
+        bigQueryDialect(),
+        dremioDialect(),
+        duckdb,
+        postgres,
+      ],
+    });
+    const cases = [
+      {
+        dialect: "bigquery",
+        profile: BIGQUERY_SQL_LEXICAL_PROFILE,
+        text: "# hidden; still hidden\nSELECT r'''a;b''';",
+      },
+      {
+        dialect: "dremio",
+        profile: DREMIO_SQL_LEXICAL_PROFILE,
+        text: "# code; SELECT $$a;b$$;",
+      },
+      {
+        dialect: "duckdb",
+        profile: DUCKDB_SQL_LEXICAL_PROFILE,
+        text: "SELECT $$a;b$$; /* outer /* inner; */ done */",
+      },
+      {
+        dialect: "postgresql",
+        profile: POSTGRESQL_SQL_LEXICAL_PROFILE,
+        text: "SELECT E'a\\';b'; SELECT $tag$c;d$tag$;",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const session = service.openDocument({
+        context: {
+          dialect: testCase.dialect,
+          engine: "warehouse",
+        },
+        text: testCase.text,
+      });
+      expect(session.getStatementIndexForTesting()).toEqual(
+        buildSqlStatementIndex(testCase.text, testCase.profile),
+      );
+    }
   });
 
-  it("returns only normalized dialect fields", () => {
-    const extendedDefinition = {
-      displayName: "DuckDB",
-      id: "duckdb",
-      internal: true,
-    };
-    const definition = defineSqlDialect(extendedDefinition);
-    expect(definition).toEqual({ displayName: "DuckDB", id: "duckdb" });
+  it("builds lazily and reuses the current cache", () => {
+    const { session } = openSession("SELECT 1; SELECT 2");
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+
+    const index = session.getStatementIndexForTesting();
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+    expect(session.getStatementIndexForTesting()).toBe(index);
+  });
+
+  it("retains the index for unrelated context changes", () => {
+    const { session } = openSession("SELECT 1; SELECT 2");
+    const index = session.getStatementIndexForTesting();
+    session.update({
+      kind: "context",
+      baseRevision: session.revision,
+      context: { dialect: "duckdb", engine: "remote" },
+    });
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+  });
+
+  it("invalidates the index when lexical profile identity changes", () => {
+    const { session } = openSession("SELECT $$a;b$$;");
+    const index = session.getStatementIndexForTesting();
+    session.update({
+      kind: "context",
+      baseRevision: session.revision,
+      context: { dialect: "postgresql", engine: "warehouse" },
+    });
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+    expect(session.getStatementIndexForTesting()).not.toBe(index);
+  });
+
+  it("reuses the index across no-op document mutations", () => {
+    const { session } = openSession("SELECT 1");
+    const initialSource = session.snapshotForTesting.source;
+    const index = session.getStatementIndexForTesting();
+
+    session.update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: { kind: "changes", changes: [] },
+    });
+    expect(session.snapshotForTesting.source).not.toBe(initialSource);
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+
+    session.update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: { kind: "replace", text: "SELECT 1" },
+    });
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+  });
+
+  it("updates incrementally to the full-scan oracle", () => {
+    const { session } = openSession("SELECT 1; SELECT 2; SELECT 3");
+    const previous = session.getStatementIndexForTesting();
+    session.update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: {
+        kind: "changes",
+        changes: [{ from: 17, insert: "20", to: 18 }],
+      },
+    });
+
+    const cached = session.cachedStatementIndexForTesting;
+    expect(cached).not.toBeNull();
+    expect(cached).toEqual(
+      buildSqlStatementIndex(
+        "SELECT 1; SELECT 20; SELECT 3",
+        DUCKDB_SQL_LEXICAL_PROFILE,
+      ),
+    );
+    expect(cached).not.toBe(previous);
+    expect(cached?.slots[0]).toBe(previous.slots[0]);
+  });
+
+  it("clears changed replacements and preserves the cache on failure", () => {
+    const { session } = openSession("SELECT 1");
+    const index = session.getStatementIndexForTesting();
+    const revision = session.revision;
+    expectSessionError("stale-revision", () => {
+      session.update({
+        kind: "document",
+        baseRevision: {} as never,
+        document: { kind: "replace", text: "SELECT 2" },
+      });
+    });
+    expect(session.revision).toBe(revision);
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+
+    session.update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: { kind: "replace", text: "SELECT 2" },
+    });
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+  });
+
+  it("releases the cache on disposal", () => {
+    const { session } = openSession();
+    session.getStatementIndexForTesting();
+    session.dispose();
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+    expectSessionError("session-disposed", () => {
+      session.getStatementIndexForTesting();
+    });
   });
 });
 
@@ -502,7 +657,7 @@ describe("document changes", () => {
       kind: "document",
       get context() {
         invoked = true;
-        return { dialect: "postgres", engine: "warehouse" };
+        return { dialect: "postgresql", engine: "warehouse" };
       },
     };
     expectSessionError("invalid-update", () => {
@@ -764,12 +919,12 @@ describe("document context", () => {
     session.update({
       kind: "document",
       baseRevision: session.revision,
-      context: { dialect: "postgres", engine: "warehouse" },
+      context: { dialect: "postgresql", engine: "warehouse" },
       document: { kind: "replace", text: "SELECT 2" },
     });
 
     expect(session.snapshotForTesting).toMatchObject({
-      context: { dialect: "postgres", engine: "warehouse" },
+      context: { dialect: "postgresql", engine: "warehouse" },
       source: { originalText: "SELECT 2" },
     });
 
@@ -790,10 +945,10 @@ describe("document context", () => {
     session.update({
       kind: "context",
       baseRevision: session.revision,
-      context: { dialect: "postgres", engine: "warehouse" },
+      context: { dialect: "postgresql", engine: "warehouse" },
     });
     expect(session.snapshotForTesting.source.originalText).toBe("SELECT 1");
-    expect(session.snapshotForTesting.context.dialect).toBe("postgres");
+    expect(session.snapshotForTesting.context.dialect).toBe("postgresql");
   });
 
   it("retains the owned context for document-only updates", () => {
@@ -1084,7 +1239,7 @@ describe("lifecycle", () => {
       text: "",
     });
     const second = service.openDocument({
-      context: { dialect: "postgres", engine: "two" },
+      context: { dialect: "postgresql", engine: "two" },
       text: "",
     });
 

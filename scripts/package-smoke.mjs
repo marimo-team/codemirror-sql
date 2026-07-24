@@ -174,11 +174,11 @@ try {
     join(temporaryDirectory, "vnext-consumer.mjs"),
     `import {
   createSqlLanguageService,
-  defineSqlDialect,
+  duckdbDialect,
 } from "@marimo-team/codemirror-sql/vnext";
 
 const service = createSqlLanguageService({
-  dialects: [defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+  dialects: [duckdbDialect()],
 });
 const session = service.openDocument({
   context: { dialect: "duckdb" },
@@ -208,7 +208,7 @@ import {
 } from "@marimo-team/codemirror-sql/dialects";
 import {
   createSqlLanguageService,
-  defineSqlDialect,
+  duckdbDialect,
   type SqlDocumentContext,
   type SqlTextRange,
 } from "@marimo-team/codemirror-sql/vnext";
@@ -225,7 +225,7 @@ const extensions: Extension[] = [
 ];
 const parser = new NodeSqlParser();
 const service = createSqlLanguageService<HostContext>({
-  dialects: [defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+  dialects: [duckdbDialect()],
 });
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
@@ -266,7 +266,10 @@ if (!dialects.BigQueryDialect || !dialects.DremioDialect || !dialects.DuckDBDial
 }
 if (
   typeof vnext.createSqlLanguageService !== "function" ||
-  typeof vnext.defineSqlDialect !== "function"
+  typeof vnext.bigQueryDialect !== "function" ||
+  typeof vnext.dremioDialect !== "function" ||
+  typeof vnext.duckdbDialect !== "function" ||
+  typeof vnext.postgresDialect !== "function"
 ) {
   throw new Error("vNext package exports are incomplete");
 }
@@ -281,7 +284,7 @@ if (!parseResult.success || !parseResult.ast) {
 }
 
 const service = vnext.createSqlLanguageService({
-  dialects: [vnext.defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+  dialects: [vnext.duckdbDialect()],
 });
 const session = service.openDocument({
   context: { dialect: "duckdb" },

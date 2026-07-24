@@ -1,6 +1,7 @@
 import {
   createSqlLanguageService,
-  defineSqlDialect,
+  duckdbDialect,
+  type SqlDialect,
   type SqlDocumentContext,
   type SqlDocumentSession,
   type SqlLanguageService,
@@ -17,7 +18,8 @@ interface DateContext extends HostContext {
   readonly lastUsed: Date;
 }
 
-const dialect = defineSqlDialect({ displayName: "DuckDB", id: "duckdb" });
+const dialect = duckdbDialect();
+const typedDialect: SqlDialect = dialect;
 const service = createSqlLanguageService<HostContext>({ dialects: [dialect] });
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
@@ -79,9 +81,16 @@ change.from = 1;
 range.to = 1;
 // @ts-expect-error session revision is readonly
 session.revision = revision;
+// @ts-expect-error statement indexes remain an internal session detail
+session.getStatementIndexForTesting();
+// @ts-expect-error dialect IDs are readonly
+dialect.id = "other";
+// @ts-expect-error structural dialect objects are not authentic handles
+createSqlLanguageService({ dialects: [{ id: "duckdb", displayName: "DuckDB" }] });
 
 void objectRevision;
 void numberRevision;
 void range;
+void typedDialect;
 void widenedService;
 void widenedSession;

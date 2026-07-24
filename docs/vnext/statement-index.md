@@ -1,6 +1,6 @@
 # vNext Statement Index
 
-Status: internal full-scan correctness oracle
+Status: internal full-scan oracle with incremental session reuse
 
 The statement index is a synchronous, parser-free partition of
 `analysisText`. It does not classify, parse, validate, or copy statements, and
@@ -41,8 +41,9 @@ run-current-statement commands need different policies.
 ## Dialect profiles
 
 Lexical behavior is carried by immutable internal profile identity. It is never
-inferred from a caller-controlled dialect ID. This first oracle owns profiles
-for:
+inferred from a caller-controlled dialect ID. Frozen built-in dialect
+singletons select package-owned profiles through private runtime metadata. This
+first oracle owns profiles for:
 
 - PostgreSQL: doubled quotes, `E'...'`, dollar-quoted strings, and nested block
   comments, following the
@@ -66,7 +67,36 @@ Unterminated lexical constructs consume the remainder and report their opening
 offset. Regular BigQuery strings also fail closed at a line break, because only
 triple-quoted strings may span lines.
 
-## Complexity and sequencing
+## Incremental updates
+
+The full build remains the correctness oracle. When a session already has an
+index and receives trusted ordered changes in analysis coordinates, the
+incremental path restarts conservatively at the beginning of the old slot at or
+to the left of the earliest change. Slot starts are safe checkpoints because
+lexical and prefix state is normal there.
+
+Scanning continues until an exact terminated boundary maps to the start of an
+unchanged old suffix after the final change. The unchanged prefix is retained;
+the suffix is reused directly when its offset is unchanged or copied with
+shifted frozen ranges when the net edit length changes. Convergence is rejected
+if the combined result would violate the slot limit or make a prior
+resource-limit suffix unsafe to reuse.
+
+Inconsistent change metadata falls back to a fresh full build. If no safe
+boundary converges, scanning continues through EOF. Unsupported procedural or
+custom-delimiter syntax and resource limits remain scanner-produced opaque
+suffixes; the incremental layer never guesses a boundary or creates a new
+opacity reason.
+
+## Session cache and complexity
+
+The index cache is private, lazy, and per session. It retains only the current
+index, document sequence, and lexical-profile identity, not source text or
+history. Context-only updates reuse it for the same profile. Equal analysis
+text reuses it across a new document revision. Trusted identity-source changes
+update it incrementally; changed replacements, profile changes, and transformed
+sources without trusted analysis-coordinate changes invalidate it. Disposal
+clears it.
 
 A full build is linear in UTF-16 code units, retains only slot records and a
 bounded dollar delimiter, and creates no statement substrings. Point lookup is
@@ -74,6 +104,11 @@ logarithmic in slot count. The scanner operates on `analysisText`; the current
 length-preserving source transform makes its analysis ranges valid at the same
 offsets in `originalText`.
 
-This implementation remains the correctness oracle. Incremental rescanning,
-change mapping, cache reuse, and session attachment belong to a later slice and
-must be tested against a fresh full build after arbitrary edits.
+Incremental work is proportional to the rescanned region plus any shifted
+suffix records, with a worst case equal to a full linear scan. Randomized edit
+tests compare every incremental result with a fresh oracle build.
+
+`pnpm run bench:statement-index` measures full and incremental paths on a
+roughly 1 MiB, 1,000-statement document, including a local middle edit and a
+prefix insertion that shifts the reusable suffix. It also measures recovery
+from a resource-limited 10,000-slot index to guard the linear convergence path.

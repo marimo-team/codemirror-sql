@@ -42,9 +42,28 @@ export type SqlPlainData<Value> =
 export type SqlContextInput<Context extends SqlDocumentContext> =
   Context & SqlPlainData<Context>;
 
-export interface SqlDialectDefinition {
+const sqlDialectBrand: unique symbol = Symbol("SqlDialect");
+
+/** Opaque in-process configuration for one built-in SQL dialect. */
+export interface SqlDialect {
+  readonly [sqlDialectBrand]: "SqlDialect";
   readonly id: string;
   readonly displayName: string;
+}
+
+export function createSqlDialect(
+  id: string,
+  displayName: string,
+): SqlDialect {
+  const dialect: SqlDialect = {
+    [sqlDialectBrand]: "SqlDialect",
+    displayName,
+    id,
+  };
+  Object.defineProperty(dialect, sqlDialectBrand, {
+    enumerable: false,
+  });
+  return Object.freeze(dialect);
 }
 
 /** One half-open UTF-16 range in document coordinates. */
@@ -106,7 +125,7 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
 }
 
 export interface SqlLanguageServiceOptions {
-  readonly dialects: readonly SqlDialectDefinition[];
+  readonly dialects: readonly SqlDialect[];
 }
 
 export type SqlSessionErrorCode =

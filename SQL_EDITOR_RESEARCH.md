@@ -708,8 +708,12 @@ Features could degrade honestly based on capabilities instead of treating
 A dialect should be more than CodeMirror highlighting and a
 `node-sql-parser` database name:
 
+The stable API should expose a package-owned opaque dialect handle; the
+following is the kind of internal bundle that handle resolves to, not a
+caller-constructed public object:
+
 ```ts
-interface SqlDialectDefinition {
+interface InternalSqlDialectBundle {
   id: string;
   codeMirrorDialect: SQLDialect;
   parserDialect: string;

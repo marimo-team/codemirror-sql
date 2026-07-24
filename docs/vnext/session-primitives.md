@@ -16,7 +16,7 @@ contract and the internal immutable source-snapshot model.
 ```ts
 import {
   createSqlLanguageService,
-  defineSqlDialect,
+  duckdbDialect,
   type SqlDocumentContext,
 } from "@marimo-team/codemirror-sql/vnext";
 
@@ -24,15 +24,14 @@ interface AppSqlContext extends SqlDocumentContext {
   readonly engine: string;
 }
 
+const dialect = duckdbDialect();
 const service = createSqlLanguageService<AppSqlContext>({
-  dialects: [
-    defineSqlDialect({ id: "duckdb", displayName: "DuckDB" }),
-  ],
+  dialects: [dialect],
 });
 
 const session = service.openDocument({
   text: "SELECT * FROM users",
-  context: { dialect: "duckdb", engine: "local" },
+  context: { dialect: dialect.id, engine: "local" },
 });
 
 const revision = session.update({
@@ -55,6 +54,20 @@ service.dispose();
 Use `{ kind: "replace", text }` for full replacement and
 `{ kind: "context", baseRevision, context }` for a context-only update.
 
+## Dialect registration
+
+`duckdbDialect()`, `postgresDialect()`, `bigQueryDialect()`, and
+`dremioDialect()` return frozen, opaque built-in handles. Each factory returns
+the same singleton on repeated calls. The service resolves a handle through
+package-owned runtime metadata, so a copied, serialized, fabricated, or
+different-package-instance handle is rejected.
+
+Handles are local service configuration, not transport data. Document context
+contains only the handle's serializable string `id`; a worker or separate
+package instance must call its own built-in factory rather than receive a
+handle through cloning or messaging. The ID selects a registered handle but
+does not itself infer lexical behavior.
+
 ## Contract
 
 - Every accepted update creates a new frozen, service-issued revision.
@@ -71,6 +84,15 @@ Use `{ kind: "replace", text }` for full replacement and
 - Session and service disposal are idempotent and terminal.
 - Synchronous public failures use `SqlSessionError` and a stable `code`; caught
   platform errors are not exposed as causes.
+
+The internal statement index is built lazily per session. Context-only updates
+reuse it when the lexical-profile identity is unchanged. A no-op document
+update or same-text replacement advances the public revision and document
+sequence but can reuse the index. Trusted incremental identity-source changes
+update a populated cache; a changed replacement, profile change, or changed
+transformed source without analysis-coordinate changes clears it for a later
+full build. Invalid updates leave both the session snapshot and cache
+unchanged, and disposal clears the cache.
 
 The safety envelope currently permits at most 10,000 changes in one update, a
 16 Mi-code-unit document, 1,000 registered dialects, and bounded context graph

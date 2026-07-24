@@ -110,9 +110,17 @@ interface SqlDocumentContext {
 
 The service resolves dialect IDs through its immutable registry and rejects
 unknown or duplicate IDs. Duplicate registration is rejected even when the
-definitions appear equivalent. Dialect identity includes an internal
-configuration revision; calling a dialect factory again does not change the
-identity of an already registered dialect.
+definitions appear equivalent. The built-in dialect factories return frozen
+opaque singletons backed by package-owned `WeakMap` metadata; repeated calls to
+one factory return the same handle and internal configuration identity. A
+copied, serialized, fabricated, or different-package-instance handle is
+rejected.
+
+Dialect handles are in-process service configuration and do not cross cloning,
+worker, or provider boundaries. Serializable context contains only the
+registered handle's string ID. Another realm or package instance reconstructs
+configuration with its own built-in factory. IDs perform registry lookup but
+never infer lexical behavior.
 
 Hosts can add fields such as engine or SQL mode. Contexts must be
 structured-cloneable plain data. On open/update, the session creates and owns a
@@ -213,8 +221,15 @@ validity, or AST data. It materializes at most 10,000 slots and collapses an
 unscanned remainder into an opaque slot on resource limits or unsupported
 delimiter/procedural constructs. Opaque slots cannot be passed to later parsing
 as exact source. Dialect lexical behavior uses internal configuration identity,
-never a caller-controlled dialect ID. Incremental reuse and session attachment
-remain a separate change tested against the full-scan oracle.
+never a caller-controlled dialect ID.
+
+The full scanner remains the correctness oracle. Incremental indexing restarts
+conservatively at the old slot at or to the left of the earliest trusted
+analysis-coordinate change and converges only at an exact terminated boundary
+mapped to an unchanged old suffix. It reuses the unchanged prefix and either
+reuses or shifts the suffix. Inconsistent metadata falls back to the full
+oracle; absent convergence scans through EOF, and resource or
+unsupported-syntax opacity remains fail-closed.
 
 ## Request outcomes
 
@@ -409,6 +424,12 @@ SPI. Sessions create a new source snapshot for document updates and reuse the
 existing snapshot for context-only updates. Non-identity generated/reordered
 source remains deferred until a concrete consumer validates the segment model.
 
+Current session edits use identity sources, so validated original-document
+changes are also trusted analysis-coordinate changes. A future transformed
+source must provide its own validated analysis-coordinate changes for
+incremental statement indexing. Without them, changed analysis text
+invalidates the index and is rebuilt lazily.
+
 Edits crossing an ambiguous or unmapped boundary are rejected. Mapping failure
 is unavailable analysis, not invalid SQL.
 
@@ -497,6 +518,15 @@ statement can be reused and remapped. Keys include content fingerprint,
 dialect, parser/configuration, and template identities. Catalog changes do not
 invalidate parsing. Renderer, theme, focus, and cursor changes do not invalidate
 semantic artifacts.
+
+The current statement-index cache is private, lazy, and per session. It stores
+only the current index, document sequence, and lexical-profile identity.
+Context-only updates reuse it for the same profile; equal analysis text reuses
+it across a new document revision; trusted identity-source changes update it
+incrementally. A changed replacement, profile change, or transformed source
+without trusted analysis changes clears it for a later full build. Invalid
+updates do not mutate it, disposal clears it, and it retains no source text or
+revision history.
 
 In-flight deduplication uses the same complete key. Cancelling one consumer
 detaches it; shared underlying work is aborted only when no consumers remain.

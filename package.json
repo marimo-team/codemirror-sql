@@ -24,6 +24,7 @@
     "test:coverage:changed": "node ./scripts/changed-coverage.mjs",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
+    "bench:statement-index": "vitest bench --run src/vnext/__tests__/statement-index.bench.ts",
     "test:package": "node ./scripts/clean.mjs && tsc && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
     "build": "node ./scripts/clean.mjs && tsc",
