@@ -99,6 +99,9 @@ jobs:
       - name: 🧪 Browser Tests
         run: pnpm run test:browser
 
+      - name: 🧵 Worker Placement Evidence
+        run: pnpm run test:worker-placement
+
   package:
     env:
       EXPECTED_PNPM_VERSION: ${{ matrix.pnpm-version }}
