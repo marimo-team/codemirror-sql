@@ -373,6 +373,15 @@ function preventDefault(event: unknown): void {
   }
 }
 
+function isWorkerIdentity(
+  value: unknown,
+): value is object {
+  return (
+    (typeof value === "object" && value !== null) ||
+    typeof value === "function"
+  );
+}
+
 export function createNodeSqlParserBrowserExecutor(
   options: NodeSqlParserBrowserExecutorOptions,
 ): NodeSqlParserBrowserExecutor {
@@ -396,7 +405,9 @@ export function createNodeSqlParserBrowserExecutor(
   let pumping = false;
   let pumpRequested = false;
   let queuedTextUnits = 0;
+  let retirementDepth = 0;
   const queue: QueueEntry[] = [];
+  const seenWorkers = new WeakSet<object>();
 
   function clearDeadline(deadline: Deadline | null): void {
     if (deadline === null) {
@@ -617,7 +628,8 @@ export function createNodeSqlParserBrowserExecutor(
       disposed ||
       creatingWorker ||
       generation !== null ||
-      queue.length === 0
+      queue.length === 0 ||
+      retirementDepth > 0
     ) {
       return;
     }
@@ -631,6 +643,15 @@ export function createNodeSqlParserBrowserExecutor(
       rejectAllQueued(() => failedOutcome("worker-failure"));
       return;
     }
+    if (
+      !isWorkerIdentity(worker) ||
+      seenWorkers.has(worker)
+    ) {
+      creatingWorker = false;
+      rejectAllQueued(() => failedOutcome("worker-failure"));
+      return;
+    }
+    seenWorkers.add(worker);
     creatingWorker = false;
     if (disposed || generation !== null || queue.length === 0) {
       try {
@@ -646,8 +667,9 @@ export function createNodeSqlParserBrowserExecutor(
         if (generation !== target || target.state === "retired") {
           return;
         }
-        failGeneration(target, "worker-failure");
-        preventDefault(event);
+        failGeneration(target, "worker-failure", () => {
+          preventDefault(event);
+        });
       },
       onMessage: (event) => {
         if (generation !== target || target.state === "retired") {
@@ -693,44 +715,43 @@ export function createNodeSqlParserBrowserExecutor(
     }
   }
 
-  function restartAfterReadyFailure(): void {
-    if (!disposed && queue.length > 0 && generation === null) {
-      startGeneration();
-    }
-  }
-
   function failGeneration(
     target: WorkerGeneration,
     code: NodeSqlParserBrowserExecutorFailureCode,
+    afterRevocation?: () => void,
   ): void {
     if (generation !== target || target.state === "retired") {
       return;
     }
-    const failedDuringStartup = target.state === "starting";
-    const detachedActive = detachActiveRequest(target);
-    const detachedQueue = failedDuringStartup
-      ? detachAllQueued()
-      : [];
-    const revoked = revokeGeneration(target);
+    retirementDepth += 1;
+    try {
+      const failedDuringStartup = target.state === "starting";
+      const detachedActive = detachActiveRequest(target);
+      const detachedQueue = failedDuringStartup
+        ? detachAllQueued()
+        : [];
+      const revoked = revokeGeneration(target);
 
-    cleanupDetachedActive(detachedActive);
-    cleanupDetachedQueue(detachedQueue);
-    cleanupRevokedGeneration(revoked);
+      cleanupDetachedActive(detachedActive);
+      cleanupDetachedQueue(detachedQueue);
+      cleanupRevokedGeneration(revoked);
+      afterRevocation?.();
 
-    for (const { entry } of detachedQueue) {
-      settleConsumer(entry, failedOutcome(code));
-    }
-    if (
-      detachedActive !== null &&
-      !detachedActive.request.draining
-    ) {
-      settleConsumer(
-        detachedActive.request.entry,
-        failedOutcome(code),
-      );
-    }
-    if (!failedDuringStartup) {
-      restartAfterReadyFailure();
+      for (const { entry } of detachedQueue) {
+        settleConsumer(entry, failedOutcome(code));
+      }
+      if (
+        detachedActive !== null &&
+        !detachedActive.request.draining
+      ) {
+        settleConsumer(
+          detachedActive.request.entry,
+          failedOutcome(code),
+        );
+      }
+    } finally {
+      retirementDepth -= 1;
+      pump();
     }
   }
 
@@ -933,7 +954,7 @@ export function createNodeSqlParserBrowserExecutor(
 
   function pump(): void {
     pumpRequested = true;
-    if (pumping) {
+    if (pumping || retirementDepth > 0) {
       return;
     }
     pumping = true;

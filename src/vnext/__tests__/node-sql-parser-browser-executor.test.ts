@@ -1014,6 +1014,8 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
       let nested:
         | NodeSqlParserBrowserExecutorSubmission
         | undefined;
+      let cleanupDepth = 0;
+      let replacementCreatedDuringCleanup = false;
       const submitNested = () => {
         if (nested === undefined) {
           nested = executor?.submit({
@@ -1022,21 +1024,31 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
           });
         }
       };
+      const submitNestedDuringCleanup = () => {
+        cleanupDepth += 1;
+        try {
+          submitNested();
+        } finally {
+          cleanupDepth -= 1;
+        }
+      };
       if (boundary === "remove") {
         firstWorker.setRemoveHook((type) => {
           if (type === "message") {
-            submitNested();
+            submitNestedDuringCleanup();
           }
         });
       }
       if (boundary === "terminate") {
-        firstWorker.setTerminateHook(submitNested);
+        firstWorker.setTerminateHook(
+          submitNestedDuringCleanup,
+        );
       }
       executor = createNodeSqlParserBrowserExecutor({
         deadlineScheduler: {
           clearTimeout(handle): void {
             if (boundary === "clear" && handle === 2) {
-              submitNested();
+              submitNestedDuringCleanup();
             }
             manual.clearTimeout(handle);
           },
@@ -1047,7 +1059,15 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
         maxQueuedTextUnits: 100,
         queueDeadlineMs: 20,
         startupDeadlineMs: 10,
-        workerFactory: factory.create,
+        workerFactory: () => {
+          if (
+            cleanupDepth > 0 &&
+            factory.created.length > 0
+          ) {
+            replacementCreatedDuringCleanup = true;
+          }
+          return factory.create();
+        },
       });
       const originalFirst = executor.submit({
         grammar: "postgresql",
@@ -1074,6 +1094,7 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
       });
       expect(firstWorker.posted).toHaveLength(0);
       expect(firstWorker.terminateCalls()).toBe(1);
+      expect(replacementCreatedDuringCleanup).toBe(false);
       expect(factory.created).toHaveLength(2);
       expect(replacementWorker.posted).toHaveLength(1);
       expect(postedRequest(replacementWorker)).toMatchObject({
@@ -1089,6 +1110,48 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
       expect(manual.pendingCount()).toBe(0);
     },
   );
+
+  it("rejects a worker identity reused across generations", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const worker = new FakeWorker();
+    let factoryCalls = 0;
+    const executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: () => {
+        factoryCalls += 1;
+        return worker;
+      },
+    });
+    const active = executor.submit({
+      grammar: "postgresql",
+      text: "active",
+    });
+    const queued = executor.submit({
+      grammar: "postgresql",
+      text: "queued",
+    });
+    ready(worker);
+
+    worker.dispatch("error", {});
+    expect(await outcome(active)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(await outcome(queued)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(factoryCalls).toBe(2);
+    expect(worker.posted).toHaveLength(1);
+    expect(worker.listenerCount()).toBe(0);
+    expect(worker.terminateCalls()).toBe(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
 
   it.each([
     undefined,
@@ -1370,14 +1433,17 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
       { kind: "syntax-rejected" },
     );
     let prevented = 0;
+    let workerCountDuringPrevention = 0;
 
     firstWorker.dispatch("error", {
       preventDefault() {
         prevented += 1;
+        workerCountDuringPrevention = factory.created.length;
         firstWorker.emit(staleResponse);
       },
     });
     expect(prevented).toBe(1);
+    expect(workerCountDuringPrevention).toBe(1);
     expect(await outcome(active)).toStrictEqual({
       code: "worker-failure",
       kind: "failed",
