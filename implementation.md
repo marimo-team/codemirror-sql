@@ -764,10 +764,16 @@ Deliver the parser contract, measured `node-sql-parser` adapter, normalized
 artifacts, isolated execution, bounded coordination, and authenticated syntax
 evidence.
 
-Deliver relation completion independently through a bounded lexical cursor-site
-and CTE-visibility classifier plus an asynchronous coverage-aware catalog.
+Deliver relation completion independently through a bounded partial-`SELECT`
+query-site recognizer and CTE-visibility recognizer plus one asynchronous,
+coverage-aware catalog provider. The host may implement that provider as a
+composite; multi-provider arbitration remains a later explicit design.
 This path must remain useful for incomplete SQL and must not construct or wait
 for the parser worker.
+
+Keep the public provider and completion types provisional until the vertical
+slice, two provider shapes, packed marimo integration, hostile decoding and
+lifecycle suites, and declaration snapshots pass.
 
 Then design query blocks, typed visibility, CTE/relation/alias/column bindings,
 and explicit partial semantic states against materially different dialect

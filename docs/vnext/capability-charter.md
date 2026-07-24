@@ -156,6 +156,12 @@ Responses distinguish loading, partial, complete, failed, and paginated
 coverage. Stable entity identity and provider epochs prevent evidence from
 different catalog states being combined as authoritative.
 
+For the first vertical slice the service configures one catalog provider; a
+host may make it a composite. The provider and scope own catalog matching and
+addressability, while dialect runtime data owns SQL token decoding and
+segment-role-aware rendering. The service does not infer catalog equality or
+absence by applying a generic dialect fold.
+
 Catalog invalidation identifies provider, affected scope, and an epoch
 containing a provider/scope-monotonic generation plus opaque snapshot token.
 Lower generations are discarded and equal generations are duplicates. Only

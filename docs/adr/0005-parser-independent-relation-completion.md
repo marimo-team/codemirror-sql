@@ -22,7 +22,7 @@ SELECT * FROM users u JOIN |
 The compatibility parser rejects many of these states. Waiting for it would
 make completion least reliable at the exact moment it is requested. It would
 also construct a roughly 500 KiB parser-worker graph for a feature that can
-classify its initial cursor sites lexically.
+recognize a narrow set of partial `SELECT` query sites without a complete AST.
 
 The backend AST cannot provide a safe shortcut:
 
@@ -43,7 +43,7 @@ The current vNext core has the required parser-independent foundations:
 
 - immutable original and masked analysis source;
 - absolute UTF-16 half-open coordinate mapping;
-- dialect-owned lexical profiles;
+- dialect-owned lexical profiles and identifier rendering;
 - exact and explicitly opaque statement slots;
 - cursor affinity;
 - atomic session revisions and context changes; and
@@ -61,9 +61,9 @@ parser worker, or parser coordinator.
 
 It will combine:
 
-1. a private bounded lexical active-site classifier;
-2. a private bounded lexical CTE visibility classifier;
-3. an asynchronous relation-catalog provider with explicit coverage and epoch
+1. a private bounded partial-`SELECT` query-site recognizer;
+2. a private bounded CTE frame and visibility recognizer;
+3. one asynchronous relation-catalog provider with explicit coverage and epoch
    state;
 4. revision-aware session arbitration and deterministic result composition;
    and
@@ -73,21 +73,36 @@ Parser execution remains the selected boundary for syntax evidence and future
 scope-dependent semantics. A later semantic protocol will use a scoped IR and
 will not expose raw ASTs or flat relation-name lists.
 
-### Narrow initial cursor sites
+The single configured provider may itself be a host-owned composite. The first
+slice does not define provider fan-out, cross-provider deduplication, or
+arbitration. Those remain deferred as required by ADR 0001.
 
-The private classifier recognizes only relation-name positions that it can
-prove:
+### Narrow initial query sites
+
+The private recognizer is a bounded partial SQL recognizer, not a keyword
+scanner. It enters a relation-name state only from a proven supported `SELECT`
+query block and a proven clause state at the current query depth:
 
 - immediately after `FROM` or `JOIN`;
 - a partial qualified or unqualified relation path following those keywords;
   and
 - a comma-separated relation entry in the same `FROM` clause.
 
-The initial classifier does not claim support for `UPDATE`, `INSERT INTO`,
+The initial recognizer does not claim support for `UPDATE`, `INSERT INTO`,
 table functions, derived output relations, `LATERAL`, or column positions.
-Strings and comments never create sites. `FROM (` and a cursor inside a string,
-comment, quoted token that cannot be decoded, or embedded region are
-unavailable or inactive according to the closed classifier result.
+It fails closed when unsupported syntax could change the clause, expression,
+or query-block state. Strings and comments never create sites. `FROM (` and a
+cursor inside a string, comment, quoted token that cannot be decoded, or
+embedded region are unavailable or inactive according to the closed result.
+CTE visibility is the one narrow scope-semantics exception; general
+parser-derived scope semantics remain deferred.
+
+The conformance corpus includes positive base `FROM`, qualified prefix,
+aliased `JOIN`, same-depth comma, and nested supported-query cases. It includes
+negative `IS DISTINCT FROM`, `substring(... FROM ...)`, `extract(... FROM
+...)`, `DELETE FROM`, `COPY ... FROM`, set-operation, `QUALIFY`, `WINDOW`, join
+constraint, DML, and expression cases. A keyword match alone never creates a
+site.
 
 The result distinguishes:
 
@@ -97,15 +112,16 @@ The result distinguishes:
 - ready: the replacement range, decoded qualifier and prefix, visible CTEs,
   and exact or recovered quality are known.
 
-All replacement ranges are authenticated statement-relative UTF-16 ranges
-created from package-owned source. The session maps them to absolute original
-document ranges before returning a completion item.
-
-The replacement normally covers the final identifier segment. If a catalog
-provider proves that only a qualified completion path is addressable, the
-service may replace that segment with the complete dialect-quoted path.
-Incomplete quoted identifiers replace the complete token rather than creating
-an unmatched quote suffix.
+The recognizer authenticates both the final identifier-segment range and the
+whole typed relation-path range as statement-relative UTF-16 ranges created
+from package-owned source. The session maps them to absolute original-document
+ranges before returning a completion item. In the first slice every catalog
+completion replaces the authenticated whole typed relation path with the fully
+rendered, provider-proven `completionPath`. It never inserts a full path into a
+final-segment edit, so `schema.us` cannot become `schema.schema.users`.
+Incomplete quoted identifiers replace the complete authenticated token or path
+rather than creating an unmatched quote suffix. No edit crosses a statement or
+embedded-region boundary.
 
 ### Dialect-owned identifier policy
 
@@ -113,21 +129,31 @@ Dialect runtime data, not providers, owns:
 
 - bare-identifier syntax;
 - quote delimiters and escaping;
-- quoted and unquoted equality and normalization;
+- query-local quoted and unquoted CTE equality;
 - reserved-word quoting;
+- rendering by path-segment role;
 - maximum identifier path depth; and
 - supported CTE grammar.
 
-Providers receive decoded identifier queries and the public dialect ID. They
-do not produce SQL insertion text or choose quoting.
+The provider and catalog scope own catalog-path matching, case policy, and
+addressability. This matters for systems such as BigQuery, where dataset
+configuration can change case sensitivity, and where rendering rules differ
+by path segment. Providers receive decoded identifier queries and the public
+dialect ID, and return decoded path components plus positive matching evidence.
+They never produce SQL insertion text or choose quoting.
+
+The service does not generic-fold, deduplicate, reject, or infer absence for
+catalog entities. A dialect-derived normalized string may be used only as a
+locale-independent deterministic sort key; it never establishes catalog
+eligibility, equality, addressability, or authority.
 
 DuckDB uses DuckDB lexical and identifier rules for completion. Its use of the
 PostgreSQL compatibility parser remains separate positive-only syntax
 evidence.
 
-### Lexical CTE visibility
+### Bounded CTE visibility
 
-The classifier recognizes a bounded subset of query-block-leading CTE syntax:
+The CTE recognizer handles a bounded subset of query-block-leading CTE syntax:
 
 ```text
 WITH [RECURSIVE]
@@ -162,24 +188,43 @@ The first public template input is a complete set of length-preserving embedded
 regions attached atomically to a document revision. Arbitrary transformer
 callbacks and generated/reordered source maps remain deferred.
 
-The classifier:
+Every accepted full-text or incremental document update includes the complete
+ordered, non-overlapping region set for the resulting text. An empty set clears
+regions; a context-only update preserves them. Text, context, and regions pass
+one validation gate and either create one new revision together or leave the
+session unchanged. The CodeMirror adapter supplies the post-transaction set
+through a typed effect or a configured pure extractor; it never follows a text
+update with a second region update.
+
+An untyped embedded region is an unknown grammar barrier, not an exact
+expression token. The recognizer:
 
 - returns inactive while the cursor is inside an embedded region;
-- treats a region as one opaque expression token so
-  `FROM {df} JOIN |` can recognize the second site;
 - never creates an edit or identifier path crossing a region; and
 - marks a CTE header containing an opaque region partial rather than inventing
-  a declaration.
+  a declaration; and
+- returns unavailable when proof cannot cross the barrier, or ready with
+  recovered quality, `isIncomplete: true`, and the closed reason
+  `opaque-template-context` when a later site is independently proven.
+
+Therefore generic marimo interpolation such as `FROM {df} JOIN |` is never
+exact. Exact continuation across a region requires a future trusted,
+feature-specific syntactic-role contract; a language label alone is
+insufficient.
 
 Marimo keeps Python-expression completion as an external CodeMirror source for
-positions inside `{...}`.
+positions inside `{...}`. Its region conformance fixtures cover `{df}`, nested
+Python expressions and strings, `{{...}}`, unmatched braces, braces in SQL
+strings/comments, cursor-inside-region behavior, and edits that create or
+remove regions.
 
 ### Catalog provider boundary
 
-The stable catalog provider is feature-specific and asynchronous. A relation
+The provisional catalog provider is feature-specific and asynchronous. A relation
 search request contains only copied, recursively frozen plain data:
 
-- catalog scope and search paths;
+- catalog scope and an ordered list of search paths, where each path is an
+  ordered list of decoded components with quoted state;
 - public dialect ID;
 - decoded qualifier and prefix components with quoted state;
 - result limit;
@@ -198,11 +243,15 @@ A returned relation contains:
 - canonical absolute catalog path;
 - a completion path positively proven addressable for the request scope and
   search path; and
+- a closed provider-proven match quality, initially `exact` or `equivalent`;
+  and
 - optional bounded plain-text detail.
 
 The service never invents an unqualified candidate from an absolute path. The
-provider proves addressability through `completionPath`; the service validates
-the query match and produces dialect-correct insertion text.
+provider proves matching and addressability through `matchQuality` and
+`completionPath`; the service validates the bounded shape and produces
+dialect-correct, segment-role-aware insertion text. Each catalog item has one
+positive catalog provenance containing provider and entity IDs.
 
 Search responses distinguish:
 
@@ -220,6 +269,13 @@ data properties and copied into fresh frozen current-realm objects. Accessors,
 throwing proxies, unexpected keys, oversized strings or arrays, and malformed
 closed values fail without exposing raw errors.
 
+The core also provides a provisional `createInMemoryRelationCatalog` helper for
+bounded readonly relation data. It indexes stable IDs, kinds, canonical
+component paths, optional details, scopes, and search paths; uses package
+dialect utilities for matching and addressable completion paths; returns
+complete, frozen generation-zero results; and requires no no-op subscription
+for a static catalog. It imports no CodeMirror, DOM, React, or host state.
+
 ### Epochs, subscriptions, and invalidation
 
 Epochs are monotonic per provider ID and catalog scope and contain:
@@ -227,38 +283,62 @@ Epochs are monotonic per provider ID and catalog scope and contain:
 - a non-negative safe generation; and
 - an opaque bounded non-secret token.
 
-The first accepted response establishes the observed epoch without invalidating
-the revision that requested it. After that, lower generations are discarded.
-Equal generation and token is a duplicate. Equal generation with a different
-token is malformed provider behavior. A higher accepted invalidation or search
-response clears affected cache entries and advances every subscribed session
-revision.
+Every response and invalidation passes through one serialized gate for the
+configured provider identity and scope. A subscription callback is always a
+change event, never an initial snapshot. The first accepted invalidation
+establishes its epoch and advances all sessions already subscribed to that
+scope. A first successful search response may establish a baseline without a
+revision advance only when no invalidation has been accepted since the request
+captured its revision.
+
+After a baseline exists, lower generations are discarded with closed stale
+evidence. Equal generation and token is a duplicate. Equal generation with a
+different token is malformed provider behavior and causes no state mutation.
+A higher accepted invalidation or response atomically installs the new epoch,
+clears older scope cache entries, supersedes affected work, and then advances
+each subscribed session revision exactly once.
 
 A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different
 epochs are never merged.
 
-The service reference-counts one provider subscription per provider and scope,
-then fans invalidation out to subscribed sessions. Fifty sessions sharing a
-scope do not create fifty provider subscriptions.
+The service reference-counts one provider subscription per provider
+configuration and scope, then fans invalidation out to subscribed sessions.
+Subscription membership is installed atomically before a provider can call
+back synchronously. A newly joining session captures an already-observed epoch
+without a synthetic revision bump. Disposal removes membership before
+unsubscribing or running external cleanup. Fifty sessions sharing a scope do
+not create fifty provider subscriptions.
+
+The session exposes a disposable revision-change subscription for
+service-originated changes:
+
+```ts
+const subscription = session.onDidChange(({ revision, reason }) => {
+  // reason is a closed value such as "catalog"
+});
+subscription.dispose();
+```
+
+State and the opaque revision change before listeners run. Listener failures
+are isolated; disposal is idempotent; and callbacks never run after session or
+service disposal. The event contains no provider payload. Text and context
+updates remain observed through the caller's own transaction and do not need a
+duplicate event.
 
 ### Completion result contract
 
 The framework-independent session returns immutable completion items containing
 plain strings, one exact absolute original-document text edit, relation kind,
-and positive provenance.
-
-Provenance is per item because duplicate candidates can merge evidence from:
-
-- one or more catalog providers; and
-- a visible document CTE.
+and one positive provenance: either a visible CTE with declaration position or
+a catalog entity with provider and entity IDs.
 
 The list separately records whether it is incomplete and closed reasons such
 as catalog loading, partial or paginated coverage, provider failure or timeout,
-lexical recovery, recursive CTE uncertainty, and result limiting.
+query-site recovery, recursive CTE uncertainty, and result limiting.
 
 A recognized site with no candidates is a ready empty list. It remains marked
-incomplete when catalog or lexical evidence is incomplete. An inactive or
+incomplete when catalog or recognition evidence is incomplete. An inactive or
 unavailable site lets the CodeMirror adapter return `null` so other completion
 sources can run.
 
@@ -280,21 +360,73 @@ Completion is latest-wins per session:
   applying a result.
 
 Shared in-flight catalog work detaches each consumer independently. The service
-aborts the provider only after the last consumer leaves.
+aborts the provider only after an atomic consumer-set mutation observes that
+the last consumer left. A new same-key latest-wins request attaches to shared
+work before the old request detaches, so supersession cannot abort and restart
+identical provider work. Ownership is removed before any abort or external
+callback. All cancellation, supersession, disposal, deadline, and completion
+races pass one settle-once transition and leave no timer or listener behind.
 
-Ranking is independent of provider completion order:
+Ranking is independent of asynchronous completion order:
 
 1. visible CTEs;
-2. exact-case prefix matches;
-3. folded prefix matches;
-4. shorter proven completion paths;
-5. relation-kind priority;
-6. dialect-normalized label and path; and
-7. provider ID and entity ID.
+2. provider-proven `exact` matches, then `equivalent` matches;
+3. shorter proven completion paths;
+4. catalog kind in the closed order temporary table, table, view, materialized
+   view, then external relation;
+5. rendered label and path under code-unit comparison using `<` and `>`, never
+   locale-sensitive comparison; and
+6. CTE declaration offset for local ties or provider entity ID for catalog
+   ties.
 
-A visible CTE shadows a normalized-equivalent unqualified catalog candidate.
-Other equal insertions merge positive provenance. The first slice does not
-accept arbitrary floating provider scores.
+A visible CTE shadows an unqualified catalog insertion only when the
+dialect-owned query-local CTE equality policy proves equivalence. Distinct
+catalog entities are never merged or deduplicated by a generic fold. The first
+slice has one provider and does not accept arbitrary floating scores.
+
+### Deadlines, cache identity, and retention
+
+Provider invocation is measured against an 8 ms synchronous observation
+budget. JavaScript cannot preempt synchronous code; an over-budget return is
+therefore discarded as `catalog-timeout`, and CPU-heavy or untrusted providers
+must use a worker or process.
+
+Service-owned queue-wait and execution safety deadlines default to 100 ms and
+250 ms. Configuration is checked at construction and restricted to 10–2,000 ms
+for queue wait and 10–5,000 ms for execution. Joining shared work never extends
+either request's absolute deadline. Queue expiry removes work without invoking
+the provider. Execution expiry detaches the consumer, aborts only after the
+consumer count reaches zero, and drains a late resolve or reject. No provider
+promise can keep `complete()` pending indefinitely.
+
+At a recognized site, queue or execution expiry still settles a ready local
+result, possibly empty, with `isIncomplete: true` and a closed
+`catalog-queue-timeout` or `catalog-timeout` reason. It does not turn proven
+query-site evidence into unavailable analysis.
+
+The exact structural cache and shared-work key contains:
+
+- service-owned provider configuration identity and unique provider ID;
+- exact catalog scope;
+- ordered search paths, component values, and quote states;
+- dialect runtime configuration identity;
+- decoded qualifier and prefix values and quote states;
+- clamped result limit;
+- continuation token; and
+- the captured epoch generation and token, or an explicit `UNOBSERVED`
+  sentinel.
+
+Hashes may accelerate comparison but never replace structural equality.
+Provider IDs are unique within a service and callers cannot choose
+configuration identity. The first decoded response can re-key unobserved work
+to its epoch. Only decoded ready responses are cached under their response
+epoch. Loading, failure, malformed, timeout, cancellation, supersession, queue
+overload, and disposal outcomes are not cached. Complete-empty results are
+reused only for the exact key and never prove an unknown-object diagnostic.
+Partial and paginated entries retain incomplete coverage; pages combine only
+for the identical base key and epoch, and each continuation remains a distinct
+request key. Higher-epoch results may be cached only after older scope entries
+are cleared and never publish to the revision that observed the older epoch.
 
 ### Initial resource budgets
 
@@ -308,14 +440,24 @@ The initial checked limits are:
 | CTE declarations | 256 |
 | Identifier path segments | 4 |
 | Identifier segment | 256 UTF-16 units |
+| Catalog scope | 512 UTF-16 units |
+| Search paths | 32 |
+| Components per search path | 4 |
+| Total catalog context | 16,384 UTF-16 units |
+| Configured relation catalog providers | 1 |
 | Catalog results per search | 100 |
-| Completion results after merge | 100 |
-| Provider and entity ID | 256 UTF-16 units |
+| Completion results after composition | 100 |
+| Provider ID | 256 UTF-16 units |
+| Entity ID | 256 UTF-16 units |
+| Epoch token | 256 UTF-16 units |
 | Plain-text detail | 1,024 UTF-16 units |
 | Continuation token | 2,048 UTF-16 units |
-| Service catalog cache | 256 entries and 2 MiB estimated strings |
-| Active catalog searches | 8 |
-| Queued catalog searches | 64 |
+| Decoded response aggregate | 65,536 UTF-16 units |
+| Decoded response own keys | 1,024 |
+| Decoded response nesting depth | 8 |
+| Service catalog cache | 256 entries and 2 MiB estimated retained bytes |
+| Service-wide active catalog searches | 8 |
+| Service-wide queued catalog searches | 64 |
 | Active completion consumers | 1 per session |
 
 Limit exhaustion produces an explicit unavailable or incomplete result. An
@@ -323,7 +465,7 @@ oversized provider response is rejected; it is never silently truncated while
 retaining a false `complete` claim.
 
 The 65,536-unit scan limit is a safety ceiling, not a latency target. The
-classifier must still meet the active-statement product envelope on the
+recognizer must still meet the active-statement product envelope on the
 representative 10 KiB workload and must return explicit resource unavailability
 instead of creating a routine main-thread task over 50 ms.
 
@@ -335,13 +477,52 @@ CodeMirror integration ships from a separate entry point. It owns:
 - conversion of transactions into atomic text, context, and region updates;
 - focus, visibility, debounce, and request cancellation;
 - conversion to CodeMirror completion results;
+- one coalesced subscription to service-originated session revision changes;
 - safe rendering and external completion-source composition; and
 - session disposal from the view plugin.
 
 The core does not expose CodeMirror `Completion`, `EditorState`, `EditorView`,
 facets, DOM nodes, or renderer callbacks. The first adapter omits reusable
 `validFor` caching so CodeMirror cannot reuse a result across a session revision
-without revalidation.
+without revalidation. It checks `session.isCurrent()` both before returning and
+immediately before applying a result.
+
+When a catalog epoch advances without an editor transaction, the adapter
+aborts captured work, invalidates stale completion state, and coalesces a
+scheduled refresh if a completion UI is open. It never synchronously dispatches
+from a CodeMirror update or a provider callback.
+
+A supplied language service is caller-owned. Each view plugin owns exactly one
+session, revision subscription, debounce set, active request, and any UI
+resource. `destroy()` unsubscribes, aborts, disposes its session and UI, and is
+idempotent; it never disposes the shared service or provider. Service disposal
+settles all sessions even if views still exist, and later view destruction
+remains harmless.
+
+The adapter accepts a custom completion-info resolver/decorator. It receives
+only the immutable core item and its provider/entity provenance, and may use a
+host closure to resolve live metadata and produce rich CodeMirror information.
+Async detail is cancellation-aware, late results are drained, and any returned
+UI resource has explicit disposal so marimo can unmount React roots. The
+default path creates safe plain text/DOM and never assigns provider strings to
+`innerHTML`. React, Jotai, `DataTable`, DOM nodes, and live metadata never enter
+the core contract.
+
+The marimo acceptance fixture runs 1, 10, and 50 views against one shared
+service. It proves one session/listener/request owner per view but one provider
+subscription, cache, and catalog index per provider configuration and scope.
+Destroying 49 views retains the subscription; destroying the last releases it
+exactly once. A second scope adds one subscription, not one per view.
+
+The fixture also proves that relation completion constructs no parser worker;
+epoch invalidation creates one service fan-out and bounded coalesced view
+refreshes; engine, dialect, and scope switches are atomic; and rapid edits,
+loading/partial/failing providers, ignored abort signals, late settlement,
+open-menu invalidation, repeated destruction, and service-before-view disposal
+leave no stale apply, late dispatch, unresolved promise, unhandled rejection,
+listener, subscription, React root, or unbounded cache retention. GC-capable
+runs record retained resources, while 10 KiB documents enforce the capability
+charter's main-thread and completion-latency envelopes.
 
 ## Parser semantics remain separate
 
@@ -359,18 +540,28 @@ Mixed cached assets fail the exact version check and retire the generation.
 
 ## Implementation sequence
 
-1. Accept this ADR and freeze the public completion, catalog, epoch,
-   invalidation, request-result, and minimal embedded-region types.
+1. Accept this ADR as the provisional contract and compile its completion,
+   catalog, epoch, invalidation, notification, request-result, and
+   embedded-region type sketches against core and marimo consumer fixtures.
 2. Attach embedded regions to session open/update transactions atomically.
-3. Add the bounded lexical active-site classifier.
-4. Add the bounded lexical CTE frame and visibility classifier.
+3. Add the bounded partial-`SELECT` query-site recognizer.
+4. Add the bounded CTE frame and visibility recognizer.
 5. Add the service-owned catalog coordinator, subscriptions, cache,
    in-flight sharing, cancellation, and provider contract suite.
 6. Add the session completion method and deterministic composition.
 7. Add the separate CodeMirror adapter and packed/browser fixtures.
 8. Add the marimo fixture and 1/10/50-editor performance and leak evidence.
-9. Design scoped parser semantics and protocol v2 against PostgreSQL and
+9. Validate both the in-memory/notebook and hierarchical remote provider
+   shapes, then stabilize the declarations and public export surface.
+10. Design scoped parser semantics and protocol v2 against PostgreSQL and
    BigQuery corpora before any scope-dependent feature consumes it.
+
+Breaking refinement remains allowed through step 8. The provider and
+completion types become stable only after the working vertical slice, reusable
+provider contract suite, two materially different provider shapes, marimo
+packed/browser integration, hostile decoding, cancellation, epoch and
+pagination tests, declaration/API snapshots, and the rich-detail/external
+completion-source migration decision all pass.
 
 Every production step is a medium change and requires two independent
 commit-bound adversarial reviews.
@@ -384,7 +575,7 @@ commit-bound adversarial reviews.
 - Catalog changes do not invalidate statement parsing.
 - Parser crashes and safety timeouts do not suppress local/catalog relation
   completion.
-- The lexical classifier is intentionally narrow and reports uncertainty
+- The query-site recognizer is intentionally narrow and reports uncertainty
   instead of growing into an implicit general SQL parser.
 - CTE visibility has an explicit bounded model rather than a flat query-wide
   list.

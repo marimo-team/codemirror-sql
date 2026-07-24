@@ -104,10 +104,18 @@ interface SqlDocumentContext {
   readonly dialect: SqlDialectId;
   readonly catalog?: {
     readonly scope: string;
-    readonly searchPath?: readonly string[];
+    readonly searchPath?: readonly (readonly {
+      readonly value: string;
+      readonly quoted: boolean;
+    }[])[];
   };
 }
 ```
+
+Search paths are ordered component paths rather than dot-joined strings.
+Consequently a quoted identifier containing a dot is never confused with two
+path components. ADR 0005 keeps the exact public spelling provisional until
+the catalog vertical slice and consumer fixtures pass.
 
 The service resolves dialect IDs through its immutable registry and rejects
 unknown or duplicate IDs. Duplicate registration is rejected even when the
@@ -130,7 +138,7 @@ complete operation without mutation. The accepted snapshot is recursively
 frozen and is the only context observed by providers. Caller mutation therefore
 cannot change an in-flight request. Providers never read ambient editor state.
 
-The session updates text and context atomically:
+The session updates text, context, and embedded regions atomically:
 
 ```ts
 session.update({
@@ -141,17 +149,20 @@ session.update({
     changes: [{ from: 14, to: 19, insert: "customers" }],
   },
   context: nextContext,
+  embeddedRegions: nextEmbeddedRegions,
 });
 ```
 
 A full-text replacement is available for simple consumers. Incremental changes
 are ordered, non-overlapping, absolute UTF-16 ranges in the current document.
-The service validates the base revision and every range before mutating state.
+The service validates the base revision, every edit, and the complete region
+set for the resulting text before mutating state. Text, context, and regions
+commit atomically.
 
-A context-only update is valid and also requires `baseRevision`. Accepted
-updates always create a new revision, including an `A → B → A` text cycle, so a
-previous result never becomes current again. A stale base rejects the complete
-update without partial mutation.
+A context-only update is valid, preserves the current region set, and also
+requires `baseRevision`. Accepted updates always create a new revision,
+including an `A → B → A` text cycle, so a previous result never becomes current
+again. A stale base rejects the complete update without partial mutation.
 
 ## Revision and applicability
 
@@ -311,10 +322,22 @@ interface SqlDocumentSession<Context extends SqlDocumentContext> {
     request?: SqlFormatRequest,
   ) => Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
 
+  readonly onDidChange: (
+    listener: (event: {
+      readonly revision: SqlRevision;
+      readonly reason: "catalog" | "provider-configuration";
+    }) => void,
+  ) => { readonly dispose: () => void };
+
   readonly isCurrent: (revision: SqlRevision) => boolean;
   readonly dispose: () => void;
 }
 ```
+
+`onDidChange` reports service-originated revision advances that do not come
+from the host's own document transaction. State changes before notification;
+listener failures are isolated; and both subscription and session disposal are
+idempotent. ADR 0005 specifies the first catalog use.
 
 The walking skeleton exposes only implemented features. Adding a method is
 backward-compatible; returning placeholder success from an unimplemented method
@@ -421,9 +444,10 @@ coverage.
 
 The initial internal source primitive implements identity snapshots and this
 length-preserving masking only. It does not expose a transformer or source-map
-SPI. Sessions create a new source snapshot for document updates and reuse the
-existing snapshot for context-only updates. Non-identity generated/reordered
-source remains deferred until a concrete consumer validates the segment model.
+SPI. Sessions create a new source snapshot from the complete post-update region
+set for document updates and reuse the existing snapshot for context-only
+updates. Non-identity generated/reordered source remains deferred until a
+concrete consumer validates the segment model.
 
 Current session edits use identity sources, so validated original-document
 changes are also trusted analysis-coordinate changes. A future transformed
