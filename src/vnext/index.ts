@@ -16,6 +16,8 @@ export type {
   SqlDocumentReplacement,
   SqlDocumentSession,
   SqlDocumentUpdate,
+  SqlIdentifierComponent,
+  SqlIdentifierPath,
   SqlLanguageService,
   SqlLanguageServiceOptions,
   SqlPlainData,

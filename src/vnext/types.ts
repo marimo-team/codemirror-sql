@@ -13,9 +13,16 @@ export function createSqlRevisionToken(): SqlRevision {
   return revision;
 }
 
+export interface SqlIdentifierComponent {
+  readonly value: string;
+  readonly quoted: boolean;
+}
+
+export type SqlIdentifierPath = readonly SqlIdentifierComponent[];
+
 export interface SqlCatalogContext {
   readonly scope: string;
-  readonly searchPath?: readonly string[];
+  readonly searchPath?: readonly SqlIdentifierPath[];
 }
 
 export interface SqlDocumentContext {
