@@ -2,6 +2,12 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  optimizeDeps: {
+    include: [
+      "node-sql-parser/build/bigquery.js",
+      "node-sql-parser/build/postgresql.js",
+    ],
+  },
   test: {
     allowOnly: false,
     browser: {

@@ -116,7 +116,9 @@ node-sql-parser/build/bigquery.js
 
 The worker verifies that `self === globalThis` and that no DOM window exists.
 It snapshots and restores the exact `NodeSQLParser` and `global` descriptors
-around dialect loading. Cleanup failure poisons that worker generation.
+around the complete backend operation: dialect loading, module decoding,
+parser construction, parsing, and output normalization. Cleanup failure
+poisons that worker generation.
 
 ### Private wire protocol
 
@@ -139,7 +141,7 @@ The initial response contains only one closed outcome:
 - Parsed normalized statement kind
 - Syntax rejection
 - Bounded unsupported reason
-- Bounded failure code plus retryability
+- Bounded failure code; retryability is derived from that code
 
 Messages do not contain:
 
@@ -149,6 +151,11 @@ Messages do not contain:
 - Source text echoed in a response
 - Absolute document ranges
 - Raw ASTs or generic payload bags
+
+The wire does not transport an independently supplied retryability boolean.
+The host treats only `module-load` as retryable; `backend` and
+`malformed-output` are terminal. A module-load failure closes the current
+worker generation so a retry cannot reuse a rejected dynamic-import realm.
 
 The host requires the current protocol version and correlation ID, validates
 all keys and closed values, and copies accepted data into new frozen objects.
