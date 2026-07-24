@@ -7,9 +7,9 @@ fixture dependencies are installed before the exact tarball is extracted, and
 the harness verifies that its exact `5.4.0` version matches the packed
 package's dependency.
 
-The minified Vite 8 single-worker baseline is 67,214 gzip bytes for the
-PostgreSQL transitive graph, 50,205 gzip bytes for the BigQuery transitive
-graph, and 117,941 gzip/549,003 raw bytes for the complete worker build output.
+The minified Vite 8 single-worker baseline is 67,396 gzip bytes for the
+PostgreSQL transitive graph, 50,389 gzip bytes for the BigQuery transitive
+graph, and 118,160 gzip/549,885 raw bytes for the complete worker build output.
 The PostgreSQL and BigQuery figures each include their transitive shared
 chunks; the report also identifies those shared chunks explicitly. The
 fail-closed ceilings include small explicit headroom over that measured

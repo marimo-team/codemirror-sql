@@ -238,10 +238,10 @@ The latest local Node 24 / Chromium 149 / arm64 macOS sample recorded:
 
 | Output | Raw | gzip |
 | --- | ---: | ---: |
-| Core-only fixture | 24,462 B | 7,475 B |
-| PostgreSQL transitive worker graph | 320,495 B | 67,214 B |
-| BigQuery transitive worker graph | 224,648 B | 50,205 B |
-| Complete worker fixture | 549,003 B | 117,941 B |
+| Core-only fixture | 24,680 B | 7,572 B |
+| PostgreSQL transitive worker graph | 321,156 B | 67,396 B |
+| BigQuery transitive worker graph | 225,309 B | 50,389 B |
+| Complete worker fixture | 549,885 B | 118,160 B |
 
 The core module trace contained no `node-sql-parser` module. No dialect
 resource loaded before explicit construction. A single static module worker
@@ -254,10 +254,10 @@ One sequential cold/warm run on the shared worker measured:
 
 | Dialect | Grammar load and initialization | First parse | First round trip | Warm parse | Warm round trip |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| PostgreSQL | 8.7 ms | 2.6 ms | 11.5 ms | 0.2 ms | 0.3 ms |
-| BigQuery | 4.3 ms | 2.3 ms | 6.6 ms | 0.4 ms | 0.5 ms |
+| PostgreSQL | 8.2 ms | 2.3 ms | 10.7 ms | 0.2 ms | 0.2 ms |
+| BigQuery | 4.3 ms | 2.2 ms | 6.7 ms | 0.3 ms | 0.3 ms |
 
-The worker ready handshake took 7.0 ms in that run.
+The worker ready handshake took 7.4 ms in that run.
 
 These numbers establish packaging feasibility and initial size guards. They
 are not percentile claims. Stable latency decisions require repeated,

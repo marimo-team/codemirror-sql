@@ -151,14 +151,57 @@ function resourceEntries() {
   }));
 }
 
-async function syntheticCleanupPoisonEvidence() {
+async function syntheticCleanupEvidence() {
+  const successfulTarget = {};
+  const originalNodeSqlParser = Object.freeze({
+    owner: "original-node-sql-parser",
+  });
+  const originalGlobal = () => "original-global";
+  Object.defineProperties(successfulTarget, {
+    NodeSQLParser: {
+      configurable: true,
+      enumerable: true,
+      value: originalNodeSqlParser,
+      writable: false,
+    },
+    global: {
+      configurable: true,
+      enumerable: false,
+      get: originalGlobal,
+    },
+  });
+  const successfulLoad = createGuardedModuleLoader(successfulTarget);
+  let successfulEvaluations = 0;
+  const successful = await successfulLoad(async () => {
+    successfulEvaluations += 1;
+    Object.defineProperties(successfulTarget, {
+      NodeSQLParser: {
+        configurable: true,
+        enumerable: false,
+        value: "temporary-node-sql-parser",
+        writable: true,
+      },
+      global: {
+        configurable: true,
+        enumerable: true,
+        value: "temporary-global",
+        writable: true,
+      },
+    });
+    return "first-load";
+  });
+  const reusable = await successfulLoad(async () => {
+    successfulEvaluations += 1;
+    return "second-load";
+  });
+
   const target = {};
   const load = createGuardedModuleLoader(target);
-  let evaluations = 0;
+  let poisonedEvaluations = 0;
   let cleanupFailed = false;
   try {
     await load(async () => {
-      evaluations += 1;
+      poisonedEvaluations += 1;
       Object.defineProperty(target, "NodeSQLParser", {
         configurable: false,
         value: "synthetic-pollution",
@@ -171,7 +214,7 @@ async function syntheticCleanupPoisonEvidence() {
   let poisonedRetryFailed = false;
   try {
     await load(async () => {
-      evaluations += 1;
+      poisonedEvaluations += 1;
       return {};
     });
   } catch {
@@ -179,8 +222,13 @@ async function syntheticCleanupPoisonEvidence() {
   }
   return {
     cleanupFailed,
-    evaluations,
+    poisonedEvaluations,
     poisonedRetryFailed,
+    successfulDescriptorEquality: successful.descriptorEquality,
+    successfulEvaluations,
+    successfulModuleValues:
+      successful.moduleValue === "first-load" &&
+      reusable.moduleValue === "second-load",
   };
 }
 
@@ -240,11 +288,11 @@ export function installParserWorker(moduleLoaders) {
       });
       return;
     }
-    if (request.kind === "test-cleanup-poison") {
+    if (request.kind === "test-cleanup") {
       globalThis.postMessage({
-        evidence: await syntheticCleanupPoisonEvidence(),
+        evidence: await syntheticCleanupEvidence(),
         id: request.id,
-        kind: "cleanup-poison-result",
+        kind: "cleanup-result",
         resources: resourceEntries(),
       });
       return;

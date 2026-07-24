@@ -5,17 +5,23 @@ function moduleTrace() {
   return {
     name: "worker-placement-core-module-trace",
     generateBundle(_options, bundle) {
-      const moduleIds = new Set();
-      for (const output of Object.values(bundle)) {
-        if (output.type === "chunk") {
-          for (const moduleId of Object.keys(output.modules)) {
-            moduleIds.add(moduleId.replaceAll("\\", "/"));
-          }
-        }
-      }
+      const chunks = Object.values(bundle)
+        .filter((output) => output.type === "chunk")
+        .map((chunk) => ({
+          dynamicImports: [...chunk.dynamicImports].sort(),
+          fileName: chunk.fileName,
+          imports: [...chunk.imports].sort(),
+          isEntry: chunk.isEntry,
+          moduleIds: Object.keys(chunk.modules)
+            .map((moduleId) => moduleId.replaceAll("\\", "/"))
+            .sort(),
+        }))
+        .sort((left, right) =>
+          left.fileName.localeCompare(right.fileName),
+        );
       this.emitFile({
-        fileName: "module-ids.json",
-        source: `${JSON.stringify([...moduleIds].sort(), null, 2)}\n`,
+        fileName: "core-module-trace.json",
+        source: `${JSON.stringify({ chunks }, null, 2)}\n`,
         type: "asset",
       });
     },

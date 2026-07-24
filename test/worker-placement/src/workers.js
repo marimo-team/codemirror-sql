@@ -217,19 +217,24 @@ async function run() {
       );
     }
 
-    const cleanupPoison = await request(worker, {
+    const cleanup = await request(worker, {
       id: 5,
-      kind: "test-cleanup-poison",
+      kind: "test-cleanup",
     });
     if (
-      cleanupPoison.response.kind !==
-        "cleanup-poison-result" ||
-      cleanupPoison.response.evidence.cleanupFailed !== true ||
-      cleanupPoison.response.evidence.poisonedRetryFailed !== true ||
-      cleanupPoison.response.evidence.evaluations !== 1
+      cleanup.response.kind !== "cleanup-result" ||
+      cleanup.response.evidence.cleanupFailed !== true ||
+      cleanup.response.evidence.poisonedRetryFailed !== true ||
+      cleanup.response.evidence.poisonedEvaluations !== 1 ||
+      cleanup.response.evidence.successfulEvaluations !== 2 ||
+      cleanup.response.evidence.successfulModuleValues !== true ||
+      cleanup.response.evidence.successfulDescriptorEquality
+        .NodeSQLParser !== true ||
+      cleanup.response.evidence.successfulDescriptorEquality.global !==
+        true
     ) {
       throw new Error(
-        "Synthetic cleanup failure did not poison its loader",
+        "Synthetic cleanup did not prove restoration and poisoning",
       );
     }
     if (globalThis.NodeSQLParser !== sentinel) {
@@ -237,7 +242,7 @@ async function run() {
     }
     const report = Object.freeze({
       bigquery,
-      cleanupPoison: cleanupPoison.response.evidence,
+      cleanup: cleanup.response.evidence,
       postgresql,
       resources: {
         mainAfterReady: mainResourcesAfterReady,

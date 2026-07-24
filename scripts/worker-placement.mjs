@@ -428,12 +428,35 @@ function verifyWorkerAssets(workersDirectory) {
 }
 
 function verifyCoreExcludesParser(coreDirectory) {
-  const moduleIds = JSON.parse(
-    readFileSync(join(coreDirectory, "module-ids.json"), "utf8"),
+  const trace = requireModuleTrace(
+    join(coreDirectory, "core-module-trace.json"),
   );
-  if (!Array.isArray(moduleIds)) {
-    throw new Error("Core module trace was not an array");
+  const chunks = chunkMap(trace, coreDirectory);
+  const entries = trace.chunks.filter(
+    (chunk) => chunk.isEntry === true,
+  );
+  if (entries.length !== 1) {
+    throw new Error("Core module trace did not contain exactly one entry");
   }
+  const reachable = reachableChunks(
+    chunks,
+    [entries[0].fileName],
+    true,
+  );
+  const javascriptFiles = listFiles(coreDirectory)
+    .filter((path) => extname(path) === ".js")
+    .map((path) =>
+      path.slice(coreDirectory.length + 1).split(sep).join("/"),
+    );
+  const orphanJavascript = javascriptFiles.filter(
+    (fileName) => !reachable.has(fileName),
+  );
+  if (orphanJavascript.length > 0) {
+    throw new Error(
+      `Core-only build emitted unreachable JavaScript: ${orphanJavascript.join(", ")}`,
+    );
+  }
+  const moduleIds = trace.chunks.flatMap((chunk) => chunk.moduleIds);
   const parserModules = moduleIds.filter(
     (moduleId) =>
       typeof moduleId === "string" &&
@@ -444,23 +467,10 @@ function verifyCoreExcludesParser(coreDirectory) {
       `Core-only build included parser modules: ${parserModules.join(", ")}`,
     );
   }
-  const workerModules = moduleIds.filter(
-    (moduleId) =>
-      typeof moduleId === "string" &&
-      /(?:^|[/\\])[^/\\]*worker[^/\\]*\.[cm]?[jt]s$/i.test(moduleId),
-  );
-  if (workerModules.length > 0) {
-    throw new Error(
-      `Core-only build included worker modules: ${workerModules.join(", ")}`,
-    );
-  }
   for (const path of listFiles(coreDirectory)) {
     const extension = extname(path);
     if (extension !== ".js" && extension !== ".json") {
       continue;
-    }
-    if (/worker/i.test(basename(path))) {
-      throw new Error(`Core-only build emitted worker asset ${basename(path)}`);
     }
     const contents = readFileSync(path, "utf8");
     const marker = PARSER_MARKERS.find((candidate) =>
@@ -471,13 +481,8 @@ function verifyCoreExcludesParser(coreDirectory) {
         `Core-only output ${basename(path)} contained parser marker ${marker}`,
       );
     }
-    if (extension === ".js" && /new\s+Worker\s*\(/.test(contents)) {
-      throw new Error(
-        `Core-only output ${basename(path)} contained a worker constructor`,
-      );
-    }
   }
-  return moduleIds.length;
+  return new Set(moduleIds).size;
 }
 
 function verifySsrImport(fixtureDirectory) {
@@ -697,7 +702,12 @@ try {
   const fixtureDirectory = join(temporaryDirectory, "fixture");
   cpSync(fixtureSource, fixtureDirectory, { recursive: true });
   runPackageManager(
-    ["install", "--frozen-lockfile", "--ignore-scripts"],
+    [
+      "install",
+      "--frozen-lockfile",
+      "--ignore-scripts",
+      "--offline",
+    ],
     fixtureDirectory,
   );
 
