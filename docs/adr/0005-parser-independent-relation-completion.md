@@ -518,7 +518,7 @@ The initial checked limits are:
 | Lexical tokens | 16,384 |
 | Parenthesis/query depth | 128 |
 | CTE declarations | 256 |
-| Identifier path segments | 4 |
+| Identifier path segments | 32 global ceiling; dialect runtime sets the checked limit |
 | Identifier segment | 256 UTF-16 units |
 | Catalog scope | 512 UTF-16 units |
 | Search paths | 32 |
