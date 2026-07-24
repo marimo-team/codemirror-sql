@@ -179,6 +179,12 @@ request locations, retain backend data privately, and normalize every boundary
 before constructing these results. Cache/session wiring follows only after the
 adapter passes the contract suite.
 
+[ADR 0003](./0003-node-sql-parser-adapter.md) applies this contract
+conservatively: PostgreSQL, BigQuery, and DuckDB acceptance is compatibility
+evidence with explicit limitations; rejection is unsupported rather than
+invalid; and session wiring waits for an explicit
+synchronous-execution/worker decision.
+
 ## Non-goals
 
 This decision does not define:

@@ -18,7 +18,7 @@ importers:
         specifier: ^6
         version: 6.7.1
       node-sql-parser:
-        specifier: ^5.3.13
+        specifier: 5.4.0
         version: 5.4.0
     devDependencies:
       '@codemirror/lang-sql':
