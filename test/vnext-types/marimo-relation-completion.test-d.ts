@@ -40,9 +40,9 @@ const context: MarimoSqlContext = {
   dialect: "duckdb",
   engine: "local",
 };
-const regions = [
+const regions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
-] satisfies readonly SqlEmbeddedRegion[];
+];
 const openWithoutRegions: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
   context,
   text: "SELECT * FROM users",
@@ -187,7 +187,7 @@ const missingEngine: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
   text: "",
 };
 // @ts-expect-error embedded regions are readonly
-regions[0].from = 0;
+regions[0]!.from = 0;
 session.onDidChange((event) => {
   // @ts-expect-error service-originated event data is readonly
   event.reason = "catalog";
