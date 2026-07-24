@@ -78,6 +78,10 @@ does not itself infer lexical behavior.
   the pre-update document.
 - Text, context, and embedded regions are validated completely before the
   session snapshot changes.
+- Public envelopes, edits, changes, and regions are structural inputs. The
+  service copies only their declared own data fields; additional host metadata
+  remains opaque and is never invoked. Removed or contradictory discriminants
+  are explicitly forbidden rather than treating every object as exact.
 - Context is structured-cloned and recursively frozen. Accepted values are
   finite primitives, arrays, and string-keyed plain objects. Cycles and shared
   references are retained. Accessors, symbols, functions, class instances,

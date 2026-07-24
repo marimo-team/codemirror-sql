@@ -42,30 +42,6 @@ const MAX_CONTEXT_STRING_LENGTH = 1_000_000;
 const MAX_CONTEXT_ARRAY_LENGTH = 50_000;
 const MAX_CHANGES_PER_UPDATE = 10_000;
 const MAX_DIALECTS = 1_000;
-const DOCUMENT_CHANGE_KEYS: ReadonlySet<string> = new Set([
-  "from",
-  "insert",
-  "to",
-]);
-const DOCUMENT_CHANGES_KEYS: ReadonlySet<string> = new Set([
-  "changes",
-  "kind",
-]);
-const DOCUMENT_REPLACEMENT_KEYS: ReadonlySet<string> = new Set([
-  "kind",
-  "text",
-]);
-const DOCUMENT_UPDATE_KEYS: ReadonlySet<string> = new Set([
-  "baseRevision",
-  "context",
-  "document",
-  "embeddedRegions",
-]);
-const OPEN_DOCUMENT_KEYS: ReadonlySet<string> = new Set([
-  "context",
-  "embeddedRegions",
-  "text",
-]);
 
 interface SqlDialectRuntime {
   readonly dialect: SqlDialect;
@@ -424,30 +400,17 @@ function readRequiredDataProperty(
   return property.value;
 }
 
-function validateOwnDataKeys(
+function rejectOwnProperty(
   value: object,
-  allowedKeys: ReadonlySet<string>,
+  key: PropertyKey,
   code: SqlSessionError["code"],
   subject: string,
 ): void {
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || !allowedKeys.has(key)) {
-      throw new SqlSessionError(
-        code,
-        `${subject} contains an unexpected property`,
-      );
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      throw new SqlSessionError(
-        code,
-        `${subject} property ${key} must be an enumerable data property`,
-      );
-    }
+  if (readOwnDataProperty(value, key, code, subject).found) {
+    throw new SqlSessionError(
+      code,
+      `${subject} cannot contain ${String(key)}`,
+    );
   }
 }
 
@@ -472,33 +435,6 @@ function readArrayLength(
   return length;
 }
 
-function validateDenseArrayEntries(
-  value: readonly unknown[],
-  length: number,
-  code: SqlSessionError["code"],
-  subject: string,
-): void {
-  for (const key of Reflect.ownKeys(value)) {
-    if (key === "length") {
-      continue;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (
-      typeof key !== "string" ||
-      !/^(0|[1-9]\d*)$/.test(key) ||
-      Number(key) >= length ||
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      throw new SqlSessionError(
-        code,
-        `${subject} must be a dense array of enumerable data entries`,
-      );
-    }
-  }
-}
-
 function normalizeChanges(text: string, changes: readonly unknown[]): SqlTextChange[] {
   const changeCount = readArrayLength(
     changes,
@@ -511,12 +447,6 @@ function normalizeChanges(text: string, changes: readonly unknown[]): SqlTextCha
       `SQL document updates cannot contain more than ${MAX_CHANGES_PER_UPDATE} changes`,
     );
   }
-  validateDenseArrayEntries(
-    changes,
-    changeCount,
-    "invalid-change",
-    "SQL document changes",
-  );
   const normalized: SqlTextChange[] = [];
   let previousEnd = 0;
   let nextLength = text.length;
@@ -534,12 +464,6 @@ function normalizeChanges(text: string, changes: readonly unknown[]): SqlTextCha
         `SQL change ${index} must be an object`,
       );
     }
-    validateOwnDataKeys(
-      change,
-      DOCUMENT_CHANGE_KEYS,
-      "invalid-change",
-      `SQL change ${index}`,
-    );
     let range: SqlTextRange;
     try {
       range = normalizeSqlTextRange(
@@ -764,9 +688,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     if (baseRevision !== this.#snapshot.revision) {
       throw new SqlSessionError("stale-revision", "SQL document revision is stale");
     }
-    validateOwnDataKeys(
+    rejectOwnProperty(
       update,
-      DOCUMENT_UPDATE_KEYS,
+      "kind",
       "invalid-update",
       "SQL document update",
     );
@@ -835,9 +759,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         "SQL document mutation",
       );
       if (documentKind === "replace") {
-        validateOwnDataKeys(
+        rejectOwnProperty(
           document.value,
-          DOCUMENT_REPLACEMENT_KEYS,
+          "changes",
           "invalid-update",
           "SQL document replacement",
         );
@@ -857,9 +781,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         nextText = text;
         documentMutation = "replace";
       } else if (documentKind === "changes") {
-        validateOwnDataKeys(
+        rejectOwnProperty(
           document.value,
-          DOCUMENT_CHANGES_KEYS,
+          "text",
           "invalid-update",
           "SQL document changes",
         );
@@ -1092,12 +1016,6 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
           "Open SQL document input must be an object",
         );
       }
-      validateOwnDataKeys(
-        input,
-        OPEN_DOCUMENT_KEYS,
-        "invalid-document",
-        "Open SQL document input",
-      );
       const text = readRequiredDataProperty(
         input,
         "text",

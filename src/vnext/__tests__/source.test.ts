@@ -210,7 +210,7 @@ describe("SQL source snapshots", () => {
     });
   });
 
-  it("rejects sparse, oversized, and extended region arrays", () => {
+  it("rejects sparse and oversized region arrays", () => {
     const sparse: unknown[] = [];
     sparse.length = 1;
     expectSourceError("invalid-source", () => {
@@ -222,36 +222,56 @@ describe("SQL source snapshots", () => {
     expectSourceError("invalid-region", () => {
       createMaskedSqlSource("a", oversized);
     });
+  });
 
+  it("copies declared region fields and ignores structural extras", () => {
     const extended = [{ from: 0, language: "python", to: 1 }];
-    Object.defineProperty(extended, "custom", { value: true });
-    expectSourceError("invalid-region", () => {
-      createMaskedSqlSource("a", extended);
+    Object.defineProperty(extended, "custom", {
+      get() {
+        throw new Error("must stay opaque");
+      },
     });
+    expect(createMaskedSqlSource("a", extended).analysisText).toBe(" ");
 
     const nonEnumerableRegion = { from: 0, language: "python", to: 1 };
     Object.defineProperty(nonEnumerableRegion, "language", {
       enumerable: false,
       value: "python",
     });
-    expectSourceError("invalid-region", () => {
-      createMaskedSqlSource("a", [nonEnumerableRegion]);
-    });
+    expect(createMaskedSqlSource("a", [nonEnumerableRegion]).analysisText).toBe(
+      " ",
+    );
 
+    let invoked = false;
     const symbolRegion = {
       from: 0,
+      get hostMetadata() {
+        invoked = true;
+        throw new Error("must stay opaque");
+      },
       language: "python",
       to: 1,
       [Symbol("hidden")]: true,
     };
-    expectSourceError("invalid-region", () => {
-      createMaskedSqlSource("a", [symbolRegion]);
-    });
+    expect(createMaskedSqlSource("a", [symbolRegion]).analysisText).toBe(" ");
+    expect(invoked).toBe(false);
+
+    const proxiedRegion = new Proxy(
+      { from: 0, language: "python", to: 1 },
+      {
+        ownKeys() {
+          invoked = true;
+          throw new Error("must stay opaque");
+        },
+      },
+    );
+    expect(createMaskedSqlSource("a", [proxiedRegion]).analysisText).toBe(" ");
+    expect(invoked).toBe(false);
   });
 
   it("does not invoke region accessors or array get traps", () => {
     let accessorInvoked = false;
-    expectSourceError("invalid-region", () => {
+    expectSourceError("invalid-source", () => {
       createMaskedSqlSource("a", [
         {
           get from() {
@@ -265,7 +285,7 @@ describe("SQL source snapshots", () => {
     });
     expect(accessorInvoked).toBe(false);
 
-    expectSourceError("invalid-region", () => {
+    expectSourceError("invalid-source", () => {
       createMaskedSqlSource("a", [
         {
           from: 0,
@@ -297,7 +317,7 @@ describe("SQL source snapshots", () => {
         new Proxy(
           [],
           {
-            ownKeys() {
+            getOwnPropertyDescriptor() {
               throw new Error("hostile");
             },
           },
@@ -321,7 +341,7 @@ describe("SQL source snapshots", () => {
         new Proxy(
           [],
           {
-            ownKeys() {
+            getOwnPropertyDescriptor() {
               throw hostileError;
             },
           },

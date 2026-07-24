@@ -85,6 +85,7 @@ export interface SqlTextChange extends SqlTextRange {
 }
 
 export interface SqlDocumentReplacement {
+  readonly changes?: never;
   readonly kind: "replace";
   readonly text: string;
 }
@@ -92,6 +93,7 @@ export interface SqlDocumentReplacement {
 export interface SqlDocumentChanges {
   readonly kind: "changes";
   readonly changes: readonly SqlTextChange[];
+  readonly text?: never;
 }
 
 export type SqlDocumentEdit = SqlDocumentReplacement | SqlDocumentChanges;
@@ -102,6 +104,7 @@ export interface SqlEmbeddedRegion extends SqlTextRange {
 
 interface SqlDocumentUpdateBase {
   readonly baseRevision: SqlRevision;
+  readonly kind?: never;
 }
 
 type SqlDocumentMutationUpdate<Context extends SqlDocumentContext> =

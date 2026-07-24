@@ -19,6 +19,10 @@ interface DateContext extends HostContext {
   readonly lastUsed: Date;
 }
 
+interface HostEmbeddedRegion extends SqlEmbeddedRegion {
+  readonly hostNodeId: string;
+}
+
 const dialect = duckdbDialect();
 const typedDialect: SqlDialect = dialect;
 const service = createSqlLanguageService<HostContext>({ dialects: [dialect] });
@@ -31,6 +35,16 @@ const identitySession = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
   text: "",
 });
+const hostRegions: readonly HostEmbeddedRegion[] = [
+  { from: 0, hostNodeId: "cell-1", language: "python", to: 1 },
+];
+const hostOpen = {
+  context: { dialect: "duckdb", engine: "local" },
+  embeddedRegions: hostRegions,
+  hostMetadata: { cellId: "cell-1" },
+  text: "x",
+};
+service.openDocument(hostOpen);
 const revision: SqlRevision = session.revision;
 
 // @ts-expect-error host service cannot be widened and fed a weaker context
@@ -57,6 +71,12 @@ session.update({
   baseRevision: session.revision,
   embeddedRegions: [],
 });
+const hostUpdate = {
+  baseRevision: session.revision,
+  embeddedRegions: hostRegions,
+  hostMetadata: { cellId: "cell-1" },
+};
+session.update(hostUpdate);
 // @ts-expect-error an explicitly undefined context is not an omitted context
 session.update({
   embeddedRegions: [],
@@ -74,6 +94,13 @@ const objectRevision: SqlRevision = {};
 const numberRevision: SqlRevision = 1;
 // @ts-expect-error updates require a non-empty state change
 session.update({ baseRevision: revision });
+const legacyUpdate = {
+  baseRevision: revision,
+  context: { dialect: "duckdb", engine: "local" },
+  kind: "context" as const,
+};
+// @ts-expect-error the removed update discriminant stays forbidden through variables
+session.update(legacyUpdate);
 // @ts-expect-error document mutations require complete post-edit regions
 session.update({
   baseRevision: session.revision,

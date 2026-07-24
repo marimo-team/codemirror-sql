@@ -35,6 +35,30 @@ The first internal transform masks explicit embedded regions:
 - `analysisText.length` always equals `originalText.length`, so range mapping is
   identity-preserving while still returning a fresh validated range.
 
+`SqlEmbeddedRegion` is the public document-coordinate input:
+
+```ts
+const session = service.openDocument({
+  text: "SELECT * FROM {df}",
+  context,
+  embeddedRegions: [{ from: 14, to: 18, language: "python" }],
+});
+
+session.update({
+  baseRevision: session.revision,
+  document: {
+    kind: "changes",
+    changes: [{ from: 15, to: 17, insert: "next_df" }],
+  },
+  embeddedRegions: [{ from: 14, to: 23, language: "python" }],
+});
+```
+
+The half-open interval covers the complete non-SQL fragment, including its
+template delimiters. For marimo, `[14, 18)` masks all of `{df}`; masking only
+`df` would leave `{}` to be analyzed as SQL. A document transaction always
+supplies the complete region set in coordinates of the resulting text.
+
 At most 10,000 regions and 16 Mi UTF-16 code units are accepted. Masking uses
 bounded 64 Ki-code-unit chunks, including for newline-dense input, rather than
 a per-code-unit or per-newline array.

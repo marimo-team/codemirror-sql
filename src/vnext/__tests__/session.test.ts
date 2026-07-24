@@ -546,6 +546,43 @@ describe("embedded-region session transactions", () => {
     expect(session.snapshotForTesting).toBe(snapshot);
   });
 
+  it("creates and removes template delimiters in atomic transactions", () => {
+    const { session } = openSession("SELECT * FROM df");
+
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [
+          { from: 14, insert: "{", to: 14 },
+          { from: 16, insert: "}", to: 16 },
+        ],
+        kind: "changes",
+      },
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+    });
+    expect(session.snapshotForTesting.source).toMatchObject({
+      analysisText: "SELECT * FROM     ",
+      originalText: "SELECT * FROM {df}",
+    });
+
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [
+          { from: 14, insert: "", to: 15 },
+          { from: 17, insert: "", to: 18 },
+        ],
+        kind: "changes",
+      },
+      embeddedRegions: [],
+    });
+    expect(session.snapshotForTesting.source).toMatchObject({
+      analysisText: "SELECT * FROM df",
+      embeddedRegions: [],
+      originalText: "SELECT * FROM df",
+    });
+  });
+
   it("rolls back document, context, source, revision, and cache together", () => {
     const { session } = openSession("SELECT 1; SELECT 2");
     const index = session.getStatementIndexForTesting();
@@ -654,6 +691,41 @@ describe("embedded-region session transactions", () => {
     );
   });
 
+  it("accepts structural supersets without inspecting host metadata", () => {
+    const service = createService();
+    let invoked = false;
+    const input = {
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [
+        { from: 0, hostNodeId: "cell-1", language: "python", to: 1 },
+      ],
+      get hostMetadata() {
+        invoked = true;
+        throw new Error("must stay opaque");
+      },
+      text: "x",
+    };
+    const session = service.openDocument(input);
+    expect(session.snapshotForTesting.source.analysisText).toBe(" ");
+
+    const update = {
+      baseRevision: session.revision,
+      embeddedRegions: [
+        { from: 0, hostNodeId: "cell-2", language: "jinja", to: 1 },
+      ],
+      get hostMetadata() {
+        invoked = true;
+        throw new Error("must stay opaque");
+      },
+      [Symbol("host")]: true,
+    };
+    session.update(update);
+    expect(session.snapshotForTesting.source.embeddedRegions).toEqual([
+      { from: 0, language: "jinja", to: 1 },
+    ]);
+    expect(invoked).toBe(false);
+  });
+
   it("rejects malformed open and update region contracts", () => {
     const service = createService();
     expectSessionError("invalid-document", () => {
@@ -661,22 +733,6 @@ describe("embedded-region session transactions", () => {
         context: { dialect: "duckdb", engine: "local" },
         embeddedRegions: undefined,
         text: "",
-      } as never);
-    });
-    expectSessionError("invalid-document", () => {
-      service.openDocument({
-        context: { dialect: "duckdb", engine: "local" },
-        embeddedRegions: [
-          { extra: true, from: 0, language: "python", to: 1 },
-        ],
-        text: "x",
-      } as never);
-    });
-    expectSessionError("invalid-document", () => {
-      service.openDocument({
-        context: { dialect: "duckdb", engine: "local" },
-        extra: true,
-        text: "x",
       } as never);
     });
 
@@ -692,45 +748,15 @@ describe("embedded-region session transactions", () => {
     expectSessionError("invalid-update", () => {
       session.update({
         baseRevision: session.revision,
-        embeddedRegions: [],
-        extra: true,
-      } as never);
-    });
-    expectSessionError("invalid-update", () => {
-      session.update({
-        baseRevision: session.revision,
         document: { kind: "replace", text: "SELECT 2" },
       } as never);
     });
-    const symbolUpdate = {
-      baseRevision: session.revision,
-      embeddedRegions: [],
-      [Symbol("hidden")]: true,
-    };
     expectSessionError("invalid-update", () => {
-      session.update(symbolUpdate as never);
-    });
-    const nonEnumerableUpdate = {
-      embeddedRegions: [],
-    };
-    Object.defineProperty(nonEnumerableUpdate, "baseRevision", {
-      enumerable: false,
-      value: session.revision,
-    });
-    expectSessionError("invalid-update", () => {
-      session.update(nonEnumerableUpdate as never);
-    });
-    const changes = [{ from: 0, insert: "SELECT 2", to: 8 }];
-    Object.defineProperty(changes, "extra", {
-      enumerable: true,
-      value: true,
-    });
-    expectSessionError("invalid-change", () => {
       session.update({
+        kind: "document",
         baseRevision: session.revision,
-        document: { changes, kind: "changes" },
         embeddedRegions: [],
-      });
+      } as never);
     });
     expect(session.snapshotForTesting).toBe(snapshot);
   });
@@ -742,8 +768,8 @@ describe("embedded-region session transactions", () => {
     const region = new Proxy(
       { from: 0, language: "python", to: 1 },
       {
-        ownKeys(target) {
-          if (!attempted) {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "from" && !attempted) {
             attempted = true;
             try {
               session.update({
@@ -756,7 +782,7 @@ describe("embedded-region session transactions", () => {
               }
             }
           }
-          return Reflect.ownKeys(target);
+          return Reflect.getOwnPropertyDescriptor(target, property);
         },
       },
     );
@@ -775,9 +801,12 @@ describe("embedded-region session transactions", () => {
     const region = new Proxy(
       { from: 0, language: "python", to: 1 },
       {
-        ownKeys() {
-          session.dispose();
-          throw new Error("hostile");
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "from") {
+            session.dispose();
+            throw new Error("hostile");
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
         },
       },
     );

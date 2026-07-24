@@ -6,11 +6,6 @@ export const MAX_SQL_EMBEDDED_REGIONS = 10_000;
 const MAX_EMBEDDED_LANGUAGE_LENGTH = 256;
 const MASK_CHUNK_LENGTH = 64 * 1024;
 const EMPTY_EMBEDDED_REGIONS: readonly SqlEmbeddedRegion[] = Object.freeze([]);
-const EMBEDDED_REGION_KEYS: ReadonlySet<string> = new Set([
-  "from",
-  "language",
-  "to",
-]);
 const sourceErrors = new WeakSet<object>();
 
 export type SqlSourceErrorCode =
@@ -172,56 +167,6 @@ function readArrayLength(value: readonly unknown[]): number {
   return length;
 }
 
-function validateRegionArrayKeys(
-  regions: readonly unknown[],
-  length: number,
-): void {
-  for (const key of Reflect.ownKeys(regions)) {
-    if (key === "length") {
-      continue;
-    }
-    if (
-      typeof key !== "string" ||
-      !/^(0|[1-9]\d*)$/.test(key) ||
-      Number(key) >= length
-    ) {
-      throw new SqlSourceError(
-        "invalid-region",
-        "SQL embedded regions cannot contain custom properties",
-      );
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(regions, key);
-    if (
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      throw new SqlSourceError(
-        "invalid-region",
-        "SQL embedded regions must contain enumerable data entries",
-      );
-    }
-  }
-}
-
-function validateRegionObjectKeys(candidate: object, index: number): void {
-  for (const key of Reflect.ownKeys(candidate)) {
-    const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
-    if (
-      typeof key !== "string" ||
-      !EMBEDDED_REGION_KEYS.has(key) ||
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      throw new SqlSourceError(
-        "invalid-region",
-        `SQL embedded region ${index} must contain only enumerable data properties`,
-      );
-    }
-  }
-}
-
 function normalizeEmbeddedRegions(
   regions: unknown,
   sourceLength: number,
@@ -240,8 +185,6 @@ function normalizeEmbeddedRegions(
         `SQL source cannot contain more than ${MAX_SQL_EMBEDDED_REGIONS} embedded regions`,
       );
     }
-    validateRegionArrayKeys(regions, length);
-
     const normalized: SqlEmbeddedRegion[] = [];
     let previousEnd = 0;
     for (let index = 0; index < length; index += 1) {
@@ -256,7 +199,6 @@ function normalizeEmbeddedRegions(
           `SQL embedded region ${index} must be an object`,
         );
       }
-      validateRegionObjectKeys(candidate, index);
       let range: SqlTextRange;
       try {
         range = normalizeSqlTextRange(
