@@ -190,7 +190,11 @@ function deepFreeze<T extends object>(root: T): T {
 
 function cloneContext<Context extends SqlDocumentContext>(context: Context): Context {
   try {
-    if (context === null || typeof context !== "object") {
+    if (
+      context === null ||
+      typeof context !== "object" ||
+      Array.isArray(context)
+    ) {
       throw new SqlSessionError(
         "invalid-context",
         "SQL document context must be a plain object",
@@ -215,10 +219,18 @@ function validateDialect(
   context: SqlDocumentContext,
   dialects: ReadonlySet<string>,
 ): void {
-  if (!dialects.has(context.dialect)) {
+  const dialect = readRequiredDataProperty(
+    context,
+    "dialect",
+    "invalid-dialect",
+    "SQL document context",
+  );
+  if (typeof dialect !== "string" || !dialects.has(dialect)) {
     throw new SqlSessionError(
       "invalid-dialect",
-      `Unknown SQL dialect: ${context.dialect}`,
+      typeof dialect === "string"
+        ? `Unknown SQL dialect: ${dialect}`
+        : "SQL document context dialect must be a string",
     );
   }
 }
@@ -429,7 +441,6 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 {
   readonly #dialects: ReadonlySet<string>;
   readonly #onDispose: () => void;
-  readonly #sessionId = Symbol("SqlDocumentSession");
   #disposed = false;
   #snapshot: SessionSnapshot<Context>;
   #updating = false;
@@ -449,13 +460,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       contextSequence,
       context,
       documentSequence,
-      revision: createSqlRevisionToken({
-        contextSequence,
-        documentSequence,
-        environmentEpoch: 0,
-        sequence,
-        sessionId: this.#sessionId,
-      }),
+      revision: createSqlRevisionToken(),
       sequence,
       text,
     });
@@ -469,7 +474,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return this.#snapshot;
   }
 
-  update(update: SqlDocumentUpdate<Context>): SqlRevision {
+  readonly update = (update: SqlDocumentUpdate<Context>): SqlRevision => {
     if (this.#disposed) {
       throw new SqlSessionError("session-disposed", "SQL document session is disposed");
     }
@@ -493,7 +498,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     } finally {
       this.#updating = false;
     }
-  }
+  };
 
   #applyUpdate(update: SqlDocumentUpdate<Context>): SqlRevision {
     if (update === null || typeof update !== "object") {
@@ -665,13 +670,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       );
     }
     const sequence = this.#snapshot.sequence + 1;
-    const revision = createSqlRevisionToken({
-      contextSequence: nextContextSequence,
-      documentSequence: nextDocumentSequence,
-      environmentEpoch: 0,
-      sequence,
-      sessionId: this.#sessionId,
-    });
+    const revision = createSqlRevisionToken();
     this.#snapshot = Object.freeze({
       contextSequence: nextContextSequence,
       context: nextContext,
@@ -683,17 +682,17 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return revision;
   }
 
-  isCurrent(revision: SqlRevision): boolean {
+  readonly isCurrent = (revision: SqlRevision): boolean => {
     return !this.#disposed && revision === this.#snapshot.revision;
-  }
+  };
 
-  dispose(): void {
+  readonly dispose = (): void => {
     if (this.#disposed) {
       return;
     }
     this.#disposed = true;
     this.#onDispose();
-  }
+  };
 }
 
 export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
@@ -764,7 +763,9 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
     }
   }
 
-  openDocument(input: OpenSqlDocument<Context>): DefaultSqlDocumentSession<Context> {
+  readonly openDocument = (
+    input: OpenSqlDocument<Context>,
+  ): DefaultSqlDocumentSession<Context> => {
     if (this.#disposed) {
       throw new SqlSessionError("service-disposed", "SQL language service is disposed");
     }
@@ -801,7 +802,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
           "Open SQL document input requires a context value",
         );
       }
-      const context = cloneContext(candidateContext);
+      const context = cloneContext<Context>(candidateContext);
       validateDialect(context, this.#dialects);
 
       let session: DefaultSqlDocumentSession<Context>;
@@ -837,9 +838,9 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         "Open SQL document input could not be inspected safely",
       );
     }
-  }
+  };
 
-  dispose(): void {
+  readonly dispose = (): void => {
     if (this.#disposed) {
       return;
     }
@@ -848,7 +849,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
       session.dispose();
     }
     this.#sessions.clear();
-  }
+  };
 }
 
 /** Validates and normalizes one immutable dialect registration. */

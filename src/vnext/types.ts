@@ -5,24 +5,11 @@ export interface SqlRevision {
   readonly [revisionBrand]: "SqlRevision";
 }
 
-export interface SqlRevisionMetadata {
-  readonly contextSequence: number;
-  readonly documentSequence: number;
-  readonly environmentEpoch: number;
-  readonly sequence: number;
-  readonly sessionId: symbol;
-}
-
-const revisionMetadata = new WeakMap<SqlRevision, SqlRevisionMetadata>();
-
-export function createSqlRevisionToken(
-  metadata: SqlRevisionMetadata,
-): SqlRevision {
+export function createSqlRevisionToken(): SqlRevision {
   const revision: SqlRevision = {
     [revisionBrand]: "SqlRevision",
   };
   Object.freeze(revision);
-  revisionMetadata.set(revision, Object.freeze(metadata));
   return revision;
 }
 

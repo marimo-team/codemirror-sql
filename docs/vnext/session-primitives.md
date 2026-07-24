@@ -63,6 +63,8 @@ Use `{ kind: "replace", text }` for full replacement and
   finite primitives, arrays, and string-keyed plain objects. Cycles and shared
   references are retained. Accessors, symbols, functions, class instances,
   typed collections, and non-finite numbers are rejected.
+- Public service and session operations remain bound when passed as callbacks
+  or destructured.
 - Session and service disposal are idempotent and terminal.
 - Synchronous public failures use `SqlSessionError` and a stable `code`; caught
   platform errors are not exposed as causes.

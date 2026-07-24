@@ -474,15 +474,19 @@ describe("document changes", () => {
     let invoked = false;
     const update = {
       baseRevision: session.revision,
-      get document() {
+      document: { kind: "replace", text: "changed" },
+      kind: "document",
+      get context() {
         invoked = true;
-        return { text: "changed" };
+        return { dialect: "postgres", engine: "warehouse" };
       },
     };
     expectSessionError("invalid-update", () => {
       session.update(update as never);
     });
     expect(invoked).toBe(false);
+    expect(session.revision).toBe(revision);
+    expect(session.snapshotForTesting.text).toBe("ABC");
   });
 
   it("rejects accessor document fields without invoking them", () => {
@@ -706,6 +710,31 @@ describe("document context", () => {
     expect(session.snapshotForTesting.context.metadata.value).toBe("ok");
   });
 
+  it("requires dialect to be an own context property", () => {
+    const originalDialect = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "dialect",
+    );
+    Object.defineProperty(Object.prototype, "dialect", {
+      configurable: true,
+      value: "duckdb",
+    });
+    try {
+      expectSessionError("invalid-dialect", () => {
+        createService().openDocument({
+          context: { engine: "local" } as TestContext,
+          text: "",
+        });
+      });
+    } finally {
+      if (originalDialect) {
+        Object.defineProperty(Object.prototype, "dialect", originalDialect);
+      } else {
+        Reflect.deleteProperty(Object.prototype, "dialect");
+      }
+    }
+  });
+
   it("updates text and context atomically", () => {
     const { session } = openSession("SELECT 1");
     session.update({
@@ -719,6 +748,17 @@ describe("document context", () => {
       context: { dialect: "postgres", engine: "warehouse" },
       text: "SELECT 2",
     });
+
+    const snapshot = session.snapshotForTesting;
+    expectSessionError("invalid-update", () => {
+      session.update({
+        kind: "document",
+        baseRevision: snapshot.revision,
+        context: { dialect: "duckdb", engine: "remote" },
+        document: { kind: "replace", text: 42 },
+      } as never);
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
   });
 
   it("supports context-only updates", () => {
@@ -888,6 +928,9 @@ describe("document context", () => {
     expectSessionError("invalid-context", () => {
       createService().openDocument({ context: "duckdb", text: "" } as never);
     });
+    expectSessionError("invalid-context", () => {
+      createService().openDocument({ context: [], text: "" } as never);
+    });
   });
 
   it("bounds aggregate context string data", () => {
@@ -966,6 +1009,34 @@ describe("document context", () => {
 });
 
 describe("lifecycle", () => {
+  it("supports detached public operations", () => {
+    const service = createService();
+    const { openDocument } = service;
+    const session = openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text: "",
+    });
+    const { dispose, isCurrent, update } = session;
+    const revision = update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: { kind: "replace", text: "SELECT 1" },
+    });
+
+    expect(isCurrent(revision)).toBe(true);
+    dispose();
+    expect(isCurrent(revision)).toBe(false);
+
+    const disposeService = service.dispose;
+    disposeService();
+    expectSessionError("service-disposed", () => {
+      openDocument({
+        context: { dialect: "duckdb", engine: "local" },
+        text: "",
+      });
+    });
+  });
+
   it("makes session disposal idempotent and terminal", () => {
     const { session } = openSession();
     const revision = session.revision;

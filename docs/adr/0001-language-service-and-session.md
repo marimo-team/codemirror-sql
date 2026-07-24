@@ -149,13 +149,15 @@ update without partial mutation.
 The public revision is an opaque immutable service-generated token. Callers
 cannot construct one or supply their own version number.
 
-Internally, the revision records:
+Internally, the session snapshot associated with the revision tracks:
 
-- Session identity
 - Monotonic sequence
 - Document revision
 - Context and template revision
-- Relevant environment/catalog epoch
+
+Relevant environment/catalog epochs will join that snapshot when those
+subsystems are implemented. The revision token itself remains only an opaque
+immutable identity; it does not duplicate snapshot metadata.
 
 The public model is deliberately global per session: any accepted text,
 context, template, relevant catalog, or provider-configuration invalidation
