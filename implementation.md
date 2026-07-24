@@ -758,13 +758,25 @@ depend on them.
 Exit when arbitrary edit properties pass, stale results cannot apply, and
 unchanged statements are reused.
 
-### 4. Parser artifacts and semantic completion slice
+### 4. Parser integration and completion slices
 
 Deliver the parser contract, measured `node-sql-parser` adapter, normalized
-artifacts, query blocks, typed visibility, CTE/relation/alias/column bindings,
-explicit partial states, and a production-quality completion vertical slice.
+artifacts, isolated execution, bounded coordination, and authenticated syntax
+evidence.
 
-Exit when goldens pass, parser ASTs do not leak, and differences are classified.
+Deliver relation completion independently through a bounded lexical cursor-site
+and CTE-visibility classifier plus an asynchronous coverage-aware catalog.
+This path must remain useful for incomplete SQL and must not construct or wait
+for the parser worker.
+
+Then design query blocks, typed visibility, CTE/relation/alias/column bindings,
+and explicit partial semantic states against materially different dialect
+corpora before a scope-dependent feature consumes them. Flat parser relation
+lists are not a semantic model.
+
+Exit when relation completion works through the framework-independent session,
+catalog and parser failures remain independent, semantic goldens pass, parser
+ASTs do not leak, and dialect differences are classified.
 
 ### 5. Feature vertical slices
 

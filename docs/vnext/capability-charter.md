@@ -78,9 +78,11 @@ The stable session API is intended to support:
 - Statement and structure indicators
 - Explicit formatting through a selected formatter provider
 
-The walking skeleton implements relation completion first. Subsequent features
-reuse the same session, revision, range, cancellation, provenance, and result
-contracts. No feature gets a separate parser or schema configuration.
+The walking skeleton implements parser-independent relation completion first,
+so incomplete `FROM` and `JOIN` input does not wait for parser acceptance.
+Subsequent features reuse the same session, revision, range, cancellation,
+provenance, and result contracts. No feature gets a separate parser or schema
+configuration.
 
 ## Correctness contract
 

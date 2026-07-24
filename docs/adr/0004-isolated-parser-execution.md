@@ -183,11 +183,16 @@ settles the active operation exactly once without exposing raw event data.
 Raw backend ASTs will not cross the worker boundary and the first protocol will
 not introduce remote AST handles or worker-local AST leases.
 
-Before production session wiring, the worker request will parse once and run
-adapter-owned semantic decoders in the same realm. It will return only the
-bounded, validated relation facts required by the first completion slice.
-This keeps backend shapes private, avoids reparsing once for syntax and again
-for relations, and makes cached main-realm evidence measurable.
+The first relation-completion slice is parser-independent under
+[ADR 0005](0005-parser-independent-relation-completion.md). Protocol v1 remains
+syntax-only. Incomplete relation completion must not wait for worker startup,
+parser acceptance, timeout, or recovery.
+
+A future scope-dependent semantic slice will parse once and run adapter-owned
+semantic decoders in the worker realm. It will move the closed protocol
+atomically to v2 and return a bounded scoped IR, with normalized syntax and
+semantic availability represented independently. It will not return flat
+relation names, raw ASTs, source text, or absolute document ranges.
 
 Worker-local AST caching is deferred until profiling demonstrates that
 reparsing is material enough to justify leases, byte accounting, generation
@@ -220,7 +225,7 @@ prove:
   recorded.
 - Raw and gzip worker sizes are recorded.
 
-The semantic and session-integration slices additionally require:
+Parser session-integration and future semantic slices additionally require:
 
 - Main-thread long-task and event-loop responsiveness evidence.
 - Malformed message, crash, timeout, late-event, and restart tests.
@@ -290,10 +295,11 @@ optional-integration bundle budget.
 1. Add this ADR and the packed-consumer browser placement harness.
 2. Extract a realm-neutral backend engine and add strict protocol codecs.
 3. Add the minimal browser worker and private bounded single-lane executor.
-4. Add in-worker normalized relation extraction.
-5. Add the pure statement coordinator, bounded cache, in-flight sharing, and
-   atomic session ownership.
-6. Ship relation completion as the first public consuming vertical slice.
+4. Add the pure statement coordinator, bounded cache, in-flight sharing, and
+   authenticated syntax integration.
+5. Ship parser-independent relation completion under ADR 0005.
+6. Design in-worker scoped semantics and protocol v2 before a scope-dependent
+   feature consumes parser evidence.
 
 Every production step is a medium change and receives two independent,
 commit-bound adversarial reviews.
