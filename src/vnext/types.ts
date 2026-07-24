@@ -85,6 +85,7 @@ export interface SqlTextChange extends SqlTextRange {
 }
 
 export interface SqlDocumentReplacement {
+  readonly changes?: never;
   readonly kind: "replace";
   readonly text: string;
 }
@@ -92,27 +93,43 @@ export interface SqlDocumentReplacement {
 export interface SqlDocumentChanges {
   readonly kind: "changes";
   readonly changes: readonly SqlTextChange[];
+  readonly text?: never;
 }
 
 export type SqlDocumentEdit = SqlDocumentReplacement | SqlDocumentChanges;
 
-/** An atomic document or context transaction against one base revision. */
+export interface SqlEmbeddedRegion extends SqlTextRange {
+  readonly language: string;
+}
+
+interface SqlDocumentUpdateBase {
+  readonly baseRevision: SqlRevision;
+  readonly kind?: never;
+}
+
+type SqlSourceUpdate<Context extends SqlDocumentContext> =
+  SqlDocumentUpdateBase & {
+    readonly document?: SqlDocumentEdit | undefined;
+    readonly embeddedRegions: readonly SqlEmbeddedRegion[];
+    readonly context?: SqlContextInput<Context> | undefined;
+  };
+
+type SqlContextUpdate<Context extends SqlDocumentContext> =
+  SqlDocumentUpdateBase & {
+    readonly document?: undefined;
+    readonly context: SqlContextInput<Context>;
+    readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
+  };
+
+/** An atomic transaction changing any non-empty subset of session inputs. */
 export type SqlDocumentUpdate<Context extends SqlDocumentContext> =
-  | {
-      readonly kind: "document";
-      readonly baseRevision: SqlRevision;
-      readonly document: SqlDocumentEdit;
-      readonly context?: SqlContextInput<Context>;
-    }
-  | {
-      readonly kind: "context";
-      readonly baseRevision: SqlRevision;
-      readonly context: SqlContextInput<Context>;
-    };
+  | SqlSourceUpdate<Context>
+  | SqlContextUpdate<Context>;
 
 export interface OpenSqlDocument<Context extends SqlDocumentContext> {
   readonly text: string;
   readonly context: SqlContextInput<Context>;
+  readonly embeddedRegions?: readonly SqlEmbeddedRegion[] | undefined;
 }
 
 /** Owns all mutable state for one open SQL document. */

@@ -199,12 +199,13 @@ const service = createSqlLanguageService({
 });
 const session = service.openDocument({
   context: { dialect: "duckdb" },
-  text: "SELECT 1",
+  embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+  text: "SELECT * FROM {df}",
 });
 session.update({
-  kind: "document",
+  embeddedRegions: [{ from: 14, language: "python", to: 23 }],
   baseRevision: session.revision,
-  document: { kind: "replace", text: "SELECT 2" },
+  document: { kind: "replace", text: "SELECT * FROM {next_df}" },
 });
 service.dispose();
 `,
@@ -227,6 +228,7 @@ import {
   createSqlLanguageService,
   duckdbDialect,
   type SqlDocumentContext,
+  type SqlEmbeddedRegion,
   type SqlTextRange,
 } from "@marimo-team/codemirror-sql/vnext";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
@@ -244,15 +246,19 @@ const parser = new NodeSqlParser();
 const service = createSqlLanguageService<HostContext>({
   dialects: [duckdbDialect()],
 });
+const embeddedRegions: readonly SqlEmbeddedRegion[] = [
+  { from: 14, language: "python", to: 18 },
+];
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
-  text: "SELECT 1",
+  embeddedRegions,
+  text: "SELECT * FROM {df}",
 });
 const range: SqlTextRange = { from: 0, to: 6 };
 session.update({
-  kind: "document",
+  embeddedRegions: [{ from: 14, language: "python", to: 18 }],
   baseRevision: session.revision,
-  document: { kind: "changes", changes: [{ from: 7, insert: "2", to: 8 }] },
+  document: { kind: "changes", changes: [] },
 });
 
 void extensions;
@@ -305,13 +311,14 @@ const service = vnext.createSqlLanguageService({
 });
 const session = service.openDocument({
   context: { dialect: "duckdb" },
-  text: "SELECT 1",
+  embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+  text: "SELECT * FROM {df}",
 });
 const originalRevision = session.revision;
 const updatedRevision = session.update({
-  kind: "document",
+  embeddedRegions: [{ from: 14, language: "python", to: 23 }],
   baseRevision: originalRevision,
-  document: { kind: "replace", text: "SELECT 2" },
+  document: { kind: "replace", text: "SELECT * FROM {next_df}" },
 });
 if (session.isCurrent(originalRevision) || !session.isCurrent(updatedRevision)) {
   throw new Error("The packaged vNext session violated revision identity");

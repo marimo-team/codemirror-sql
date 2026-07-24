@@ -177,7 +177,6 @@ describe("statement-index session cache", () => {
     const { session } = openSession("SELECT 1; SELECT 2");
     const index = session.getStatementIndexForTesting();
     session.update({
-      kind: "context",
       baseRevision: session.revision,
       context: { dialect: "duckdb", engine: "remote" },
     });
@@ -188,7 +187,6 @@ describe("statement-index session cache", () => {
     const { session } = openSession("SELECT $$a;b$$;");
     const index = session.getStatementIndexForTesting();
     session.update({
-      kind: "context",
       baseRevision: session.revision,
       context: { dialect: "postgresql", engine: "warehouse" },
     });
@@ -202,15 +200,15 @@ describe("statement-index session cache", () => {
     const index = session.getStatementIndexForTesting();
 
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "changes", changes: [] },
     });
-    expect(session.snapshotForTesting.source).not.toBe(initialSource);
+    expect(session.snapshotForTesting.source).toBe(initialSource);
     expect(session.cachedStatementIndexForTesting).toBe(index);
 
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "replace", text: "SELECT 1" },
     });
@@ -221,7 +219,7 @@ describe("statement-index session cache", () => {
     const { session } = openSession("SELECT 1; SELECT 2; SELECT 3");
     const previous = session.getStatementIndexForTesting();
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -247,7 +245,7 @@ describe("statement-index session cache", () => {
     const revision = session.revision;
     expectSessionError("stale-revision", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: {} as never,
         document: { kind: "replace", text: "SELECT 2" },
       });
@@ -256,7 +254,7 @@ describe("statement-index session cache", () => {
     expect(session.cachedStatementIndexForTesting).toBe(index);
 
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "replace", text: "SELECT 2" },
     });
@@ -285,12 +283,12 @@ describe("document revisions", () => {
     const { session } = openSession("A");
     const first = session.revision;
     const second = session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: first,
       document: { kind: "replace", text: "B" },
     });
     const third = session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: second,
       document: { kind: "replace", text: "A" },
     });
@@ -308,7 +306,7 @@ describe("document revisions", () => {
     expect(first.session.isCurrent(second.session.revision)).toBe(false);
     expectSessionError("stale-revision", () => {
       first.session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: second.session.revision,
         document: { kind: "replace", text: "SELECT 1" },
       });
@@ -324,7 +322,7 @@ describe("document revisions", () => {
     const { session } = openSession();
     const first = session.revision;
     const second = session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: first,
       document: { kind: "changes", changes: [] },
     });
@@ -336,33 +334,483 @@ describe("document revisions", () => {
     const { session } = openSession("SELECT 1");
     const first = session.revision;
     const second = session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: first,
       document: { kind: "replace", text: "SELECT 1" },
     });
     expect(second).not.toBe(first);
   });
 
-  it("reuses source snapshots only for context-only updates", () => {
+  it("reuses source snapshots when text and regions are unchanged", () => {
     const { session } = openSession("SELECT 1");
     const initialSource = session.snapshotForTesting.source;
     expect(Object.isFrozen(initialSource)).toBe(true);
     expect(initialSource.analysisText).toBe(initialSource.originalText);
 
     session.update({
-      kind: "context",
       baseRevision: session.revision,
       context: { dialect: "duckdb", engine: "remote" },
     });
     expect(session.snapshotForTesting.source).toBe(initialSource);
 
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "changes", changes: [] },
     });
-    expect(session.snapshotForTesting.source).not.toBe(initialSource);
+    expect(session.snapshotForTesting.source).toBe(initialSource);
     expect(session.snapshotForTesting.source.originalText).toBe("SELECT 1");
+  });
+});
+
+describe("embedded-region session transactions", () => {
+  it("opens omitted, empty, and masked sources with owned frozen regions", () => {
+    const service = createService();
+    const omitted = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text: "SELECT 1",
+    });
+    const empty = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [],
+      text: "SELECT 1",
+    });
+    const region = { from: 14, language: "python", to: 18 };
+    const regions = [region];
+    const masked = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: regions,
+      text: "SELECT * FROM {df}",
+    });
+
+    region.from = 0;
+    regions.length = 0;
+    expect(omitted.snapshotForTesting.source.analysisText).toBe("SELECT 1");
+    expect(empty.snapshotForTesting.source.analysisText).toBe("SELECT 1");
+    expect(masked.snapshotForTesting.source).toMatchObject({
+      analysisText: "SELECT * FROM     ",
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+      originalText: "SELECT * FROM {df}",
+    });
+    expect(Object.isFrozen(masked.snapshotForTesting.source)).toBe(true);
+    expect(Object.isFrozen(masked.snapshotForTesting.source.embeddedRegions)).toBe(
+      true,
+    );
+    expect(
+      Object.isFrozen(masked.snapshotForTesting.source.embeddedRegions[0]),
+    ).toBe(true);
+  });
+
+  it("indexes masked analysis rather than embedded SQL-like text", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [{ from: 7, language: "python", to: 12 }],
+      text: "SELECT {x;y}; SELECT 2",
+    });
+
+    const source = session.snapshotForTesting.source;
+    expect(session.getStatementIndexForTesting()).toEqual(
+      buildSqlStatementIndex(
+        source.analysisText,
+        DUCKDB_SQL_LEXICAL_PROFILE,
+      ),
+    );
+    expect(source.analysisText).toBe("SELECT      ; SELECT 2");
+  });
+
+  it("commits text, context, and post-edit regions in one revision", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+      text: "SELECT * FROM {df}",
+    });
+    const previous = session.revision;
+
+    const revision = session.update({
+      baseRevision: previous,
+      context: { dialect: "postgresql", engine: "warehouse" },
+      document: {
+        changes: [{ from: 15, insert: "next_df", to: 17 }],
+        kind: "changes",
+      },
+      embeddedRegions: [{ from: 14, language: "python", to: 23 }],
+    });
+
+    expect(revision).not.toBe(previous);
+    expect(session.snapshotForTesting).toMatchObject({
+      context: { dialect: "postgresql", engine: "warehouse" },
+      source: {
+        analysisText: "SELECT * FROM          ",
+        embeddedRegions: [{ from: 14, language: "python", to: 23 }],
+        originalText: "SELECT * FROM {next_df}",
+      },
+    });
+  });
+
+  it("supports region-only, context-plus-region, and explicit clear updates", () => {
+    const { session } = openSession("SELECT * FROM {df}");
+    const initial = session.snapshotForTesting;
+
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+    });
+    expect(session.snapshotForTesting.documentSequence).toBe(
+      initial.documentSequence,
+    );
+    expect(session.snapshotForTesting.source.analysisText).toBe(
+      "SELECT * FROM     ",
+    );
+
+    session.update({
+      baseRevision: session.revision,
+      context: { dialect: "duckdb", engine: "remote" },
+      embeddedRegions: [{ from: 14, language: "jinja", to: 18 }],
+    });
+    expect(session.snapshotForTesting.context.engine).toBe("remote");
+    expect(session.snapshotForTesting.source.embeddedRegions[0]?.language).toBe(
+      "jinja",
+    );
+
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [],
+    });
+    expect(session.snapshotForTesting.source.analysisText).toBe(
+      "SELECT * FROM {df}",
+    );
+  });
+
+  it("owns update regions and advances every accepted source transaction", () => {
+    const { session } = openSession("SELECT * FROM {df}");
+    const region = { from: 14, language: "python", to: 18 };
+    const regions = [region];
+    const initial = session.snapshotForTesting;
+
+    const firstRevision = session.update({
+      baseRevision: initial.revision,
+      embeddedRegions: regions,
+    });
+    const first = session.snapshotForTesting;
+    expect(first.revision).toBe(firstRevision);
+    expect(first.sourceSequence).toBe(initial.sourceSequence + 1);
+
+    region.from = 0;
+    region.language = "jinja";
+    regions.length = 0;
+    expect(first.source.embeddedRegions).toEqual([
+      { from: 14, language: "python", to: 18 },
+    ]);
+
+    const secondRevision = session.update({
+      baseRevision: firstRevision,
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+    });
+    const second = session.snapshotForTesting;
+    expect(secondRevision).not.toBe(firstRevision);
+    expect(second.sourceSequence).toBe(first.sourceSequence + 1);
+    expect(second.source).toBe(first.source);
+
+    session.update({
+      baseRevision: secondRevision,
+      embeddedRegions: [{ from: 14, language: "jinja", to: 18 }],
+    });
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+    });
+    expect(session.snapshotForTesting.source.embeddedRegions).toEqual([
+      { from: 14, language: "python", to: 18 },
+    ]);
+  });
+
+  it("validates complete regions against the resulting document", () => {
+    const { session } = openSession("A");
+    session.update({
+      baseRevision: session.revision,
+      document: { kind: "replace", text: "ABCDE" },
+      embeddedRegions: [{ from: 1, language: "python", to: 5 }],
+    });
+    expect(session.snapshotForTesting.source.analysisText).toBe("A    ");
+
+    const snapshot = session.snapshotForTesting;
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: snapshot.revision,
+        document: { kind: "replace", text: "A" },
+        embeddedRegions: [{ from: 1, language: "python", to: 5 }],
+      });
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
+  });
+
+  it("creates and removes template delimiters in atomic transactions", () => {
+    const { session } = openSession("SELECT * FROM df");
+
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [
+          { from: 14, insert: "{", to: 14 },
+          { from: 16, insert: "}", to: 16 },
+        ],
+        kind: "changes",
+      },
+      embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+    });
+    expect(session.snapshotForTesting.source).toMatchObject({
+      analysisText: "SELECT * FROM     ",
+      originalText: "SELECT * FROM {df}",
+    });
+
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [
+          { from: 14, insert: "", to: 15 },
+          { from: 17, insert: "", to: 18 },
+        ],
+        kind: "changes",
+      },
+      embeddedRegions: [],
+    });
+    expect(session.snapshotForTesting.source).toMatchObject({
+      analysisText: "SELECT * FROM df",
+      embeddedRegions: [],
+      originalText: "SELECT * FROM df",
+    });
+  });
+
+  it("rolls back document, context, source, revision, and cache together", () => {
+    const { session } = openSession("SELECT 1; SELECT 2");
+    const index = session.getStatementIndexForTesting();
+    const snapshot = session.snapshotForTesting;
+
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: snapshot.revision,
+        context: { dialect: "postgresql", engine: "warehouse" },
+        document: { kind: "replace", text: "SELECT {x}" },
+        embeddedRegions: [{ from: 7, language: "python", to: 100 }],
+      });
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+
+    expectSessionError("invalid-dialect", () => {
+      session.update({
+        baseRevision: snapshot.revision,
+        context: { dialect: "unknown", engine: "warehouse" },
+        document: { kind: "replace", text: "SELECT 2" },
+        embeddedRegions: [],
+      });
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+  });
+
+  it("checks stale revisions before inspecting candidate payloads", () => {
+    const { session } = openSession("SELECT 1");
+    const stale = session.revision;
+    session.update({
+      baseRevision: stale,
+      context: { dialect: "duckdb", engine: "remote" },
+    });
+    let invoked = false;
+    const update = {
+      baseRevision: stale,
+      get document() {
+        invoked = true;
+        return { kind: "replace", text: "SELECT 2" };
+      },
+      get embeddedRegions() {
+        invoked = true;
+        return [];
+      },
+    };
+
+    expectSessionError("stale-revision", () => {
+      session.update(update as never);
+    });
+    expect(invoked).toBe(false);
+  });
+
+  it("reuses equal analysis and invalidates changed masking", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [{ from: 7, language: "python", to: 12 }],
+      text: "SELECT {x;y}; SELECT 2",
+    });
+    const index = session.getStatementIndexForTesting();
+
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [{ from: 7, language: "jinja", to: 12 }],
+    });
+    expect(session.cachedStatementIndexForTesting).toBe(index);
+
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [],
+    });
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+    expect(session.getStatementIndexForTesting()).toEqual(
+      buildSqlStatementIndex(
+        session.snapshotForTesting.source.analysisText,
+        DUCKDB_SQL_LEXICAL_PROFILE,
+      ),
+    );
+  });
+
+  it("does not incrementally reuse original edits across masking", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [{ from: 7, language: "python", to: 12 }],
+      text: "SELECT {x;y}; SELECT 2",
+    });
+    session.getStatementIndexForTesting();
+
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [{ from: 8, insert: "xx", to: 9 }],
+        kind: "changes",
+      },
+      embeddedRegions: [{ from: 7, language: "python", to: 13 }],
+    });
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+    expect(session.getStatementIndexForTesting()).toEqual(
+      buildSqlStatementIndex(
+        session.snapshotForTesting.source.analysisText,
+        DUCKDB_SQL_LEXICAL_PROFILE,
+      ),
+    );
+  });
+
+  it("accepts structural supersets without inspecting host metadata", () => {
+    const service = createService();
+    let invoked = false;
+    const input = {
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [
+        { from: 0, hostNodeId: "cell-1", language: "python", to: 1 },
+      ],
+      get hostMetadata() {
+        invoked = true;
+        throw new Error("must stay opaque");
+      },
+      text: "x",
+    };
+    const session = service.openDocument(input);
+    expect(session.snapshotForTesting.source.analysisText).toBe(" ");
+
+    const update = {
+      baseRevision: session.revision,
+      embeddedRegions: [
+        { from: 0, hostNodeId: "cell-2", language: "jinja", to: 1 },
+      ],
+      get hostMetadata() {
+        invoked = true;
+        throw new Error("must stay opaque");
+      },
+      [Symbol("host")]: true,
+    };
+    session.update(update);
+    expect(session.snapshotForTesting.source.embeddedRegions).toEqual([
+      { from: 0, language: "jinja", to: 1 },
+    ]);
+    expect(invoked).toBe(false);
+  });
+
+  it("rejects malformed open and update region contracts", () => {
+    const { session } = openSession("SELECT 1");
+    const snapshot = session.snapshotForTesting;
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: session.revision,
+        document: { kind: "replace", text: "SELECT 2" },
+        embeddedRegions: undefined,
+      } as never);
+    });
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: session.revision,
+        document: { kind: "replace", text: "SELECT 2" },
+      } as never);
+    });
+    expectSessionError("invalid-update", () => {
+      session.update({
+        kind: "document",
+        baseRevision: session.revision,
+        embeddedRegions: [],
+      } as never);
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
+  });
+
+  it("keeps a valid outer region update after a rejected reentrant update", () => {
+    const { session } = openSession("x");
+    let nestedError: SqlSessionError | undefined;
+    let attempted = false;
+    const region = new Proxy(
+      { from: 0, language: "python", to: 1 },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "from" && !attempted) {
+            attempted = true;
+            try {
+              session.update({
+                baseRevision: session.revision,
+                context: { dialect: "duckdb", engine: "nested" },
+              });
+            } catch (error) {
+              if (error instanceof SqlSessionError) {
+                nestedError = error;
+              }
+            }
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+
+    session.update({
+      baseRevision: session.revision,
+      embeddedRegions: [region],
+    });
+    expect(nestedError?.code).toBe("reentrant-update");
+    expect(session.snapshotForTesting.source.analysisText).toBe(" ");
+  });
+
+  it("lets disposal dominate a hostile region failure", () => {
+    const { session } = openSession("x");
+    const snapshot = session.snapshotForTesting;
+    const region = new Proxy(
+      { from: 0, language: "python", to: 1 },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "from") {
+            session.dispose();
+            throw new Error("hostile");
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+
+    expectSessionError("session-disposed", () => {
+      session.update({
+        baseRevision: session.revision,
+        embeddedRegions: [region],
+      });
+    });
+    expect(session.snapshotForTesting).toBe(snapshot);
+    expect(session.cachedStatementIndexForTesting).toBeNull();
+    expect(session.isCurrent(snapshot.revision)).toBe(false);
   });
 });
 
@@ -370,7 +818,7 @@ describe("document changes", () => {
   it("applies ordered changes in pre-update coordinates", () => {
     const { session } = openSession("SELECT users.id FROM users");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -389,7 +837,7 @@ describe("document changes", () => {
   it("uses JavaScript UTF-16 offsets", () => {
     const { session } = openSession("A😀B");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -402,7 +850,7 @@ describe("document changes", () => {
   it("keeps same-position insertions ordered", () => {
     const { session } = openSession("AB");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -418,7 +866,7 @@ describe("document changes", () => {
   it("supports adjacent replacements and document boundaries", () => {
     const { session } = openSession("ABCDE");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -436,7 +884,7 @@ describe("document changes", () => {
   it("deletes the entire document", () => {
     const { session } = openSession("SELECT 1");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "changes", changes: [{ from: 0, insert: "", to: 8 }] },
     });
@@ -446,7 +894,7 @@ describe("document changes", () => {
   it("allows edits at every UTF-16 boundary", () => {
     const { session } = openSession("A😀e\u0301\r\nZ\uD800");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: {
         kind: "changes",
@@ -477,7 +925,7 @@ describe("document changes", () => {
 
     expectSessionError("invalid-change", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: revision,
         document: { kind: "changes", changes: [change] },
       });
@@ -492,7 +940,7 @@ describe("document changes", () => {
     const revision = session.revision;
     expectSessionError("invalid-change", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: revision,
         document: {
           kind: "changes",
@@ -511,7 +959,7 @@ describe("document changes", () => {
     const { session } = openSession("ABC");
     expectSessionError("invalid-change", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document: {
           kind: "changes",
@@ -532,7 +980,7 @@ describe("document changes", () => {
     const { session } = openSession("ABC");
     const revision = session.revision;
     expectSessionError("invalid-update", () => {
-      session.update({ kind: "document", baseRevision: revision, document } as never);
+      session.update({ embeddedRegions: [], baseRevision: revision, document } as never);
     });
     expect(session.revision).toBe(revision);
     expect(session.snapshotForTesting.source.originalText).toBe("ABC");
@@ -541,7 +989,7 @@ describe("document changes", () => {
   it("rejects an empty JavaScript update", () => {
     const { session } = openSession("ABC");
     expectSessionError("invalid-update", () => {
-      session.update({ kind: "document", baseRevision: session.revision } as never);
+      session.update({ baseRevision: session.revision } as never);
     });
   });
 
@@ -555,28 +1003,26 @@ describe("document changes", () => {
     });
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document: { kind: "unknown" },
       } as never);
     });
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document: { kind: "replace", text: "ABC", changes: [] },
       } as never);
     });
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "context",
         baseRevision: session.revision,
         context: undefined,
       } as never);
     });
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "context",
         baseRevision: session.revision,
         context: { dialect: "duckdb", engine: "local" },
         document: { kind: "replace", text: "lost" },
@@ -598,7 +1044,7 @@ describe("document changes", () => {
       session.update(update as never);
     });
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "replace", text: "recovered" },
     });
@@ -636,25 +1082,14 @@ describe("document changes", () => {
     expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
-  it("rejects undefined and accessor optional update fields", () => {
+  it("rejects accessor optional update fields", () => {
     const { session } = openSession("ABC");
     const revision = session.revision;
-    expectSessionError("invalid-update", () => {
-      session.update({
-        kind: "document",
-        baseRevision: revision,
-        context: undefined,
-        document: { kind: "replace", text: "changed" },
-      } as never);
-    });
-    expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
-
     let invoked = false;
     const update = {
       baseRevision: session.revision,
       document: { kind: "replace", text: "changed" },
-      kind: "document",
+      embeddedRegions: [],
       get context() {
         invoked = true;
         return { dialect: "postgresql", engine: "warehouse" };
@@ -666,6 +1101,53 @@ describe("document changes", () => {
     expect(invoked).toBe(false);
     expect(session.revision).toBe(revision);
     expect(session.snapshotForTesting.source.originalText).toBe("ABC");
+  });
+
+  it("treats undefined optional state fields as omission", () => {
+    const service = createService();
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: undefined,
+      text: "SELECT 1",
+    });
+
+    const contextRevision = session.update({
+      baseRevision: session.revision,
+      context: { dialect: "duckdb", engine: "warehouse" },
+      document: undefined,
+      embeddedRegions: undefined,
+    });
+    expect(session.revision).toBe(contextRevision);
+    expect(session.snapshotForTesting.context.engine).toBe("warehouse");
+
+    const regionRevision = session.update({
+      baseRevision: session.revision,
+      context: undefined,
+      document: undefined,
+      embeddedRegions: [{ from: 7, language: "python", to: 8 }],
+    });
+    expect(session.revision).toBe(regionRevision);
+    expect(session.snapshotForTesting.source.embeddedRegions).toEqual([
+      { from: 7, language: "python", to: 8 },
+    ]);
+
+    const replacementRevision = session.update({
+      baseRevision: session.revision,
+      context: undefined,
+      document: { kind: "replace", text: "SELECT 2" },
+      embeddedRegions: [],
+    });
+    expect(session.revision).toBe(replacementRevision);
+    expect(session.snapshotForTesting.source.originalText).toBe("SELECT 2");
+
+    expectSessionError("invalid-update", () => {
+      session.update({
+        baseRevision: session.revision,
+        context: undefined,
+        document: undefined,
+        embeddedRegions: undefined,
+      } as never);
+    });
   });
 
   it("rejects accessor document fields without invoking them", () => {
@@ -680,7 +1162,7 @@ describe("document changes", () => {
     };
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document,
       });
@@ -702,7 +1184,7 @@ describe("document changes", () => {
       }
       expectSessionError("invalid-change", () => {
         session.update({
-          kind: "document",
+          embeddedRegions: [],
           baseRevision: session.revision,
           document: { kind: "changes", changes: [change] },
         } as never);
@@ -727,7 +1209,7 @@ describe("document changes", () => {
             attempted = true;
             try {
               session.update({
-                kind: "document",
+                embeddedRegions: [],
                 baseRevision: originalRevision,
                 document: { kind: "replace", text: "nested" },
               });
@@ -743,7 +1225,7 @@ describe("document changes", () => {
     );
 
     const revision = session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: originalRevision,
       document,
     });
@@ -773,7 +1255,7 @@ describe("document changes", () => {
 
     expectSessionError("session-disposed", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: revision,
         document,
       });
@@ -788,7 +1270,7 @@ describe("document changes", () => {
     tooManyChanges.length = 10_001;
     expectSessionError("invalid-change", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document: { kind: "changes", changes: tooManyChanges },
       });
@@ -796,7 +1278,7 @@ describe("document changes", () => {
 
     expectSessionError("invalid-document", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: session.revision,
         document: {
           kind: "changes",
@@ -917,7 +1399,7 @@ describe("document context", () => {
   it("updates text and context atomically", () => {
     const { session } = openSession("SELECT 1");
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       context: { dialect: "postgresql", engine: "warehouse" },
       document: { kind: "replace", text: "SELECT 2" },
@@ -931,7 +1413,7 @@ describe("document context", () => {
     const snapshot = session.snapshotForTesting;
     expectSessionError("invalid-update", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: snapshot.revision,
         context: { dialect: "duckdb", engine: "remote" },
         document: { kind: "replace", text: 42 },
@@ -943,7 +1425,6 @@ describe("document context", () => {
   it("supports context-only updates", () => {
     const { session } = openSession("SELECT 1");
     session.update({
-      kind: "context",
       baseRevision: session.revision,
       context: { dialect: "postgresql", engine: "warehouse" },
     });
@@ -955,7 +1436,7 @@ describe("document context", () => {
     const { session } = openSession();
     const context = session.snapshotForTesting.context;
     session.update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "replace", text: "SELECT 1" },
     });
@@ -965,9 +1446,9 @@ describe("document context", () => {
   it("clones a supplied context again on every update", () => {
     const { session } = openSession();
     const context: TestContext = { dialect: "duckdb", engine: "local" };
-    session.update({ kind: "context", baseRevision: session.revision, context });
+    session.update({ baseRevision: session.revision, context });
     const firstOwned = session.snapshotForTesting.context;
-    session.update({ kind: "context", baseRevision: session.revision, context });
+    session.update({ baseRevision: session.revision, context });
     expect(session.snapshotForTesting.context).not.toBe(firstOwned);
   });
 
@@ -993,7 +1474,7 @@ describe("document context", () => {
     const revision = session.revision;
     expectSessionError(error as SqlSessionError["code"], () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: revision,
         context,
         document: { kind: "replace", text: "SELECT 2" },
@@ -1017,6 +1498,18 @@ describe("document context", () => {
       createService().openDocument({ context, text: "" });
     });
     expect(invoked).toBe(false);
+  });
+
+  it("reports non-enumerable context properties accurately", () => {
+    const context = { dialect: "duckdb" };
+    Object.defineProperty(context, "engine", {
+      enumerable: false,
+      value: "local",
+    });
+
+    expect(() => {
+      createService().openDocument({ context: context as TestContext, text: "" });
+    }).toThrowError("SQL document context cannot contain non-enumerable properties");
   });
 
   it("rejects symbol keys", () => {
@@ -1171,7 +1664,7 @@ describe("document context", () => {
   it("checks a stale base before inspecting candidate context", () => {
     const { session } = openSession();
     const stale = session.revision;
-    session.update({ kind: "document", baseRevision: stale, document: { kind: "replace", text: "SELECT 1" } });
+    session.update({ embeddedRegions: [], baseRevision: stale, document: { kind: "replace", text: "SELECT 1" } });
     let inspected = false;
     const context = {
       dialect: "duckdb",
@@ -1181,7 +1674,7 @@ describe("document context", () => {
       },
     };
     expectSessionError("stale-revision", () => {
-      session.update({ kind: "context", baseRevision: stale, context });
+      session.update({ baseRevision: stale, context });
     });
     expect(inspected).toBe(false);
   });
@@ -1197,7 +1690,7 @@ describe("lifecycle", () => {
     });
     const { dispose, isCurrent, update } = session;
     const revision = update({
-      kind: "document",
+      embeddedRegions: [],
       baseRevision: session.revision,
       document: { kind: "replace", text: "SELECT 1" },
     });
@@ -1225,7 +1718,7 @@ describe("lifecycle", () => {
     expect(session.isCurrent(revision)).toBe(false);
     expectSessionError("session-disposed", () => {
       session.update({
-        kind: "document",
+        embeddedRegions: [],
         baseRevision: revision,
         document: { kind: "replace", text: "SELECT 1" },
       });

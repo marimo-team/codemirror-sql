@@ -1,4 +1,4 @@
-import type { SqlTextRange } from "./types.js";
+import type { SqlEmbeddedRegion, SqlTextRange } from "./types.js";
 
 export const MAX_SQL_SOURCE_LENGTH = 16 * 1024 * 1024;
 export const MAX_SQL_EMBEDDED_REGIONS = 10_000;
@@ -30,10 +30,6 @@ export function isSqlSourceError(error: unknown): error is SqlSourceError {
     typeof error === "object" &&
     sourceErrors.has(error)
   );
-}
-
-export interface SqlEmbeddedRegion extends SqlTextRange {
-  readonly language: string;
 }
 
 export interface SqlSourceSnapshot {
@@ -171,27 +167,6 @@ function readArrayLength(value: readonly unknown[]): number {
   return length;
 }
 
-function validateRegionArrayKeys(
-  regions: readonly unknown[],
-  length: number,
-): void {
-  for (const key of Reflect.ownKeys(regions)) {
-    if (key === "length") {
-      continue;
-    }
-    if (
-      typeof key !== "string" ||
-      !/^(0|[1-9]\d*)$/.test(key) ||
-      Number(key) >= length
-    ) {
-      throw new SqlSourceError(
-        "invalid-region",
-        "SQL embedded regions cannot contain custom properties",
-      );
-    }
-  }
-}
-
 function normalizeEmbeddedRegions(
   regions: unknown,
   sourceLength: number,
@@ -210,8 +185,6 @@ function normalizeEmbeddedRegions(
         `SQL source cannot contain more than ${MAX_SQL_EMBEDDED_REGIONS} embedded regions`,
       );
     }
-    validateRegionArrayKeys(regions, length);
-
     const normalized: SqlEmbeddedRegion[] = [];
     let previousEnd = 0;
     for (let index = 0; index < length; index += 1) {

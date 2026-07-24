@@ -163,7 +163,9 @@ region set for its resulting text. Without a document mutation, an explicit
 complete region set can change alone or together with context; omission
 preserves the current regions. An explicit empty set clears them. Opening a
 document accepts the same optional complete set, with omission or an empty set
-meaning identity source.
+meaning identity source. For compatibility with consumers regardless of their
+`exactOptionalPropertyTypes` setting, `undefined` on optional state fields has
+the same meaning as omission.
 
 A full-text replacement is available for simple consumers. Incremental changes
 are ordered, non-overlapping, absolute UTF-16 ranges in the current document.
@@ -463,11 +465,12 @@ set for document or region updates and reuse the existing snapshot only when
 text and regions are unchanged. Non-identity generated/reordered source remains
 deferred until a concrete consumer validates the segment model.
 
-Current session edits use identity sources, so validated original-document
-changes are also trusted analysis-coordinate changes. A future transformed
-source must provide its own validated analysis-coordinate changes for
-incremental statement indexing. Without them, changed analysis text
-invalidates the index and is rebuilt lazily.
+Identity-to-identity session edits can use validated original-document changes
+as trusted analysis-coordinate changes. Masked-source edits do not make that
+claim: unchanged analysis can reuse its index, while changed analysis
+invalidates the index and rebuilds lazily. A future transformed source must
+provide its own validated analysis-coordinate changes before incremental
+indexing can consume them.
 
 Edits crossing an ambiguous or unmapped boundary are rejected. Mapping failure
 is unavailable analysis, not invalid SQL.

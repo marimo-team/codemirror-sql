@@ -1,8 +1,11 @@
-import type { SqlEmbeddedRegion } from "../../src/vnext/source.js";
 import type {
   SqlCatalogContext,
   SqlDocumentContext,
+  SqlDocumentEdit,
+  SqlDocumentUpdate,
+  SqlEmbeddedRegion,
   SqlIdentifierComponent,
+  OpenSqlDocument,
 } from "../../src/vnext/index.js";
 import type {
   SqlCanonicalRelationPath,
@@ -16,9 +19,7 @@ import type {
   SqlRelationCompletionItem,
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
-  SqlRelationCompletionDocumentTransaction,
   SqlRelationCompletionDialectRuntime,
-  SqlRelationCompletionOpenDocument,
   SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
 
@@ -40,14 +41,16 @@ const context: MarimoSqlContext = {
   dialect: "duckdb",
   engine: "local",
 };
+declare const maybeContext: MarimoSqlContext | undefined;
+declare const maybeDocument: SqlDocumentEdit | undefined;
 const regions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
 ];
-const openWithoutRegions: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const openWithoutRegions: OpenSqlDocument<MarimoSqlContext> = {
   context,
   text: "SELECT * FROM users",
 };
-const openWithRegions: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const openWithRegions: OpenSqlDocument<MarimoSqlContext> = {
   context,
   embeddedRegions: regions,
   text: "SELECT * FROM {df}",
@@ -76,6 +79,12 @@ session.update({
 session.update({
   baseRevision: session.revision,
   context,
+  embeddedRegions: regions,
+});
+session.update({
+  baseRevision: session.revision,
+  context: maybeContext,
+  document: maybeDocument,
   embeddedRegions: regions,
 });
 
@@ -179,9 +188,9 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT 1" },
 });
-// @ts-expect-error present undefined is not omission
+// @ts-expect-error undefined omission leaves an empty transaction
 session.update({ baseRevision: session.revision, context: undefined });
-const missingEngine: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const missingEngine: OpenSqlDocument<MarimoSqlContext> = {
   // @ts-expect-error marimo contexts always identify their engine
   context: { dialect: "duckdb" },
   text: "",
@@ -289,10 +298,10 @@ const contradictoryIncompleteList = {
 } satisfies SqlRelationCompletionList;
 // @ts-expect-error timeouts are unavailable evidence, not cancellation
 const invalidCancellation: SqlCompletionCancellationReason = "timeout";
-// @ts-expect-error a document transaction cannot explicitly omit context
-const undefinedContext: SqlRelationCompletionDocumentTransaction<MarimoSqlContext> = {
+const undefinedContext: SqlDocumentUpdate<MarimoSqlContext> = {
   baseRevision: session.revision,
   context: undefined,
+  document: undefined,
   embeddedRegions: [],
 };
 

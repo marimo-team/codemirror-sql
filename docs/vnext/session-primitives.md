@@ -35,12 +35,12 @@ const session = service.openDocument({
 });
 
 const revision = session.update({
-  kind: "document",
   baseRevision: session.revision,
   document: {
     kind: "changes",
     changes: [{ from: 14, to: 19, insert: "customers" }],
   },
+  embeddedRegions: [],
 });
 
 if (session.isCurrent(revision)) {
@@ -52,7 +52,9 @@ service.dispose();
 ```
 
 Use `{ kind: "replace", text }` for full replacement and
-`{ kind: "context", baseRevision, context }` for a context-only update.
+`{ baseRevision, context }` for a context-only update. Every document mutation
+also supplies the complete embedded-region set for its resulting text. A
+region-only transaction can replace or clear that set without a fake text edit.
 
 ## Dialect registration
 
@@ -74,7 +76,12 @@ does not itself infer lexical behavior.
 - `baseRevision` is checked by identity and cannot come from another session.
 - Incremental ranges are ordered, non-overlapping, half-open UTF-16 offsets in
   the pre-update document.
-- Text and context are validated completely before the session snapshot changes.
+- Text, context, and embedded regions are validated completely before the
+  session snapshot changes.
+- Public envelopes, edits, changes, and regions are structural inputs. The
+  service copies only their declared own data fields; additional host metadata
+  remains opaque and is never invoked. Removed or contradictory discriminants
+  are explicitly forbidden rather than treating every object as exact.
 - Context is structured-cloned and recursively frozen. Accepted values are
   finite primitives, arrays, and string-keyed plain objects. Cycles and shared
   references are retained. Accessors, symbols, functions, class instances,
@@ -86,13 +93,15 @@ does not itself infer lexical behavior.
   platform errors are not exposed as causes.
 
 The internal statement index is built lazily per session. Context-only updates
-reuse it when the lexical-profile identity is unchanged. A no-op document
-update or same-text replacement advances the public revision and document
-sequence but can reuse the index. Trusted incremental identity-source changes
-update a populated cache; a changed replacement, profile change, or changed
-transformed source without analysis-coordinate changes clears it for a later
-full build. Invalid updates leave both the session snapshot and cache
-unchanged, and disposal clears the cache.
+reuse it when the lexical-profile identity is unchanged. Source-changing
+transactions use a separate source sequence, so region-only changes cannot
+reuse a stale index. A no-op document update or same-text replacement advances
+the public revision and document sequence but can reuse the index. Trusted
+incremental identity-source changes update a populated cache; a changed
+replacement, profile change, or changed masked source without verified
+analysis-coordinate changes clears it for a later full build. Invalid updates
+leave both the session snapshot and cache unchanged, and disposal clears the
+cache.
 
 The safety envelope currently permits at most 10,000 changes in one update, a
 16 Mi-code-unit document, 1,000 registered dialects, and bounded context graph

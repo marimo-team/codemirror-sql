@@ -21,6 +21,7 @@ import {
 } from "./statement-index.js";
 import {
   createIdentitySqlSource,
+  createMaskedSqlSource,
   isSqlSourceError,
   MAX_SQL_SOURCE_LENGTH,
   normalizeSqlTextRange,
@@ -158,6 +159,12 @@ function getDataProperties(value: object): DataProperties {
       throw new SqlSessionError(
         "invalid-context",
         "SQL document context cannot contain accessors",
+      );
+    }
+    if (!descriptor.enumerable) {
+      throw new SqlSessionError(
+        "invalid-context",
+        "SQL document context cannot contain non-enumerable properties",
       );
     }
     values.push(descriptor.value);
@@ -395,6 +402,20 @@ function readRequiredDataProperty(
   return property.value;
 }
 
+function rejectOwnProperty(
+  value: object,
+  key: PropertyKey,
+  code: SqlSessionError["code"],
+  subject: string,
+): void {
+  if (readOwnDataProperty(value, key, code, subject).found) {
+    throw new SqlSessionError(
+      code,
+      `${subject} cannot contain ${String(key)}`,
+    );
+  }
+}
+
 function validateDocumentLength(text: string): void {
   if (text.length > MAX_SQL_SOURCE_LENGTH) {
     throw new SqlSessionError(
@@ -507,6 +528,29 @@ function applyChanges(text: string, changes: readonly SqlTextChange[]): string {
   return output.join("");
 }
 
+function haveEqualEmbeddedRegions(
+  left: SqlSourceSnapshot,
+  right: SqlSourceSnapshot,
+): boolean {
+  if (left.embeddedRegions.length !== right.embeddedRegions.length) {
+    return false;
+  }
+  for (let index = 0; index < left.embeddedRegions.length; index += 1) {
+    const leftRegion = left.embeddedRegions[index];
+    const rightRegion = right.embeddedRegions[index];
+    if (
+      !leftRegion ||
+      !rightRegion ||
+      leftRegion.from !== rightRegion.from ||
+      leftRegion.to !== rightRegion.to ||
+      leftRegion.language !== rightRegion.language
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 interface SessionSnapshot<Context extends SqlDocumentContext> {
   readonly contextSequence: number;
   readonly context: Context;
@@ -515,12 +559,13 @@ interface SessionSnapshot<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
   readonly sequence: number;
   readonly source: SqlSourceSnapshot;
+  readonly sourceSequence: number;
 }
 
 interface StatementIndexCache {
-  readonly documentSequence: number;
   readonly index: SqlStatementIndex;
   readonly lexicalProfile: SqlLexicalProfile;
+  readonly sourceSequence: number;
 }
 
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
@@ -544,6 +589,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const sequence = 0;
     const contextSequence = 0;
     const documentSequence = 0;
+    const sourceSequence = 0;
     const dialect = resolveDialectRuntime(context, dialects);
     this.#snapshot = Object.freeze({
       contextSequence,
@@ -553,6 +599,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       revision: createSqlRevisionToken(),
       sequence,
       source,
+      sourceSequence,
     });
   }
 
@@ -578,7 +625,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const cached = this.#statementIndexCache;
     if (
       cached &&
-      cached.documentSequence === this.#snapshot.documentSequence &&
+      cached.sourceSequence === this.#snapshot.sourceSequence &&
       cached.lexicalProfile === this.#snapshot.dialect.lexicalProfile
     ) {
       return cached.index;
@@ -588,9 +635,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       this.#snapshot.dialect.lexicalProfile,
     );
     this.#statementIndexCache = Object.freeze({
-      documentSequence: this.#snapshot.documentSequence,
       index,
       lexicalProfile: this.#snapshot.dialect.lexicalProfile,
+      sourceSequence: this.#snapshot.sourceSequence,
     });
     return index;
   }
@@ -609,6 +656,12 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     try {
       return this.#applyUpdate(update);
     } catch (error) {
+      if (this.#disposed) {
+        throw new SqlSessionError(
+          "session-disposed",
+          "SQL document session was disposed during the update",
+        );
+      }
       if (error instanceof SqlSessionError) {
         throw error;
       }
@@ -628,12 +681,6 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         "SQL document update must be an object",
       );
     }
-    const kind = readRequiredDataProperty(
-      update,
-      "kind",
-      "invalid-update",
-      "SQL document update",
-    );
     const baseRevision = readRequiredDataProperty(
       update,
       "baseRevision",
@@ -643,99 +690,79 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     if (baseRevision !== this.#snapshot.revision) {
       throw new SqlSessionError("stale-revision", "SQL document revision is stale");
     }
-    if (kind !== "document" && kind !== "context") {
+    rejectOwnProperty(
+      update,
+      "kind",
+      "invalid-update",
+      "SQL document update",
+    );
+
+    const document = readOwnDataProperty(
+      update,
+      "document",
+      "invalid-update",
+      "SQL document update",
+    );
+    const context = readOwnDataProperty(
+      update,
+      "context",
+      "invalid-update",
+      "SQL document update",
+    );
+    const embeddedRegions = readOwnDataProperty(
+      update,
+      "embeddedRegions",
+      "invalid-update",
+      "SQL document update",
+    );
+    const hasDocument = document.found && document.value !== undefined;
+    const hasContext = context.found && context.value !== undefined;
+    const hasEmbeddedRegions =
+      embeddedRegions.found && embeddedRegions.value !== undefined;
+    if (!hasDocument && !hasContext && !hasEmbeddedRegions) {
       throw new SqlSessionError(
         "invalid-update",
-        "SQL document update kind must be document or context",
+        "SQL document update must change document, context, or embedded regions",
+      );
+    }
+    if (hasDocument && !hasEmbeddedRegions) {
+      throw new SqlSessionError(
+        "invalid-update",
+        "SQL document mutations require the complete resulting embedded regions",
       );
     }
 
     let nextContextSequence = this.#snapshot.contextSequence;
     let nextContext = this.#snapshot.context;
     let nextDocumentSequence = this.#snapshot.documentSequence;
+    let nextSourceSequence = this.#snapshot.sourceSequence;
     let nextSource = this.#snapshot.source;
     let documentMutation: "changes" | "none" | "replace" = "none";
     let trustedAnalysisChanges: readonly SqlTextChange[] | null = null;
 
-    if (kind === "context") {
-      if (
-        readOwnDataProperty(
-          update,
-          "document",
-          "invalid-update",
-          "SQL context update",
-        ).found
-      ) {
-        throw new SqlSessionError(
-          "invalid-update",
-          "SQL context update cannot contain a document mutation",
-        );
-      }
-      const context = readRequiredDataProperty(
-        update,
-        "context",
-        "invalid-update",
-        "SQL context update",
-      );
-      if (context === undefined) {
-        throw new SqlSessionError(
-          "invalid-update",
-          "SQL context update requires a context value",
-        );
-      }
-      nextContext = cloneContext(context);
-      nextContextSequence += 1;
-    } else {
-      const document = readRequiredDataProperty(
-        update,
-        "document",
-        "invalid-update",
-        "SQL document update",
-      );
-      const context = readOwnDataProperty(
-        update,
-        "context",
-        "invalid-update",
-        "SQL document update",
-      );
-      if (context.found) {
-        if (context.value === undefined) {
-          throw new SqlSessionError(
-            "invalid-update",
-            "SQL document update context cannot be undefined",
-          );
-        }
-        nextContext = cloneContext(context.value);
-        nextContextSequence += 1;
-      }
-      if (document === null || typeof document !== "object") {
+    let nextText = this.#snapshot.source.originalText;
+    if (hasDocument) {
+      if (document.value === null || typeof document.value !== "object") {
         throw new SqlSessionError(
           "invalid-update",
           "SQL document mutation must be an object",
         );
       }
       const documentKind = readRequiredDataProperty(
-        document,
+        document.value,
         "kind",
         "invalid-update",
         "SQL document mutation",
       );
       if (documentKind === "replace") {
-        if (
-          readOwnDataProperty(
-            document,
-            "changes",
-            "invalid-update",
-            "SQL document replacement",
-          ).found
-        ) {
-          throw new SqlSessionError(
-            "invalid-update",
-            "SQL document replacement cannot also contain changes",
-          );
-        }
+        rejectOwnProperty(
+          document.value,
+          "changes",
+          "invalid-update",
+          "SQL document replacement",
+        );
         const text = readRequiredDataProperty(
-          document,
+          document.value,
           "text",
           "invalid-update",
           "SQL document replacement",
@@ -747,24 +774,17 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           );
         }
         validateDocumentLength(text);
-        nextSource = createIdentitySqlSource(text);
+        nextText = text;
         documentMutation = "replace";
       } else if (documentKind === "changes") {
-        if (
-          readOwnDataProperty(
-            document,
-            "text",
-            "invalid-update",
-            "SQL document changes",
-          ).found
-        ) {
-          throw new SqlSessionError(
-            "invalid-update",
-            "SQL document changes cannot also contain replacement text",
-          );
-        }
+        rejectOwnProperty(
+          document.value,
+          "text",
+          "invalid-update",
+          "SQL document changes",
+        );
         const changes = readRequiredDataProperty(
-          document,
+          document.value,
           "changes",
           "invalid-update",
           "SQL document changes",
@@ -776,12 +796,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           );
         }
         const normalizedChanges = normalizeChanges(
-          nextSource.originalText,
+          this.#snapshot.source.originalText,
           changes,
         );
         trustedAnalysisChanges = normalizedChanges;
-        nextSource = createIdentitySqlSource(
-          applyChanges(nextSource.originalText, normalizedChanges),
+        nextText = applyChanges(
+          this.#snapshot.source.originalText,
+          normalizedChanges,
         );
         documentMutation = "changes";
       } else {
@@ -791,6 +812,34 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         );
       }
       nextDocumentSequence += 1;
+    }
+
+    if (hasEmbeddedRegions) {
+      const candidateSource = createMaskedSqlSource(
+        nextText,
+        embeddedRegions.value,
+      );
+      if (
+        candidateSource.originalText === this.#snapshot.source.originalText &&
+        haveEqualEmbeddedRegions(candidateSource, this.#snapshot.source)
+      ) {
+        nextSource = this.#snapshot.source;
+      } else {
+        nextSource = candidateSource;
+      }
+      nextSourceSequence += 1;
+      if (
+        documentMutation !== "changes" ||
+        this.#snapshot.source.embeddedRegions.length !== 0 ||
+        nextSource.embeddedRegions.length !== 0
+      ) {
+        trustedAnalysisChanges = null;
+      }
+    }
+
+    if (hasContext) {
+      nextContext = cloneContext<Context>(context.value);
+      nextContextSequence += 1;
     }
 
     const nextDialect = resolveDialectRuntime(
@@ -814,6 +863,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       revision,
       sequence,
       source: nextSource,
+      sourceSequence: nextSourceSequence,
     });
     let nextStatementIndexCache = this.#statementIndexCache;
     if (
@@ -821,7 +871,10 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextLexicalProfile !== this.#snapshot.dialect.lexicalProfile
     ) {
       nextStatementIndexCache = null;
-    } else if (nextStatementIndexCache && documentMutation !== "none") {
+    } else if (
+      nextStatementIndexCache &&
+      nextSourceSequence !== this.#snapshot.sourceSequence
+    ) {
       let nextIndex: SqlStatementIndex | null = null;
       if (
         nextSource.analysisText === this.#snapshot.source.analysisText
@@ -840,9 +893,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       }
       nextStatementIndexCache = nextIndex
         ? Object.freeze({
-            documentSequence: nextDocumentSequence,
             index: nextIndex,
             lexicalProfile: nextLexicalProfile,
+            sourceSequence: nextSourceSequence,
           })
         : null;
     }
@@ -966,7 +1019,15 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         );
       }
       validateDocumentLength(text);
-      const source = createIdentitySqlSource(text);
+      const embeddedRegions = readOwnDataProperty(
+        input,
+        "embeddedRegions",
+        "invalid-document",
+        "Open SQL document input",
+      );
+      const source = embeddedRegions.found && embeddedRegions.value !== undefined
+        ? createMaskedSqlSource(text, embeddedRegions.value)
+        : createIdentitySqlSource(text);
       const candidateContext = readRequiredDataProperty(
         input,
         "context",
