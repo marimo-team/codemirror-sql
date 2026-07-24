@@ -590,8 +590,8 @@ disposition. Validate them through a protected reusable workflow from the base
 branch so a PR cannot approve itself. Maintainers approve classification
 overrides and rejected blocking findings.
 
-Request GitHub Copilot review on every medium or large PR after the head commit
-is ready for review:
+Request GitHub Copilot review exactly once on every medium or large PR, after
+the PR has a coherent head that is ready for review:
 
 ```bash
 gh pr edit <number> --add-reviewer @copilot
@@ -600,8 +600,9 @@ gh pr edit <number> --add-reviewer @copilot
 Copilot is an additional advisory review, not one of the two independent
 commit-bound adversarial attestations and not a substitute for human approval.
 Resolve or explicitly disposition its actionable comments in the finding
-ledger. Re-request review after a material rewrite when the prior comments no
-longer cover the current head.
+ledger. Do not re-request Copilot after later pushes or material rewrites; the
+commit-bound adversarial reviewers and required CI provide exact-head
+revalidation.
 
 ## CI architecture
 
@@ -814,7 +815,7 @@ Before semantic implementation:
 12. Add the invariant registry and test-suite integrity checks.
 13. Add PR risk template and review-packet generation.
 14. Add protected, commit-bound two-reviewer checks.
-15. Automate GitHub Copilot review requests for medium and large PRs.
+15. Automate one GitHub Copilot review request per medium or large PR.
 16. Add verified-artifact provenance to release CI.
 17. Add nightly mutation, fuzz, cross-browser, leak, and performance workflows.
 18. Add expiring scheduled-health and deduplicated failure issues.
