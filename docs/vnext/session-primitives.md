@@ -8,6 +8,9 @@ updates, opaque revisions, dialect registration, and lifecycle management. It
 does not yet provide parsing, completion, diagnostics, hover, or navigation.
 Those methods will be added only with working vertical slices.
 
+See [source coordinates](./source-coordinates.md) for the shared UTF-16 range
+contract and the internal immutable source-snapshot model.
+
 ## Example
 
 ```ts

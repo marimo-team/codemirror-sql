@@ -47,10 +47,14 @@ export interface SqlDialectDefinition {
   readonly displayName: string;
 }
 
-/** One half-open UTF-16 edit in pre-update document coordinates. */
-export interface SqlTextChange {
+/** One half-open UTF-16 range in document coordinates. */
+export interface SqlTextRange {
   readonly from: number;
   readonly to: number;
+}
+
+/** One half-open UTF-16 edit in pre-update document coordinates. */
+export interface SqlTextChange extends SqlTextRange {
   readonly insert: string;
 }
 

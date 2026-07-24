@@ -8,7 +8,15 @@ import type {
   SqlLanguageServiceOptions,
   SqlRevision,
   SqlTextChange,
+  SqlTextRange,
 } from "./types.js";
+import {
+  createIdentitySqlSource,
+  isSqlSourceError,
+  MAX_SQL_SOURCE_LENGTH,
+  normalizeSqlTextRange,
+  type SqlSourceSnapshot,
+} from "./source.js";
 import { createSqlRevisionToken, SqlSessionError } from "./types.js";
 
 const MAX_CONTEXT_DEPTH = 100;
@@ -17,7 +25,6 @@ const MAX_CONTEXT_PROPERTIES = 50_000;
 const MAX_CONTEXT_KEY_LENGTH = 1_000_000;
 const MAX_CONTEXT_STRING_LENGTH = 1_000_000;
 const MAX_CONTEXT_ARRAY_LENGTH = 50_000;
-const MAX_DOCUMENT_LENGTH = 16 * 1024 * 1024;
 const MAX_CHANGES_PER_UPDATE = 10_000;
 const MAX_DIALECTS = 1_000;
 const MAX_DIALECT_ID_LENGTH = 256;
@@ -306,10 +313,10 @@ function readRequiredDataProperty(
 }
 
 function validateDocumentLength(text: string): void {
-  if (text.length > MAX_DOCUMENT_LENGTH) {
+  if (text.length > MAX_SQL_SOURCE_LENGTH) {
     throw new SqlSessionError(
       "invalid-document",
-      `SQL documents cannot exceed ${MAX_DOCUMENT_LENGTH} UTF-16 code units`,
+      `SQL documents cannot exceed ${MAX_SQL_SOURCE_LENGTH} UTF-16 code units`,
     );
   }
 }
@@ -355,39 +362,29 @@ function normalizeChanges(text: string, changes: readonly unknown[]): SqlTextCha
         `SQL change ${index} must be an object`,
       );
     }
-    const from = readRequiredDataProperty(
-      change,
-      "from",
-      "invalid-change",
-      `SQL change ${index}`,
-    );
-    const to = readRequiredDataProperty(
-      change,
-      "to",
-      "invalid-change",
-      `SQL change ${index}`,
-    );
+    let range: SqlTextRange;
+    try {
+      range = normalizeSqlTextRange(
+        change,
+        text.length,
+        `SQL change ${index}`,
+      );
+    } catch (error) {
+      if (!isSqlSourceError(error)) {
+        throw error;
+      }
+      throw new SqlSessionError(
+        "invalid-change",
+        `Invalid UTF-16 range in SQL change ${index}`,
+      );
+    }
     const insert = readRequiredDataProperty(
       change,
       "insert",
       "invalid-change",
       `SQL change ${index}`,
     );
-    if (
-      typeof from !== "number" ||
-      typeof to !== "number" ||
-      !Number.isSafeInteger(from) ||
-      !Number.isSafeInteger(to) ||
-      from < 0 ||
-      from > to ||
-      to > text.length
-    ) {
-      throw new SqlSessionError(
-        "invalid-change",
-        `Invalid UTF-16 range in SQL change ${index}`,
-      );
-    }
-    if (from < previousEnd) {
+    if (range.from < previousEnd) {
       throw new SqlSessionError(
         "invalid-change",
         "SQL document changes must be ordered and non-overlapping",
@@ -396,21 +393,21 @@ function normalizeChanges(text: string, changes: readonly unknown[]): SqlTextCha
     if (typeof insert !== "string") {
       throw new SqlSessionError("invalid-change", "SQL change insert must be a string");
     }
-    nextLength += insert.length - (to - from);
-    if (nextLength > MAX_DOCUMENT_LENGTH) {
+    nextLength += insert.length - (range.to - range.from);
+    if (nextLength > MAX_SQL_SOURCE_LENGTH) {
       throw new SqlSessionError(
         "invalid-document",
-        `SQL documents cannot exceed ${MAX_DOCUMENT_LENGTH} UTF-16 code units`,
+        `SQL documents cannot exceed ${MAX_SQL_SOURCE_LENGTH} UTF-16 code units`,
       );
     }
     normalized.push(
       Object.freeze({
-        from,
+        from: range.from,
         insert,
-        to,
+        to: range.to,
       }),
     );
-    previousEnd = to;
+    previousEnd = range.to;
   }
 
   return normalized;
@@ -433,7 +430,7 @@ interface SessionSnapshot<Context extends SqlDocumentContext> {
   readonly documentSequence: number;
   readonly revision: SqlRevision;
   readonly sequence: number;
-  readonly text: string;
+  readonly source: SqlSourceSnapshot;
 }
 
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
@@ -446,7 +443,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #updating = false;
 
   constructor(
-    text: string,
+    source: SqlSourceSnapshot,
     context: Context,
     dialects: ReadonlySet<string>,
     onDispose: () => void,
@@ -462,7 +459,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       documentSequence,
       revision: createSqlRevisionToken(),
       sequence,
-      text,
+      source,
     });
   }
 
@@ -532,7 +529,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     let nextContextSequence = this.#snapshot.contextSequence;
     let nextContext = this.#snapshot.context;
     let nextDocumentSequence = this.#snapshot.documentSequence;
-    let nextText = this.#snapshot.text;
+    let nextSource = this.#snapshot.source;
 
     if (kind === "context") {
       if (
@@ -624,7 +621,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           );
         }
         validateDocumentLength(text);
-        nextText = text;
+        nextSource = createIdentitySqlSource(text);
       } else if (documentKind === "changes") {
         if (
           readOwnDataProperty(
@@ -651,8 +648,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             "SQL document changes must be an array",
           );
         }
-        const normalizedChanges = normalizeChanges(nextText, changes);
-        nextText = applyChanges(nextText, normalizedChanges);
+        const normalizedChanges = normalizeChanges(
+          nextSource.originalText,
+          changes,
+        );
+        nextSource = createIdentitySqlSource(
+          applyChanges(nextSource.originalText, normalizedChanges),
+        );
       } else {
         throw new SqlSessionError(
           "invalid-update",
@@ -677,7 +679,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       documentSequence: nextDocumentSequence,
       revision,
       sequence,
-      text: nextText,
+      source: nextSource,
     });
     return revision;
   }
@@ -790,6 +792,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         );
       }
       validateDocumentLength(text);
+      const source = createIdentitySqlSource(text);
       const candidateContext = readRequiredDataProperty(
         input,
         "context",
@@ -807,7 +810,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
 
       let session: DefaultSqlDocumentSession<Context>;
       session = new DefaultSqlDocumentSession(
-        text,
+        source,
         context,
         this.#dialects,
         () => {
