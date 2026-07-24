@@ -112,7 +112,9 @@ The service distinguishes:
 - Disposal
 
 An absent or partial catalog cannot justify a definite unknown-object
-diagnostic.
+diagnostic. A complete-empty completion search cannot either; only a distinct
+authoritative resolution contract with complete resolution coverage may prove
+absence.
 
 ## Provider boundary
 

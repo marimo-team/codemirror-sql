@@ -117,8 +117,9 @@ whole typed relation-path range as statement-relative UTF-16 ranges created
 from package-owned source. The session maps them to absolute original-document
 ranges before returning a completion item. In the first slice every catalog
 completion replaces the authenticated whole typed relation path with the fully
-rendered, provider-proven `completionPath`. It never inserts a full path into a
-final-segment edit, so `schema.us` cannot become `schema.schema.users`.
+rendered canonical suffix selected by provider-proven `completionPathStart`.
+It never inserts a full path into a final-segment edit, so `schema.us` cannot
+become `schema.schema.users`.
 Incomplete quoted identifiers replace the complete authenticated token or path
 rather than creating an unmatched quote suffix. No edit crosses a statement or
 embedded-region boundary.
@@ -185,16 +186,21 @@ An empty positive-only local-relation list never proves that no CTE is visible.
 ### Embedded regions
 
 The first public template input is a complete set of length-preserving embedded
-regions attached atomically to a document revision. Arbitrary transformer
-callbacks and generated/reordered source maps remain deferred.
+regions attached atomically to a document revision. `openDocument` accepts an
+optional complete set; omission or an empty set means identity source.
+Arbitrary transformer callbacks and generated/reordered source maps remain
+deferred.
 
 Every accepted full-text or incremental document update includes the complete
-ordered, non-overlapping region set for the resulting text. An empty set clears
-regions; a context-only update preserves them. Text, context, and regions pass
-one validation gate and either create one new revision together or leave the
-session unchanged. The CodeMirror adapter supplies the post-transaction set
-through a typed effect or a configured pure extractor; it never follows a text
-update with a second region update.
+ordered, non-overlapping region set for the resulting text. A base-revision
+transaction may instead change regions alone or together with context while
+leaving text and document identity unchanged. Without a document mutation,
+omission preserves the current set and an explicit empty set clears it. Text,
+context, and regions pass one validation gate and either create one new
+revision together or leave the session unchanged. The CodeMirror adapter
+supplies the post-transaction set through a typed effect or a configured pure
+extractor; it never opens or changes text and follows with a second region
+update.
 
 An untyped embedded region is an unknown grammar barrier, not an exact
 expression token. The recognizer:
@@ -205,10 +211,12 @@ expression token. The recognizer:
   a declaration; and
 - returns unavailable when proof cannot cross the barrier, or ready with
   recovered quality, `isIncomplete: true`, and the closed reason
-  `opaque-template-context` when a later site is independently proven.
+  `opaque-template-context` when source tokens after the barrier heuristically
+  resemble a supported site and the edit coordinates are independently safe.
 
 Therefore generic marimo interpolation such as `FROM {df} JOIN |` is never
-exact. Exact continuation across a region requires a future trusted,
+exact: its SQL site semantics remain uncertain even when a recovered completion
+is useful. Exact continuation across a region requires a future trusted,
 feature-specific syntactic-role contract; a language label alone is
 insufficient.
 
@@ -240,24 +248,38 @@ A returned relation contains:
 
 - a stable provider-local entity ID;
 - relation kind;
-- canonical absolute catalog path;
-- a completion path positively proven addressable for the request scope and
-  search path; and
+- a canonical absolute catalog path whose components contain decoded values
+  and closed semantic roles;
+- a `completionPathStart` index selecting an exact suffix of that canonical
+  path, positively proven addressable for the request scope and search path;
+  and
 - a closed provider-proven match quality, initially `exact` or `equivalent`;
   and
 - optional bounded plain-text detail.
 
+The initial closed component roles are `catalog`, `schema`, `project`,
+`dataset`, and `relation`. Each dialect accepts only its documented role
+sequences, and the final component is always `relation`.
+
 The service never invents an unqualified candidate from an absolute path. The
 provider proves matching and addressability through `matchQuality` and
-`completionPath`; the service validates the bounded shape and produces
-dialect-correct, segment-role-aware insertion text. Each catalog item has one
-positive catalog provenance containing provider and entity IDs.
+`completionPathStart`; the service validates that the selected suffix and role
+sequence are legal for the registered dialect, then produces dialect-correct,
+segment-role-aware insertion text. Alias paths that are not canonical suffixes
+remain deferred. Each catalog item has one positive catalog provenance
+containing provider and entity IDs.
 
 Search responses distinguish:
 
 - ready with complete, partial, or paginated coverage;
 - loading; and
 - failed with a closed code and retry policy.
+
+A terminal `loading` response is not cached. A provider that later becomes
+ready must publish a strictly higher epoch through its subscription; same-epoch
+duplicate invalidation is not a readiness signal. A still-pending search
+promise can instead resolve ready under the service-owned response/refresh
+rules below.
 
 Partial positive entities may be offered. A partial or absent result never
 proves that a relation does not exist. A complete empty search means only that
@@ -270,11 +292,14 @@ throwing proxies, unexpected keys, oversized strings or arrays, and malformed
 closed values fail without exposing raw errors.
 
 The core also provides a provisional `createInMemoryRelationCatalog` helper for
-bounded readonly relation data. It indexes stable IDs, kinds, canonical
-component paths, optional details, scopes, and search paths; uses package
-dialect utilities for matching and addressable completion paths; returns
-complete, frozen generation-zero results; and requires no no-op subscription
-for a static catalog. It imports no CodeMirror, DOM, React, or host state.
+bounded readonly relation data. It indexes stable IDs, kinds, role-bearing
+canonical component paths, optional details, scopes, and caller-proven
+addressable suffix starts. Each scope explicitly selects a closed matching
+policy such as exact code-unit or ASCII case-insensitive matching; the helper
+never infers catalog policy from dialect ID. Package dialect utilities decode
+and render SQL but do not establish catalog eligibility. The helper returns
+complete, frozen generation-zero results and requires no no-op subscription for
+a static catalog. It imports no CodeMirror, DOM, React, or host state.
 
 ### Epochs, subscriptions, and invalidation
 
@@ -309,6 +334,12 @@ back synchronously. A newly joining session captures an already-observed epoch
 without a synthetic revision bump. Disposal removes membership before
 unsubscribing or running external cleanup. Fifty sessions sharing a scope do
 not create fifty provider subscriptions.
+
+Each installed subscription has a service-owned incarnation identity captured
+by its callback. The identity is revoked before external unsubscribe or
+cleanup, and every callback checks it before entering the serialized epoch
+gate. Cleanup from a retired incarnation is keyed to that identity and cannot
+remove, mutate, or notify a reentrantly installed replacement.
 
 The session exposes a disposable revision-change subscription for
 service-originated changes:
@@ -351,6 +382,8 @@ outcomes settle through a discriminated request result.
 Completion is latest-wins per session:
 
 - a new completion request supersedes the previous request;
+- supersession removes any refresh observer retained by the previous request
+  before optionally transferring ownership to identical new work;
 - text, context, embedded-region, relevant catalog, or provider-configuration
   changes supersede captured work;
 - caller cancellation and session/service disposal settle promptly;
@@ -391,18 +424,39 @@ budget. JavaScript cannot preempt synchronous code; an over-budget return is
 therefore discarded as `catalog-timeout`, and CPU-heavy or untrusted providers
 must use a worker or process.
 
-Service-owned queue-wait and execution safety deadlines default to 100 ms and
-250 ms. Configuration is checked at construction and restricted to 10–2,000 ms
-for queue wait and 10–5,000 ms for execution. Joining shared work never extends
-either request's absolute deadline. Queue expiry removes work without invoking
-the provider. Execution expiry detaches the consumer, aborts only after the
-consumer count reaches zero, and drains a late resolve or reject. No provider
-promise can keep `complete()` pending indefinitely.
+Each shared work item owns one immutable absolute queue deadline from its first
+enqueue and, once invoked, one immutable absolute execution deadline. Defaults
+are 100 ms and 250 ms. Configuration is checked at construction and restricted
+to 10–2,000 ms for queue wait and 10–5,000 ms for execution. Joiners inherit
+the remaining work budget and never extend either deadline. Hard queue expiry
+atomically removes the work without invoking the provider and settles every
+attached request consumer. Hard execution expiry atomically removes the work,
+settles every attached consumer, removes its refresh observers, aborts once,
+and drains a late resolve or reject. Earlier caller cancellation detaches only
+that consumer.
 
-At a recognized site, queue or execution expiry still settles a ready local
-result, possibly empty, with `isIncomplete: true` and a closed
-`catalog-queue-timeout` or `catalog-timeout` reason. It does not turn proven
-query-site evidence into unavailable analysis.
+Hard safety deadlines do not define interactive latency. Each completion
+request has a checked catalog response budget, default 40 ms and configurable
+from 0 through 50 ms, measured from the start of the complete request. Local
+and CTE evidence is composed first and never waits past the remaining response
+budget. On soft expiry the request settles ready, possibly empty, with
+`isIncomplete: true` and `catalog-loading`; its session may atomically transfer
+from request consumer to a service-owned refresh observer before detaching.
+That bounded refresh lease can retain the shared operation only until its
+existing hard deadline and active/queued service limits. With no consumers or
+live observers, the service removes and aborts the work. An observer is bound
+to the captured session revision and exact work key; any session change,
+supersession, or disposal removes it.
+
+If leased work resolves ready at the same epoch, the service decodes and caches
+it, removes the observers, and advances each still-subscribed observing session
+once with the closed reason `catalog-availability`. The adapter coalesces that
+notification into a new completion request. This is service-owned evidence
+readiness, not a provider epoch invalidation, so equal-epoch duplicate rules do
+not suppress it. Hard queue or execution expiry removes observers without a
+refresh notification and leaves the already-returned incomplete result valid.
+No optional catalog promise can keep `complete()` pending indefinitely or
+block the local baseline past its product response budget.
 
 The exact structural cache and shared-work key contains:
 
@@ -427,6 +481,11 @@ Partial and paginated entries retain incomplete coverage; pages combine only
 for the identical base key and epoch, and each continuation remains a distinct
 request key. Higher-epoch results may be cached only after older scope entries
 are cleared and never publish to the revision that observed the older epoch.
+
+Decoded entity IDs are unique for `(provider configuration, scope, epoch)`
+across every page composed into one result. A repeated ID, even with otherwise
+identical data, makes the page chain malformed before ranking or caching; array
+and page order therefore cannot resolve conflicting identity records.
 
 ### Initial resource budgets
 
@@ -459,6 +518,8 @@ The initial checked limits are:
 | Service-wide active catalog searches | 8 |
 | Service-wide queued catalog searches | 64 |
 | Active completion consumers | 1 per session |
+| Catalog response budget | 40 ms default, 50 ms maximum |
+| Catalog refresh observers | 1 per session |
 
 Limit exhaustion produces an explicit unavailable or incomplete result. An
 oversized provider response is rejected; it is never silently truncated while
@@ -528,8 +589,9 @@ charter's main-thread and completion-latency envelopes.
 
 Worker protocol v1 remains unchanged.
 
-When scope-dependent completion, hover, navigation, or diagnostics require
-parser semantics, the worker protocol will move atomically to v2. A parsed
+When additional or general parser-derived scope semantics are required for
+completion, hover, navigation, or diagnostics, the worker protocol will move
+atomically to v2. A parsed
 response will keep normalized syntax and semantic availability independent.
 The semantic payload will be a bounded scoped IR covering query blocks,
 bindings, visibility, and limitations. It will not contain raw ASTs, raw source,
@@ -540,9 +602,11 @@ Mixed cached assets fail the exact version check and retire the generation.
 
 ## Implementation sequence
 
-1. Accept this ADR as the provisional contract and compile its completion,
-   catalog, epoch, invalidation, notification, request-result, and
-   embedded-region type sketches against core and marimo consumer fixtures.
+1. Accept this ADR as the provisional contract and add a checked-in,
+   runtime-free marimo-shaped type fixture. Its core portion compiles region,
+   search-path, catalog, notification, and completion sketches without DOM
+   imports; its adapter portion compiles the rich-info resolver signature. No
+   production slice starts until both pass.
 2. Attach embedded regions to session open/update transactions atomically.
 3. Add the bounded partial-`SELECT` query-site recognizer.
 4. Add the bounded CTE frame and visibility recognizer.
@@ -550,11 +614,13 @@ Mixed cached assets fail the exact version check and retire the generation.
    in-flight sharing, cancellation, and provider contract suite.
 6. Add the session completion method and deterministic composition.
 7. Add the separate CodeMirror adapter and packed/browser fixtures.
-8. Add the marimo fixture and 1/10/50-editor performance and leak evidence.
+8. Add the pinned packed/browser/runtime marimo fixture and 1/10/50-editor
+   performance and leak evidence.
 9. Validate both the in-memory/notebook and hierarchical remote provider
    shapes, then stabilize the declarations and public export surface.
 10. Design scoped parser semantics and protocol v2 against PostgreSQL and
-   BigQuery corpora before any scope-dependent feature consumes it.
+   BigQuery corpora before any additional parser-derived scope feature
+   consumes it.
 
 Breaking refinement remains allowed through step 8. The provider and
 completion types become stable only after the working vertical slice, reusable

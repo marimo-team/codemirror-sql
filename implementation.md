@@ -777,8 +777,9 @@ lifecycle suites, and declaration snapshots pass.
 
 Then design query blocks, typed visibility, CTE/relation/alias/column bindings,
 and explicit partial semantic states against materially different dialect
-corpora before a scope-dependent feature consumes them. Flat parser relation
-lists are not a semantic model.
+corpora before an additional parser-derived scope feature consumes them. The
+bounded CTE recognizer remains the explicit narrow exception. Flat parser
+relation lists are not a semantic model.
 
 Exit when relation completion works through the framework-independent session,
 catalog and parser failures remain independent, semantic goldens pass, parser
@@ -803,8 +804,9 @@ Expand the minimal contracts into lazy catalogs, stable
 identities/invalidation, production feature-specific authority, native/remote
 providers, and the recorded DuckDB/LSP/`sqruff` decisions.
 
-Exit when optional remote work never blocks the local baseline and all
-race/failure/partial-catalog contracts pass.
+Exit when optional remote work never delays the local baseline beyond the
+checked product response budget, incomplete local results remain useful, and
+all race/failure/partial-catalog contracts pass.
 
 ### 7. Marimo migration and release
 
