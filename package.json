@@ -28,7 +28,7 @@
     "sql"
   ],
   "license": "Apache-2.0",
-  "packageManager": "pnpm@11.4.0",
+  "packageManager": "pnpm@11.15.1",
   "peerDependencies": {
     "@codemirror/autocomplete": "^6",
     "@codemirror/lint": "^6",
@@ -46,7 +46,7 @@
     "oxlint": "1.64.0",
     "playwright": "1.61.1",
     "typescript": "7.0.2",
-    "vite": "8.0.13",
+    "vite": "8.1.5",
     "vitest": "4.1.6"
   },
   "files": [
