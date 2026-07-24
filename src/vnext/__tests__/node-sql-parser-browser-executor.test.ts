@@ -437,6 +437,58 @@ describe("node-sql-parser browser executor admission", () => {
     });
   });
 
+  it("becomes terminal when the request ID space is exhausted", async () => {
+    const { factory, options, scheduler } = harness({
+      maxQueuedRequests: 3,
+      requestIdStart: Number.MAX_SAFE_INTEGER,
+    });
+    const executor = createNodeSqlParserBrowserExecutor(options);
+    const lastIdentified = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT last",
+    });
+    const exhausted = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT exhausted",
+    });
+    const worker = createdWorker(factory);
+
+    ready(worker);
+    expect(postedRequest(worker).requestId).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    respond(worker, { kind: "syntax-rejected" });
+
+    expect(await outcome(lastIdentified)).toStrictEqual({
+      kind: "syntax-rejected",
+    });
+    expect(await outcome(exhausted)).toStrictEqual({
+      code: "protocol-error",
+      kind: "failed",
+    });
+    expect(worker.terminateCalls()).toBe(1);
+    expect(factory.created).toHaveLength(1);
+    expect(scheduler.pendingCount()).toBe(0);
+
+    const later = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT later",
+    });
+    expect(await outcome(later)).toStrictEqual({
+      code: "protocol-error",
+      kind: "failed",
+    });
+    executor.dispose();
+    const disposed = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT disposed",
+    });
+    expect(await outcome(disposed)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+  });
+
   it("handles a response dispatched synchronously from postMessage", async () => {
     const { factory, options, scheduler } = harness();
     const worker = new FakeWorker();
@@ -1971,13 +2023,24 @@ describe("node-sql-parser browser executor host failure containment", () => {
   );
 
   it("becomes terminal when retirement cannot terminate the worker", async () => {
-    const { factory, options } = harness();
+    const { factory, options, scheduler } = harness();
     const worker = new FakeWorker({
       remove: "message",
+      retainRemovedListeners: true,
       terminate: true,
     });
     factory.enqueue(worker);
     const executor = createNodeSqlParserBrowserExecutor(options);
+    let nested:
+      | NodeSqlParserBrowserExecutorSubmission
+      | undefined;
+    worker.setTerminateHook(() => {
+      nested = executor.submit({
+        grammar: "postgresql",
+        text: "SELECT nested",
+      });
+      nested.cancel();
+    });
     const active = executor.submit({
       grammar: "postgresql",
       text: "SELECT private",
@@ -2000,6 +2063,13 @@ describe("node-sql-parser browser executor host failure containment", () => {
     expect(worker.terminateCalls()).toBe(1);
     expect(worker.removed).toContain("messageerror");
     expect(factory.created).toHaveLength(1);
+    if (nested === undefined) {
+      throw new Error("terminate hook did not submit");
+    }
+    expect(await outcome(nested)).toStrictEqual({
+      kind: "cancelled",
+    });
+    expect(scheduler.pendingCount()).toBe(0);
 
     const later = executor.submit({
       grammar: "postgresql",
@@ -2010,6 +2080,51 @@ describe("node-sql-parser browser executor host failure containment", () => {
       kind: "failed",
     });
     expect(factory.created).toHaveLength(1);
+    worker.emit(encodeNodeSqlParserWireReady());
+    worker.dispatch("error", new Error("late private"));
+    expect(factory.created).toHaveLength(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it("lets reentrant disposal win for queued and future work", async () => {
+    const { factory, options, scheduler } = harness();
+    const worker = new FakeWorker({ terminate: true });
+    factory.enqueue(worker);
+    const executor = createNodeSqlParserBrowserExecutor(options);
+    worker.setTerminateHook(() => {
+      executor.dispose();
+    });
+    const active = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT active",
+    });
+    const queued = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT queued",
+    });
+
+    ready(worker);
+    worker.dispatch("error", new Error("private"));
+    expect(await outcome(active)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(await outcome(queued)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+    expect(worker.terminateCalls()).toBe(1);
+    expect(factory.created).toHaveLength(1);
+    expect(scheduler.pendingCount()).toBe(0);
+
+    const later = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT later",
+    });
+    expect(await outcome(later)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
   });
 
   it("contains a deadline scheduler set failure", async () => {

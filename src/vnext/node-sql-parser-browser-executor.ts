@@ -46,6 +46,7 @@ export interface NodeSqlParserBrowserExecutorDeadlineScheduler {
 export interface NodeSqlParserBrowserExecutorOptions
   extends NodeSqlParserBrowserExecutorLimits {
   readonly deadlineScheduler?: NodeSqlParserBrowserExecutorDeadlineScheduler;
+  readonly requestIdStart?: number;
   readonly workerFactory?: () => NodeSqlParserBrowserExecutorWorker;
 }
 
@@ -146,6 +147,7 @@ interface WorkerGeneration {
 
 interface NormalizedOptions extends NodeSqlParserBrowserExecutorLimits {
   readonly deadlineScheduler: NodeSqlParserBrowserExecutorDeadlineScheduler;
+  readonly requestIdStart: number;
   readonly workerFactory: () => NodeSqlParserBrowserExecutorWorker;
 }
 
@@ -256,6 +258,7 @@ function normalizeOptions(
   let maxQueuedRequests: number;
   let maxQueuedTextUnits: number;
   let queueDeadlineMs: number;
+  let requestIdStart: number | undefined;
   let startupDeadlineMs: number;
   let workerFactory:
     | (() => NodeSqlParserBrowserExecutorWorker)
@@ -266,6 +269,7 @@ function normalizeOptions(
     maxQueuedRequests = options.maxQueuedRequests;
     maxQueuedTextUnits = options.maxQueuedTextUnits;
     queueDeadlineMs = options.queueDeadlineMs;
+    requestIdStart = options.requestIdStart;
     startupDeadlineMs = options.startupDeadlineMs;
     workerFactory = options.workerFactory;
   } catch {
@@ -291,6 +295,9 @@ function normalizeOptions(
     startupDeadlineMs,
     "startupDeadlineMs",
   );
+  if (requestIdStart !== undefined) {
+    requirePositiveSafeInteger(requestIdStart, "requestIdStart");
+  }
   if (
     workerFactory !== undefined &&
     typeof workerFactory !== "function"
@@ -305,6 +312,7 @@ function normalizeOptions(
     maxQueuedRequests,
     maxQueuedTextUnits,
     queueDeadlineMs,
+    requestIdStart: requestIdStart ?? 1,
     startupDeadlineMs,
     workerFactory: workerFactory ?? createDefaultWorker,
   });
@@ -398,12 +406,15 @@ export function createNodeSqlParserBrowserExecutor(
   let creatingWorker = false;
   let disposed = false;
   let generation: WorkerGeneration | null = null;
-  let nextRequestId = 1;
+  let nextRequestId = normalized.requestIdStart;
   let pumping = false;
   let pumpRequested = false;
   let queuedTextUnits = 0;
   let retirementDepth = 0;
-  let terminalFailure = false;
+  let terminalFailure:
+    | "protocol-error"
+    | "worker-failure"
+    | null = null;
   const queue: QueueEntry[] = [];
   const seenWorkers = new WeakSet<object>();
 
@@ -576,12 +587,14 @@ export function createNodeSqlParserBrowserExecutor(
     settleDetachedQueue(detached, createOutcome);
   }
 
-  function enterTerminalFailure(): void {
-    if (terminalFailure || disposed) {
+  function enterTerminalFailure(
+    code: "protocol-error" | "worker-failure",
+  ): void {
+    if (terminalFailure !== null || disposed) {
       return;
     }
-    terminalFailure = true;
-    rejectAllQueued(() => failedOutcome("worker-failure"));
+    terminalFailure = code;
+    rejectAllQueued(() => failedOutcome(code));
   }
 
   function removeGenerationListeners(
@@ -633,7 +646,7 @@ export function createNodeSqlParserBrowserExecutor(
   function startGeneration(): void {
     if (
       disposed ||
-      terminalFailure ||
+      terminalFailure !== null ||
       creatingWorker ||
       generation !== null ||
       queue.length === 0 ||
@@ -665,7 +678,7 @@ export function createNodeSqlParserBrowserExecutor(
       try {
         worker.terminate();
       } catch {
-        enterTerminalFailure();
+        enterTerminalFailure("worker-failure");
       }
       return;
     }
@@ -745,7 +758,7 @@ export function createNodeSqlParserBrowserExecutor(
       const retired = cleanupRevokedGeneration(revoked);
       afterRevocation?.();
       if (!retired) {
-        enterTerminalFailure();
+        enterTerminalFailure("worker-failure");
       }
 
       for (const { entry } of detachedQueue) {
@@ -861,7 +874,7 @@ export function createNodeSqlParserBrowserExecutor(
   function pumpOnce(): void {
     if (
       disposed ||
-      terminalFailure ||
+      terminalFailure !== null ||
       active !== null ||
       queue.length === 0
     ) {
@@ -877,7 +890,22 @@ export function createNodeSqlParserBrowserExecutor(
 
     const requestId = allocateRequestId();
     if (requestId === null) {
-      failGeneration(generation, "protocol-error");
+      retirementDepth += 1;
+      try {
+        terminalFailure = "protocol-error";
+        const detachedQueue = detachAllQueued();
+        const revoked = revokeGeneration(generation);
+        cleanupDetachedQueue(detachedQueue);
+        cleanupRevokedGeneration(revoked);
+        for (const { entry } of detachedQueue) {
+          settleConsumer(
+            entry,
+            failedOutcome("protocol-error"),
+          );
+        }
+      } finally {
+        retirementDepth -= 1;
+      }
       return;
     }
 
@@ -1014,8 +1042,8 @@ export function createNodeSqlParserBrowserExecutor(
     if (disposed) {
       return immediateSubmission(failedOutcome("disposed"));
     }
-    if (terminalFailure) {
-      return immediateSubmission(failedOutcome("worker-failure"));
+    if (terminalFailure !== null) {
+      return immediateSubmission(failedOutcome(terminalFailure));
     }
     if (input.text.length > MAX_NODE_SQL_PARSER_STATEMENT_LENGTH) {
       return immediateSubmission(resourceLimitOutcome());
