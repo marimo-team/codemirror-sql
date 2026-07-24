@@ -403,6 +403,7 @@ export function createNodeSqlParserBrowserExecutor(
   let pumpRequested = false;
   let queuedTextUnits = 0;
   let retirementDepth = 0;
+  let terminalFailure = false;
   const queue: QueueEntry[] = [];
   const seenWorkers = new WeakSet<object>();
 
@@ -554,16 +555,17 @@ export function createNodeSqlParserBrowserExecutor(
 
   function cleanupRevokedGeneration(
     revoked: RevokedGeneration | null,
-  ): void {
+  ): boolean {
     if (revoked === null) {
-      return;
+      return true;
     }
     clearDeadline(revoked.startupDeadline);
     removeGenerationListeners(revoked.target);
     try {
       revoked.target.worker.terminate();
+      return true;
     } catch {
-      // A retired generation is never reused even if termination throws.
+      return false;
     }
   }
 
@@ -572,6 +574,14 @@ export function createNodeSqlParserBrowserExecutor(
   ): void {
     const detached = detachAllQueued();
     settleDetachedQueue(detached, createOutcome);
+  }
+
+  function enterTerminalFailure(): void {
+    if (terminalFailure || disposed) {
+      return;
+    }
+    terminalFailure = true;
+    rejectAllQueued(() => failedOutcome("worker-failure"));
   }
 
   function removeGenerationListeners(
@@ -623,6 +633,7 @@ export function createNodeSqlParserBrowserExecutor(
   function startGeneration(): void {
     if (
       disposed ||
+      terminalFailure ||
       creatingWorker ||
       generation !== null ||
       queue.length === 0 ||
@@ -654,7 +665,7 @@ export function createNodeSqlParserBrowserExecutor(
       try {
         worker.terminate();
       } catch {
-        // An unowned worker is never installed or reused.
+        enterTerminalFailure();
       }
       return;
     }
@@ -731,8 +742,11 @@ export function createNodeSqlParserBrowserExecutor(
 
       cleanupDetachedActive(detachedActive);
       cleanupDetachedQueue(detachedQueue);
-      cleanupRevokedGeneration(revoked);
+      const retired = cleanupRevokedGeneration(revoked);
       afterRevocation?.();
+      if (!retired) {
+        enterTerminalFailure();
+      }
 
       for (const { entry } of detachedQueue) {
         settleConsumer(entry, failedOutcome(code));
@@ -845,7 +859,12 @@ export function createNodeSqlParserBrowserExecutor(
   }
 
   function pumpOnce(): void {
-    if (disposed || active !== null || queue.length === 0) {
+    if (
+      disposed ||
+      terminalFailure ||
+      active !== null ||
+      queue.length === 0
+    ) {
       return;
     }
     if (generation === null) {
@@ -858,14 +877,7 @@ export function createNodeSqlParserBrowserExecutor(
 
     const requestId = allocateRequestId();
     if (requestId === null) {
-      const target = generation;
-      const detachedQueue = detachAllQueued();
-      const revoked = revokeGeneration(target);
-      cleanupDetachedQueue(detachedQueue);
-      cleanupRevokedGeneration(revoked);
-      for (const { entry } of detachedQueue) {
-        settleConsumer(entry, failedOutcome("protocol-error"));
-      }
+      failGeneration(generation, "protocol-error");
       return;
     }
 
@@ -1001,6 +1013,9 @@ export function createNodeSqlParserBrowserExecutor(
     const input = requireInput(rawInput);
     if (disposed) {
       return immediateSubmission(failedOutcome("disposed"));
+    }
+    if (terminalFailure) {
+      return immediateSubmission(failedOutcome("worker-failure"));
     }
     if (input.text.length > MAX_NODE_SQL_PARSER_STATEMENT_LENGTH) {
       return immediateSubmission(resourceLimitOutcome());

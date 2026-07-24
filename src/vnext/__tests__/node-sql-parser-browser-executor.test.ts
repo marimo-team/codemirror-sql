@@ -1970,7 +1970,7 @@ describe("node-sql-parser browser executor host failure containment", () => {
     },
   );
 
-  it("contains listener removal and terminate failures during retirement", async () => {
+  it("becomes terminal when retirement cannot terminate the worker", async () => {
     const { factory, options } = harness();
     const worker = new FakeWorker({
       remove: "message",
@@ -1978,18 +1978,38 @@ describe("node-sql-parser browser executor host failure containment", () => {
     });
     factory.enqueue(worker);
     const executor = createNodeSqlParserBrowserExecutor(options);
-    const submission = executor.submit({
+    const active = executor.submit({
       grammar: "postgresql",
       text: "SELECT private",
     });
+    const queued = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT queued",
+    });
 
+    ready(worker);
     worker.dispatch("error", new Error("private"));
-    expect(await outcome(submission)).toStrictEqual({
+    expect(await outcome(active)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(await outcome(queued)).toStrictEqual({
       code: "worker-failure",
       kind: "failed",
     });
     expect(worker.terminateCalls()).toBe(1);
     expect(worker.removed).toContain("messageerror");
+    expect(factory.created).toHaveLength(1);
+
+    const later = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT later",
+    });
+    expect(await outcome(later)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(factory.created).toHaveLength(1);
   });
 
   it("contains a deadline scheduler set failure", async () => {
