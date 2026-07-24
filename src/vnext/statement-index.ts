@@ -1,3 +1,5 @@
+import type { SqlTextChange } from "./types.js";
+
 const analysisRangeBrand: unique symbol = Symbol("SqlAnalysisRange");
 
 export const MAX_SQL_STATEMENT_SLOTS = 10_000;
@@ -645,16 +647,37 @@ function quoteConstruct(
     : "double-quoted-identifier";
 }
 
-/** Builds the bounded, parser-free statement partition for one analysis text. */
-export function buildSqlStatementIndex(
+interface SqlStatementScanOptions {
+  readonly from: number;
+  readonly prefixSlots: readonly SqlStatementSlot[];
+  readonly tryReuseSuffix?: (
+    boundary: number,
+    scannedSlots: readonly SqlStatementSlot[],
+  ) => SqlStatementIndex | null;
+}
+
+function createStatementIndex(
+  slots: SqlStatementSlot[],
+): SqlStatementIndex {
+  const finalSlot = getStatementSlot(slots, slots.length - 1);
+  return Object.freeze({
+    endState: finalSlot.endState,
+    quality:
+      finalSlot.boundaryQuality === "opaque" ? "opaque" : "exact",
+    slots: Object.freeze(slots),
+  });
+}
+
+function scanSqlStatementIndex(
   analysisText: string,
   profile: SqlLexicalProfile,
+  options: SqlStatementScanOptions,
 ): SqlStatementIndex {
-  const slots: SqlStatementSlot[] = [];
+  const slots: SqlStatementSlot[] = [...options.prefixSlots];
   const prefixGuard = new SqlPrefixGuard(profile.proceduralGuards);
-  let slotFrom = 0;
+  let slotFrom = options.from;
   let hasCode = false;
-  let cursor = 0;
+  let cursor = options.from;
   let finalEndState: ExactSqlStatementSlot["endState"] = NORMAL_END_STATE;
 
   const finishOpaque = (
@@ -668,11 +691,7 @@ export function buildSqlStatementIndex(
       detectedAt,
     );
     slots.push(slot);
-    return Object.freeze({
-      endState: slot.endState,
-      quality: "opaque",
-      slots: Object.freeze(slots),
-    });
+    return createStatementIndex(slots);
   };
 
   while (cursor < analysisText.length) {
@@ -850,6 +869,10 @@ export function buildSqlStatementIndex(
       finalEndState = NORMAL_END_STATE;
       prefixGuard.reset();
       cursor += 1;
+      const reused = options.tryReuseSuffix?.(slotFrom, slots);
+      if (reused) {
+        return reused;
+      }
       continue;
     }
 
@@ -866,10 +889,259 @@ export function buildSqlStatementIndex(
       finalEndState,
     ),
   );
+  return createStatementIndex(slots);
+}
+
+/** Builds the bounded, parser-free statement partition for one analysis text. */
+export function buildSqlStatementIndex(
+  analysisText: string,
+  profile: SqlLexicalProfile,
+): SqlStatementIndex {
+  return scanSqlStatementIndex(analysisText, profile, {
+    from: 0,
+    prefixSlots: [],
+  });
+}
+
+function statementSlotIndexAt(
+  slots: readonly SqlStatementSlot[],
+  position: number,
+  affinity: SqlCursorAffinity,
+): number {
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (getStatementSlot(slots, middle).extent.from <= position) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  let slotIndex = Math.max(0, low - 1);
+  if (
+    affinity === "left" &&
+    position > 0 &&
+    getStatementSlot(slots, slotIndex).extent.from === position
+  ) {
+    slotIndex -= 1;
+  }
+  return Math.max(0, slotIndex);
+}
+
+function statementSlotAtOrAfter(
+  slots: readonly SqlStatementSlot[],
+  position: number,
+): number {
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const from = getStatementSlot(slots, middle).extent.from;
+    if (from < position) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+function shiftEndState(
+  endState: ExactSqlStatementSlot["endState"],
+  delta: number,
+): ExactSqlStatementSlot["endState"];
+function shiftEndState(
+  endState: OpaqueSqlStatementSlot["endState"],
+  delta: number,
+): OpaqueSqlStatementSlot["endState"];
+function shiftEndState(
+  endState: SqlLexicalEndState,
+  delta: number,
+): SqlLexicalEndState {
+  if (endState.kind === "normal") {
+    return endState;
+  }
+  return endState.kind === "opaque"
+    ? createOpaqueEndState(endState.reason, endState.from + delta)
+    : createUnterminatedEndState(
+        endState.construct,
+        endState.from + delta,
+      );
+}
+
+function shiftStatementSlot(
+  slot: SqlStatementSlot,
+  delta: number,
+): SqlStatementSlot {
+  if (slot.boundaryQuality === "opaque") {
+    return Object.freeze({
+      boundaryQuality: "opaque",
+      endState: shiftEndState(slot.endState, delta),
+      extent: createAnalysisRange(
+        slot.extent.from + delta,
+        slot.extent.to + delta,
+      ),
+    });
+  }
   return Object.freeze({
-    endState: finalEndState,
-    quality: "exact",
-    slots: Object.freeze(slots),
+    boundaryQuality: "exact",
+    endState: shiftEndState(slot.endState, delta),
+    extent: createAnalysisRange(
+      slot.extent.from + delta,
+      slot.extent.to + delta,
+    ),
+    hasCode: slot.hasCode,
+    source: createAnalysisRange(
+      slot.source.from + delta,
+      slot.source.to + delta,
+    ),
+    terminator: slot.terminator
+      ? createAnalysisRange(
+          slot.terminator.from + delta,
+          slot.terminator.to + delta,
+        )
+      : null,
+  });
+}
+
+function normalizeTrustedChanges(
+  changes: readonly SqlTextChange[],
+  previousLength: number,
+  nextLength: number,
+): {
+  readonly delta: number;
+  readonly first: SqlTextChange;
+  readonly oldStableFrom: number;
+} | null {
+  const first = changes[0];
+  if (!first) {
+    return null;
+  }
+  let previousEnd = 0;
+  let delta = 0;
+  for (const change of changes) {
+    if (
+      !Number.isSafeInteger(change.from) ||
+      !Number.isSafeInteger(change.to) ||
+      change.from < previousEnd ||
+      change.from < 0 ||
+      change.from > change.to ||
+      change.to > previousLength ||
+      typeof change.insert !== "string"
+    ) {
+      return null;
+    }
+    delta += change.insert.length - (change.to - change.from);
+    previousEnd = change.to;
+  }
+  const last = changes[changes.length - 1];
+  if (!last || previousLength + delta !== nextLength) {
+    return null;
+  }
+  return { delta, first, oldStableFrom: last.to };
+}
+
+/**
+ * Updates an index from trusted, normalized analysis-coordinate changes.
+ * Falls back to the full oracle whenever the change metadata is inconsistent.
+ */
+export function updateSqlStatementIndex(
+  previousIndex: SqlStatementIndex,
+  nextAnalysisText: string,
+  changes: readonly SqlTextChange[],
+  profile: SqlLexicalProfile,
+): SqlStatementIndex {
+  const previousSlots = previousIndex.slots;
+  const previousLength = getStatementSlot(
+    previousSlots,
+    previousSlots.length - 1,
+  ).extent.to;
+  if (changes.length === 0) {
+    return previousLength === nextAnalysisText.length
+      ? previousIndex
+      : buildSqlStatementIndex(nextAnalysisText, profile);
+  }
+  const normalized = normalizeTrustedChanges(
+    changes,
+    previousLength,
+    nextAnalysisText.length,
+  );
+  if (!normalized) {
+    return buildSqlStatementIndex(nextAnalysisText, profile);
+  }
+
+  const restartIndex = statementSlotIndexAt(
+    previousSlots,
+    normalized.first.from,
+    "left",
+  );
+  const restartFrom = getStatementSlot(
+    previousSlots,
+    restartIndex,
+  ).extent.from;
+  const prefixSlots = previousSlots.slice(0, restartIndex);
+  const newStableFrom = normalized.oldStableFrom + normalized.delta;
+  let oldSuffixCursor = statementSlotAtOrAfter(
+    previousSlots,
+    normalized.oldStableFrom,
+  );
+  const previousFinalSlot = getStatementSlot(
+    previousSlots,
+    previousSlots.length - 1,
+  );
+  const previousHasResourceLimit =
+    previousFinalSlot.boundaryQuality === "opaque" &&
+    previousFinalSlot.endState.reason === "resource-limit";
+
+  return scanSqlStatementIndex(nextAnalysisText, profile, {
+    from: restartFrom,
+    prefixSlots,
+    tryReuseSuffix: (newBoundary, scannedSlots) => {
+      if (newBoundary < newStableFrom) {
+        return null;
+      }
+      const oldBoundary = newBoundary - normalized.delta;
+      while (
+        oldSuffixCursor < previousSlots.length &&
+        getStatementSlot(
+          previousSlots,
+          oldSuffixCursor,
+        ).extent.from < oldBoundary
+      ) {
+        oldSuffixCursor += 1;
+      }
+      if (
+        oldSuffixCursor >= previousSlots.length ||
+        getStatementSlot(
+          previousSlots,
+          oldSuffixCursor,
+        ).extent.from !== oldBoundary
+      ) {
+        return null;
+      }
+      const oldSuffixLength = previousSlots.length - oldSuffixCursor;
+      if (
+        scannedSlots.length + oldSuffixLength >
+        MAX_SQL_STATEMENT_SLOTS
+      ) {
+        return null;
+      }
+      if (
+        previousHasResourceLimit &&
+        scannedSlots.length !== oldSuffixCursor
+      ) {
+        return null;
+      }
+      const oldSuffix = previousSlots.slice(oldSuffixCursor);
+      const suffix =
+        normalized.delta === 0
+          ? oldSuffix
+          : oldSuffix.map((slot) =>
+              shiftStatementSlot(slot, normalized.delta),
+            );
+      return createStatementIndex([...scannedSlots, ...suffix]);
+    },
   });
 }
 
@@ -892,25 +1164,10 @@ export function findSqlStatementSlot(
     throw new TypeError("SQL cursor affinity must be left or right");
   }
 
-  let low = 0;
-  let high = slots.length;
-  while (low < high) {
-    const middle = low + Math.floor((high - low) / 2);
-    if (getStatementSlot(slots, middle).extent.from <= position) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  let slotIndex = Math.max(0, low - 1);
-  if (
-    affinity === "left" &&
-    position > 0 &&
-    getStatementSlot(slots, slotIndex).extent.from === position
-  ) {
-    slotIndex -= 1;
-  }
-  return getStatementSlot(slots, Math.max(0, slotIndex));
+  return getStatementSlot(
+    slots,
+    statementSlotIndexAt(slots, position, affinity),
+  );
 }
 
 function getStatementSlot(

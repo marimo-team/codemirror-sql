@@ -48,3 +48,16 @@ public.
 The internal [statement index](./statement-index.md) scans `analysisText` and
 uses its length-preserving offsets without publishing analysis-coordinate
 ranges.
+
+Statement-index reuse depends on `analysisText` value and internal lexical
+profile identity, not source-object identity. A document update therefore
+still creates a fresh source snapshot and public revision even when equal
+analysis text permits reuse. The index does not retain either the old or
+current source text.
+
+Current sessions create identity sources, so their validated document changes
+are also trusted analysis-coordinate changes. The masking primitive is not yet
+attached to session updates. A future transformed-source pipeline must produce
+validated analysis-coordinate changes before it can use incremental indexing;
+otherwise a changed analysis document invalidates the cache and receives a
+fresh full build on demand.

@@ -1,6 +1,5 @@
 import type {
   OpenSqlDocument,
-  SqlDialectDefinition,
   SqlDocumentContext,
   SqlDocumentSession,
   SqlDocumentUpdate,
@@ -11,13 +10,28 @@ import type {
   SqlTextRange,
 } from "./types.js";
 import {
+  BIGQUERY_SQL_LEXICAL_PROFILE,
+  buildSqlStatementIndex,
+  DREMIO_SQL_LEXICAL_PROFILE,
+  DUCKDB_SQL_LEXICAL_PROFILE,
+  POSTGRESQL_SQL_LEXICAL_PROFILE,
+  type SqlLexicalProfile,
+  type SqlStatementIndex,
+  updateSqlStatementIndex,
+} from "./statement-index.js";
+import {
   createIdentitySqlSource,
   isSqlSourceError,
   MAX_SQL_SOURCE_LENGTH,
   normalizeSqlTextRange,
   type SqlSourceSnapshot,
 } from "./source.js";
-import { createSqlRevisionToken, SqlSessionError } from "./types.js";
+import {
+  createSqlDialect,
+  createSqlRevisionToken,
+  type SqlDialect,
+  SqlSessionError,
+} from "./types.js";
 
 const MAX_CONTEXT_DEPTH = 100;
 const MAX_CONTEXT_NODES = 10_000;
@@ -27,8 +41,74 @@ const MAX_CONTEXT_STRING_LENGTH = 1_000_000;
 const MAX_CONTEXT_ARRAY_LENGTH = 50_000;
 const MAX_CHANGES_PER_UPDATE = 10_000;
 const MAX_DIALECTS = 1_000;
-const MAX_DIALECT_ID_LENGTH = 256;
-const MAX_DIALECT_DISPLAY_NAME_LENGTH = 1_024;
+
+interface SqlDialectRuntime {
+  readonly dialect: SqlDialect;
+  readonly lexicalProfile: SqlLexicalProfile;
+}
+
+const sqlDialectRuntimes = new WeakMap<object, SqlDialectRuntime>();
+
+function createBuiltinSqlDialect(
+  id: string,
+  displayName: string,
+  lexicalProfile: SqlLexicalProfile,
+): SqlDialect {
+  const dialect = createSqlDialect(id, displayName);
+  sqlDialectRuntimes.set(
+    dialect,
+    Object.freeze({ dialect, lexicalProfile }),
+  );
+  return dialect;
+}
+
+const BIGQUERY_DIALECT = createBuiltinSqlDialect(
+  "bigquery",
+  "BigQuery",
+  BIGQUERY_SQL_LEXICAL_PROFILE,
+);
+const DREMIO_DIALECT = createBuiltinSqlDialect(
+  "dremio",
+  "Dremio",
+  DREMIO_SQL_LEXICAL_PROFILE,
+);
+const DUCKDB_DIALECT = createBuiltinSqlDialect(
+  "duckdb",
+  "DuckDB",
+  DUCKDB_SQL_LEXICAL_PROFILE,
+);
+const POSTGRES_DIALECT = createBuiltinSqlDialect(
+  "postgresql",
+  "PostgreSQL",
+  POSTGRESQL_SQL_LEXICAL_PROFILE,
+);
+
+/** Returns the package-owned BigQuery dialect handle. */
+export function bigQueryDialect(): SqlDialect {
+  return BIGQUERY_DIALECT;
+}
+
+/** Returns the package-owned Dremio dialect handle. */
+export function dremioDialect(): SqlDialect {
+  return DREMIO_DIALECT;
+}
+
+/** Returns the package-owned DuckDB dialect handle. */
+export function duckdbDialect(): SqlDialect {
+  return DUCKDB_DIALECT;
+}
+
+/** Returns the package-owned PostgreSQL dialect handle. */
+export function postgresDialect(): SqlDialect {
+  return POSTGRES_DIALECT;
+}
+
+function getSqlDialectRuntime(candidate: unknown): SqlDialectRuntime | null {
+  if (typeof candidate !== "object" || candidate === null) {
+    return null;
+  }
+  return sqlDialectRuntimes.get(candidate) ?? null;
+}
 
 interface PendingContextValue {
   readonly depth: number;
@@ -222,17 +302,19 @@ function cloneContext<Context extends SqlDocumentContext>(context: Context): Con
   }
 }
 
-function validateDialect(
+function resolveDialectRuntime(
   context: SqlDocumentContext,
-  dialects: ReadonlySet<string>,
-): void {
+  dialects: ReadonlyMap<string, SqlDialectRuntime>,
+): SqlDialectRuntime {
   const dialect = readRequiredDataProperty(
     context,
     "dialect",
     "invalid-dialect",
     "SQL document context",
   );
-  if (typeof dialect !== "string" || !dialects.has(dialect)) {
+  const runtime =
+    typeof dialect === "string" ? dialects.get(dialect) : undefined;
+  if (!runtime) {
     throw new SqlSessionError(
       "invalid-dialect",
       typeof dialect === "string"
@@ -240,6 +322,7 @@ function validateDialect(
         : "SQL document context dialect must be a string",
     );
   }
+  return runtime;
 }
 
 interface MissingDataProperty {
@@ -427,25 +510,33 @@ function applyChanges(text: string, changes: readonly SqlTextChange[]): string {
 interface SessionSnapshot<Context extends SqlDocumentContext> {
   readonly contextSequence: number;
   readonly context: Context;
+  readonly dialect: SqlDialectRuntime;
   readonly documentSequence: number;
   readonly revision: SqlRevision;
   readonly sequence: number;
   readonly source: SqlSourceSnapshot;
 }
 
+interface StatementIndexCache {
+  readonly documentSequence: number;
+  readonly index: SqlStatementIndex;
+  readonly lexicalProfile: SqlLexicalProfile;
+}
+
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   implements SqlDocumentSession<Context>
 {
-  readonly #dialects: ReadonlySet<string>;
+  readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #onDispose: () => void;
   #disposed = false;
   #snapshot: SessionSnapshot<Context>;
+  #statementIndexCache: StatementIndexCache | null = null;
   #updating = false;
 
   constructor(
     source: SqlSourceSnapshot,
     context: Context,
-    dialects: ReadonlySet<string>,
+    dialects: ReadonlyMap<string, SqlDialectRuntime>,
     onDispose: () => void,
   ) {
     this.#dialects = dialects;
@@ -453,9 +544,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const sequence = 0;
     const contextSequence = 0;
     const documentSequence = 0;
+    const dialect = resolveDialectRuntime(context, dialects);
     this.#snapshot = Object.freeze({
       contextSequence,
       context,
+      dialect,
       documentSequence,
       revision: createSqlRevisionToken(),
       sequence,
@@ -469,6 +562,37 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 
   get snapshotForTesting(): SessionSnapshot<Context> {
     return this.#snapshot;
+  }
+
+  get cachedStatementIndexForTesting(): SqlStatementIndex | null {
+    return this.#statementIndexCache?.index ?? null;
+  }
+
+  getStatementIndexForTesting(): SqlStatementIndex {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const cached = this.#statementIndexCache;
+    if (
+      cached &&
+      cached.documentSequence === this.#snapshot.documentSequence &&
+      cached.lexicalProfile === this.#snapshot.dialect.lexicalProfile
+    ) {
+      return cached.index;
+    }
+    const index = buildSqlStatementIndex(
+      this.#snapshot.source.analysisText,
+      this.#snapshot.dialect.lexicalProfile,
+    );
+    this.#statementIndexCache = Object.freeze({
+      documentSequence: this.#snapshot.documentSequence,
+      index,
+      lexicalProfile: this.#snapshot.dialect.lexicalProfile,
+    });
+    return index;
   }
 
   readonly update = (update: SqlDocumentUpdate<Context>): SqlRevision => {
@@ -530,6 +654,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     let nextContext = this.#snapshot.context;
     let nextDocumentSequence = this.#snapshot.documentSequence;
     let nextSource = this.#snapshot.source;
+    let documentMutation: "changes" | "none" | "replace" = "none";
+    let trustedAnalysisChanges: readonly SqlTextChange[] | null = null;
 
     if (kind === "context") {
       if (
@@ -622,6 +748,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         }
         validateDocumentLength(text);
         nextSource = createIdentitySqlSource(text);
+        documentMutation = "replace";
       } else if (documentKind === "changes") {
         if (
           readOwnDataProperty(
@@ -652,9 +779,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           nextSource.originalText,
           changes,
         );
+        trustedAnalysisChanges = normalizedChanges;
         nextSource = createIdentitySqlSource(
           applyChanges(nextSource.originalText, normalizedChanges),
         );
+        documentMutation = "changes";
       } else {
         throw new SqlSessionError(
           "invalid-update",
@@ -664,7 +793,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextDocumentSequence += 1;
     }
 
-    validateDialect(nextContext, this.#dialects);
+    const nextDialect = resolveDialectRuntime(
+      nextContext,
+      this.#dialects,
+    );
+    const nextLexicalProfile = nextDialect.lexicalProfile;
     if (this.#disposed) {
       throw new SqlSessionError(
         "session-disposed",
@@ -673,14 +806,48 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     }
     const sequence = this.#snapshot.sequence + 1;
     const revision = createSqlRevisionToken();
-    this.#snapshot = Object.freeze({
+    const nextSnapshot = Object.freeze({
       contextSequence: nextContextSequence,
       context: nextContext,
+      dialect: nextDialect,
       documentSequence: nextDocumentSequence,
       revision,
       sequence,
       source: nextSource,
     });
+    let nextStatementIndexCache = this.#statementIndexCache;
+    if (
+      nextStatementIndexCache &&
+      nextLexicalProfile !== this.#snapshot.dialect.lexicalProfile
+    ) {
+      nextStatementIndexCache = null;
+    } else if (nextStatementIndexCache && documentMutation !== "none") {
+      let nextIndex: SqlStatementIndex | null = null;
+      if (
+        nextSource.analysisText === this.#snapshot.source.analysisText
+      ) {
+        nextIndex = nextStatementIndexCache.index;
+      } else if (
+        documentMutation === "changes" &&
+        trustedAnalysisChanges
+      ) {
+        nextIndex = updateSqlStatementIndex(
+          nextStatementIndexCache.index,
+          nextSource.analysisText,
+          trustedAnalysisChanges,
+          nextLexicalProfile,
+        );
+      }
+      nextStatementIndexCache = nextIndex
+        ? Object.freeze({
+            documentSequence: nextDocumentSequence,
+            index: nextIndex,
+            lexicalProfile: nextLexicalProfile,
+          })
+        : null;
+    }
+    this.#snapshot = nextSnapshot;
+    this.#statementIndexCache = nextStatementIndexCache;
     return revision;
   }
 
@@ -693,6 +860,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       return;
     }
     this.#disposed = true;
+    this.#statementIndexCache = null;
     this.#onDispose();
   };
 }
@@ -700,7 +868,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
   implements SqlLanguageService<Context>
 {
-  readonly #dialects: ReadonlySet<string>;
+  readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #sessions = new Set<DefaultSqlDocumentSession<Context>>();
   #disposed = false;
 
@@ -736,7 +904,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         );
       }
 
-      const dialects = new Set<string>();
+      const dialects = new Map<string, SqlDialectRuntime>();
       for (let index = 0; index < dialectCount; index += 1) {
         const dialect = readRequiredDataProperty(
           configuredDialects,
@@ -744,14 +912,20 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
           "invalid-service-options",
           "SQL language service dialects",
         );
-        const definition = defineSqlDialect(dialect);
-        if (dialects.has(definition.id)) {
+        const runtime = getSqlDialectRuntime(dialect);
+        if (!runtime) {
           throw new SqlSessionError(
-            "duplicate-dialect",
-            `Duplicate SQL dialect: ${definition.id}`,
+            "invalid-dialect",
+            "SQL dialects must be created by a built-in dialect factory from this package instance",
           );
         }
-        dialects.add(definition.id);
+        if (dialects.has(runtime.dialect.id)) {
+          throw new SqlSessionError(
+            "duplicate-dialect",
+            `Duplicate SQL dialect: ${runtime.dialect.id}`,
+          );
+        }
+        dialects.set(runtime.dialect.id, runtime);
       }
       this.#dialects = dialects;
     } catch (error) {
@@ -806,7 +980,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         );
       }
       const context = cloneContext<Context>(candidateContext);
-      validateDialect(context, this.#dialects);
+      resolveDialectRuntime(context, this.#dialects);
 
       let session: DefaultSqlDocumentSession<Context>;
       session = new DefaultSqlDocumentSession(
@@ -853,63 +1027,6 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
     }
     this.#sessions.clear();
   };
-}
-
-/** Validates and normalizes one immutable dialect registration. */
-export function defineSqlDialect(
-  definition: SqlDialectDefinition,
-): SqlDialectDefinition {
-  try {
-    if (definition === null || typeof definition !== "object") {
-      throw new SqlSessionError(
-        "invalid-dialect",
-        "SQL dialect definition must be an object",
-      );
-    }
-    const id = readRequiredDataProperty(
-      definition,
-      "id",
-      "invalid-dialect",
-      "SQL dialect definition",
-    );
-    const displayName = readRequiredDataProperty(
-      definition,
-      "displayName",
-      "invalid-dialect",
-      "SQL dialect definition",
-    );
-    if (
-      typeof id !== "string" ||
-      id.length === 0 ||
-      id.length > MAX_DIALECT_ID_LENGTH ||
-      id.trim().length === 0
-    ) {
-      throw new SqlSessionError(
-        "invalid-dialect",
-        `SQL dialect id must contain 1 to ${MAX_DIALECT_ID_LENGTH} code units`,
-      );
-    }
-    if (
-      typeof displayName !== "string" ||
-      displayName.length === 0 ||
-      displayName.length > MAX_DIALECT_DISPLAY_NAME_LENGTH ||
-      displayName.trim().length === 0
-    ) {
-      throw new SqlSessionError(
-        "invalid-dialect",
-        `SQL dialect display name must contain 1 to ${MAX_DIALECT_DISPLAY_NAME_LENGTH} code units`,
-      );
-    }
-    return Object.freeze({ displayName, id });
-  } catch (error) {
-    if (error instanceof SqlSessionError) {
-      throw error;
-    }
-    throw new SqlSessionError(
-      "invalid-dialect",
-      "SQL dialect definition could not be inspected safely",
-    );
-  }
 }
 
 /** Creates a framework-independent SQL service with an immutable dialect registry. */

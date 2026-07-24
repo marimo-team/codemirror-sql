@@ -1,12 +1,15 @@
 export {
+  bigQueryDialect,
   createSqlLanguageService,
-  defineSqlDialect,
+  dremioDialect,
+  duckdbDialect,
+  postgresDialect,
 } from "./session.js";
 export type {
   OpenSqlDocument,
   SqlCatalogContext,
   SqlContextInput,
-  SqlDialectDefinition,
+  SqlDialect,
   SqlDocumentChanges,
   SqlDocumentContext,
   SqlDocumentEdit,
