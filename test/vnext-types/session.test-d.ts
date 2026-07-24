@@ -6,6 +6,7 @@ import {
   type SqlLanguageService,
   type SqlRevision,
   type SqlTextChange,
+  type SqlTextRange,
 } from "../../src/vnext/index.js";
 
 interface HostContext extends SqlDocumentContext {
@@ -54,6 +55,7 @@ session.update({
 });
 
 const change: SqlTextChange = { from: 0, insert: "", to: 0 };
+const range: SqlTextRange = change;
 
 // @ts-expect-error revisions are service-issued opaque values
 const objectRevision: SqlRevision = {};
@@ -73,10 +75,13 @@ dateService.openDocument({
 });
 // @ts-expect-error changes are readonly
 change.from = 1;
+// @ts-expect-error ranges are readonly
+range.to = 1;
 // @ts-expect-error session revision is readonly
 session.revision = revision;
 
 void objectRevision;
 void numberRevision;
+void range;
 void widenedService;
 void widenedSession;

@@ -19,5 +19,6 @@ export type {
   SqlRevision,
   SqlSessionErrorCode,
   SqlTextChange,
+  SqlTextRange,
 } from "./types.js";
 export { SqlSessionError } from "./types.js";

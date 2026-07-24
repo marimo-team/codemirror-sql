@@ -389,6 +389,12 @@ adjacent SQL tokens. More complex transformers use a versioned map whose
 segments are ordered, non-overlapping, and validated for original/generated
 coverage.
 
+The initial internal source primitive implements identity snapshots and this
+length-preserving masking only. It does not expose a transformer or source-map
+SPI. Sessions create a new source snapshot for document updates and reuse the
+existing snapshot for context-only updates. Non-identity generated/reordered
+source remains deferred until a concrete consumer validates the segment model.
+
 Edits crossing an ambiguous or unmapped boundary are rejected. Mapping failure
 is unavailable analysis, not invalid SQL.
 

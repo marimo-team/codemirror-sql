@@ -210,6 +210,7 @@ import {
   createSqlLanguageService,
   defineSqlDialect,
   type SqlDocumentContext,
+  type SqlTextRange,
 } from "@marimo-team/codemirror-sql/vnext";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
 import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
@@ -230,6 +231,7 @@ const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
   text: "SELECT 1",
 });
+const range: SqlTextRange = { from: 0, to: 6 };
 session.update({
   kind: "document",
   baseRevision: session.revision,
@@ -238,6 +240,7 @@ session.update({
 
 void extensions;
 void parser;
+void range;
 void session;
 void BigQueryDialect;
 void DremioDialect;

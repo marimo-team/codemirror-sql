@@ -187,6 +187,28 @@ describe("document revisions", () => {
     });
     expect(second).not.toBe(first);
   });
+
+  it("reuses source snapshots only for context-only updates", () => {
+    const { session } = openSession("SELECT 1");
+    const initialSource = session.snapshotForTesting.source;
+    expect(Object.isFrozen(initialSource)).toBe(true);
+    expect(initialSource.analysisText).toBe(initialSource.originalText);
+
+    session.update({
+      kind: "context",
+      baseRevision: session.revision,
+      context: { dialect: "duckdb", engine: "remote" },
+    });
+    expect(session.snapshotForTesting.source).toBe(initialSource);
+
+    session.update({
+      kind: "document",
+      baseRevision: session.revision,
+      document: { kind: "changes", changes: [] },
+    });
+    expect(session.snapshotForTesting.source).not.toBe(initialSource);
+    expect(session.snapshotForTesting.source.originalText).toBe("SELECT 1");
+  });
 });
 
 describe("document changes", () => {
@@ -204,7 +226,7 @@ describe("document changes", () => {
       },
     });
 
-    expect(session.snapshotForTesting.text).toBe(
+    expect(session.snapshotForTesting.source.originalText).toBe(
       "SELECT customers.id FROM customers",
     );
   });
@@ -219,7 +241,7 @@ describe("document changes", () => {
         changes: [{ from: 1, insert: "X", to: 3 }],
       },
     });
-    expect(session.snapshotForTesting.text).toBe("AXB");
+    expect(session.snapshotForTesting.source.originalText).toBe("AXB");
   });
 
   it("keeps same-position insertions ordered", () => {
@@ -235,7 +257,7 @@ describe("document changes", () => {
         ],
       },
     });
-    expect(session.snapshotForTesting.text).toBe("A12B");
+    expect(session.snapshotForTesting.source.originalText).toBe("A12B");
   });
 
   it("supports adjacent replacements and document boundaries", () => {
@@ -253,7 +275,7 @@ describe("document changes", () => {
         ],
       },
     });
-    expect(session.snapshotForTesting.text).toBe("XYZ!");
+    expect(session.snapshotForTesting.source.originalText).toBe("XYZ!");
   });
 
   it("deletes the entire document", () => {
@@ -263,7 +285,7 @@ describe("document changes", () => {
       baseRevision: session.revision,
       document: { kind: "changes", changes: [{ from: 0, insert: "", to: 8 }] },
     });
-    expect(session.snapshotForTesting.text).toBe("");
+    expect(session.snapshotForTesting.source.originalText).toBe("");
   });
 
   it("allows edits at every UTF-16 boundary", () => {
@@ -280,7 +302,9 @@ describe("document changes", () => {
         ],
       },
     });
-    expect(session.snapshotForTesting.text).toBe("A\uD83DXe\u0301\nZ!\uD800");
+    expect(session.snapshotForTesting.source.originalText).toBe(
+      "A\uD83DXe\u0301\nZ!\uD800",
+    );
   });
 
   it.each([
@@ -305,7 +329,7 @@ describe("document changes", () => {
     });
 
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
   it("rejects unordered and overlapping changes atomically", () => {
@@ -325,7 +349,7 @@ describe("document changes", () => {
       });
     });
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("ABCDE");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABCDE");
   });
 
   it("rejects non-string inserts from JavaScript callers", () => {
@@ -356,7 +380,7 @@ describe("document changes", () => {
       session.update({ kind: "document", baseRevision: revision, document } as never);
     });
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
   it("rejects an empty JavaScript update", () => {
@@ -423,7 +447,7 @@ describe("document changes", () => {
       baseRevision: session.revision,
       document: { kind: "replace", text: "recovered" },
     });
-    expect(session.snapshotForTesting.text).toBe("recovered");
+    expect(session.snapshotForTesting.source.originalText).toBe("recovered");
   });
 
   it.each([null, "invalid", 42])(
@@ -454,7 +478,7 @@ describe("document changes", () => {
       session.update(accessor as never);
     });
     expect(invoked).toBe(false);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
   it("rejects undefined and accessor optional update fields", () => {
@@ -469,7 +493,7 @@ describe("document changes", () => {
       } as never);
     });
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
 
     let invoked = false;
     const update = {
@@ -486,7 +510,7 @@ describe("document changes", () => {
     });
     expect(invoked).toBe(false);
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
   it("rejects accessor document fields without invoking them", () => {
@@ -571,7 +595,7 @@ describe("document changes", () => {
 
     expect(nestedError?.code).toBe("reentrant-update");
     expect(session.isCurrent(revision)).toBe(true);
-    expect(session.snapshotForTesting.text).toBe("outer");
+    expect(session.snapshotForTesting.source.originalText).toBe("outer");
   });
 
   it("cannot commit an update after reentrant disposal", () => {
@@ -600,7 +624,7 @@ describe("document changes", () => {
       });
     });
     expect(session.isCurrent(revision)).toBe(false);
-    expect(session.snapshotForTesting.text).toBe("ABC");
+    expect(session.snapshotForTesting.source.originalText).toBe("ABC");
   });
 
   it("bounds fragmented and oversized document updates", () => {
@@ -631,7 +655,7 @@ describe("document changes", () => {
         },
       });
     });
-    expect(session.snapshotForTesting.text).toBe("");
+    expect(session.snapshotForTesting.source.originalText).toBe("");
   });
 });
 
@@ -746,7 +770,7 @@ describe("document context", () => {
 
     expect(session.snapshotForTesting).toMatchObject({
       context: { dialect: "postgres", engine: "warehouse" },
-      text: "SELECT 2",
+      source: { originalText: "SELECT 2" },
     });
 
     const snapshot = session.snapshotForTesting;
@@ -768,7 +792,7 @@ describe("document context", () => {
       baseRevision: session.revision,
       context: { dialect: "postgres", engine: "warehouse" },
     });
-    expect(session.snapshotForTesting.text).toBe("SELECT 1");
+    expect(session.snapshotForTesting.source.originalText).toBe("SELECT 1");
     expect(session.snapshotForTesting.context.dialect).toBe("postgres");
   });
 
@@ -821,7 +845,7 @@ describe("document context", () => {
       } as never);
     });
     expect(session.revision).toBe(revision);
-    expect(session.snapshotForTesting.text).toBe("SELECT 1");
+    expect(session.snapshotForTesting.source.originalText).toBe("SELECT 1");
   });
 
   it("rejects accessors without invoking them", () => {
