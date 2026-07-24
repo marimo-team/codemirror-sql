@@ -13,6 +13,7 @@ export type {
   SqlDocumentChanges,
   SqlDocumentContext,
   SqlDocumentEdit,
+  SqlEmbeddedRegion,
   SqlDocumentReplacement,
   SqlDocumentSession,
   SqlDocumentUpdate,

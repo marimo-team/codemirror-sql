@@ -1,8 +1,6 @@
-import type { SqlEmbeddedRegion } from "./source.js";
 import type {
-  SqlContextInput,
   SqlDocumentContext,
-  SqlDocumentEdit,
+  SqlDocumentUpdate,
   SqlIdentifierComponent,
   SqlIdentifierPath,
   SqlRevision,
@@ -165,48 +163,6 @@ export interface SqlRelationCompletionDialectRuntime {
     right: SqlIdentifierComponent,
   ) => boolean;
 }
-
-export interface SqlRelationCompletionOpenDocument<
-  Context extends SqlDocumentContext,
-> {
-  readonly text: string;
-  readonly context: SqlContextInput<Context>;
-  readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
-}
-
-interface SqlRelationCompletionUpdateBase {
-  readonly baseRevision: SqlRevision;
-}
-
-type SqlRelationCompletionDocumentUpdate<
-  Context extends SqlDocumentContext,
-> = SqlRelationCompletionUpdateBase & {
-  readonly document: SqlDocumentEdit;
-  readonly embeddedRegions: readonly SqlEmbeddedRegion[];
-  readonly context?: SqlContextInput<Context>;
-};
-
-type SqlRelationCompletionContextUpdate<
-  Context extends SqlDocumentContext,
-> = SqlRelationCompletionUpdateBase & {
-  readonly document?: never;
-  readonly context: SqlContextInput<Context>;
-  readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
-};
-
-type SqlRelationCompletionRegionUpdate =
-  SqlRelationCompletionUpdateBase & {
-    readonly document?: never;
-    readonly context?: never;
-    readonly embeddedRegions: readonly SqlEmbeddedRegion[];
-  };
-
-export type SqlRelationCompletionDocumentTransaction<
-  Context extends SqlDocumentContext,
-> =
-  | SqlRelationCompletionDocumentUpdate<Context>
-  | SqlRelationCompletionContextUpdate<Context>
-  | SqlRelationCompletionRegionUpdate;
 
 export type SqlSessionChangeReason =
   | "catalog"
@@ -372,7 +328,7 @@ export interface SqlRelationCompletionSession<
 > {
   readonly revision: SqlRevision;
   readonly update: (
-    transaction: SqlRelationCompletionDocumentTransaction<Context>,
+    transaction: SqlDocumentUpdate<Context>,
   ) => SqlRevision;
   readonly complete: (
     request: SqlCompletionRequest,

@@ -202,7 +202,7 @@ const session = service.openDocument({
   text: "SELECT 1",
 });
 session.update({
-  kind: "document",
+  embeddedRegions: [],
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT 2" },
 });
@@ -250,7 +250,7 @@ const session = service.openDocument({
 });
 const range: SqlTextRange = { from: 0, to: 6 };
 session.update({
-  kind: "document",
+  embeddedRegions: [],
   baseRevision: session.revision,
   document: { kind: "changes", changes: [{ from: 7, insert: "2", to: 8 }] },
 });
@@ -309,7 +309,7 @@ const session = service.openDocument({
 });
 const originalRevision = session.revision;
 const updatedRevision = session.update({
-  kind: "document",
+  embeddedRegions: [],
   baseRevision: originalRevision,
   document: { kind: "replace", text: "SELECT 2" },
 });

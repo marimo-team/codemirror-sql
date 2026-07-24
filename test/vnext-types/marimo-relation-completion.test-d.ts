@@ -1,8 +1,10 @@
-import type { SqlEmbeddedRegion } from "../../src/vnext/source.js";
 import type {
   SqlCatalogContext,
   SqlDocumentContext,
+  SqlDocumentUpdate,
+  SqlEmbeddedRegion,
   SqlIdentifierComponent,
+  OpenSqlDocument,
 } from "../../src/vnext/index.js";
 import type {
   SqlCanonicalRelationPath,
@@ -16,9 +18,7 @@ import type {
   SqlRelationCompletionItem,
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
-  SqlRelationCompletionDocumentTransaction,
   SqlRelationCompletionDialectRuntime,
-  SqlRelationCompletionOpenDocument,
   SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
 
@@ -43,11 +43,11 @@ const context: MarimoSqlContext = {
 const regions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
 ];
-const openWithoutRegions: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const openWithoutRegions: OpenSqlDocument<MarimoSqlContext> = {
   context,
   text: "SELECT * FROM users",
 };
-const openWithRegions: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const openWithRegions: OpenSqlDocument<MarimoSqlContext> = {
   context,
   embeddedRegions: regions,
   text: "SELECT * FROM {df}",
@@ -181,7 +181,7 @@ session.update({
 });
 // @ts-expect-error present undefined is not omission
 session.update({ baseRevision: session.revision, context: undefined });
-const missingEngine: SqlRelationCompletionOpenDocument<MarimoSqlContext> = {
+const missingEngine: OpenSqlDocument<MarimoSqlContext> = {
   // @ts-expect-error marimo contexts always identify their engine
   context: { dialect: "duckdb" },
   text: "",
@@ -290,7 +290,7 @@ const contradictoryIncompleteList = {
 // @ts-expect-error timeouts are unavailable evidence, not cancellation
 const invalidCancellation: SqlCompletionCancellationReason = "timeout";
 // @ts-expect-error a document transaction cannot explicitly omit context
-const undefinedContext: SqlRelationCompletionDocumentTransaction<MarimoSqlContext> = {
+const undefinedContext: SqlDocumentUpdate<MarimoSqlContext> = {
   baseRevision: session.revision,
   context: undefined,
   embeddedRegions: [],

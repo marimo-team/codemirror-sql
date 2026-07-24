@@ -17,10 +17,10 @@ are valid. `SqlTextChange` extends this shape with `insert` and continues to use
 pre-update document coordinates.
 
 The service internally owns an immutable source snapshot with separately named
-`originalText` and `analysisText`. A document update creates a new identity
-snapshot; a context-only update reuses the same source object. This separation
-allows later analysis transforms without making providers depend on editor
-state or ambiguous coordinate spaces.
+`originalText` and `analysisText`. A source transaction builds the complete
+post-update masked snapshot; a context-only update reuses the same source
+object. This separation keeps providers independent of editor state and
+ambiguous coordinate spaces.
 
 ## Length-preserving masking
 
@@ -39,25 +39,24 @@ At most 10,000 regions and 16 Mi UTF-16 code units are accepted. Masking uses
 bounded 64 Ki-code-unit chunks, including for newline-dense input, rather than
 a per-code-unit or per-newline array.
 
-The source snapshot, embedded-region model, masking factory, and mapping
-functions remain internal. This slice intentionally does not publish a source
-transformer or source-map SPI. Generated or reordered source requires a
-versioned segment-map design and evidence from real consumers before becoming
-public.
+The source snapshot, masking factory, and mapping functions remain internal.
+Only the document-facing `SqlEmbeddedRegion` input shape is public. This slice
+intentionally does not publish a source transformer or source-map SPI.
+Generated or reordered source requires a versioned segment-map design and
+evidence from real consumers before becoming public.
 
 The internal [statement index](./statement-index.md) scans `analysisText` and
 uses its length-preserving offsets without publishing analysis-coordinate
 ranges.
 
 Statement-index reuse depends on `analysisText` value and internal lexical
-profile identity, not source-object identity. A document update therefore
-still creates a fresh source snapshot and public revision even when equal
-analysis text permits reuse. The index does not retain either the old or
-current source text.
+profile identity, not source-object identity. Every accepted source transaction
+creates a public revision, while an unchanged text-and-region value may reuse
+the immutable source snapshot and index. The index does not retain either the
+old or current source text.
 
-Current sessions create identity sources, so their validated document changes
-are also trusted analysis-coordinate changes. The masking primitive is not yet
-attached to session updates. A future transformed-source pipeline must produce
-validated analysis-coordinate changes before it can use incremental indexing;
-otherwise a changed analysis document invalidates the cache and receives a
-fresh full build on demand.
+Sessions accept complete length-preserving embedded-region sets on open and
+source transactions. Original document changes are trusted as analysis changes
+only for identity-to-identity updates. A changed masked source invalidates the
+cache unless its analysis text is unchanged; it then receives a fresh full
+build on demand.

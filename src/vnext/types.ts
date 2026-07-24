@@ -96,23 +96,45 @@ export interface SqlDocumentChanges {
 
 export type SqlDocumentEdit = SqlDocumentReplacement | SqlDocumentChanges;
 
-/** An atomic document or context transaction against one base revision. */
+export interface SqlEmbeddedRegion extends SqlTextRange {
+  readonly language: string;
+}
+
+interface SqlDocumentUpdateBase {
+  readonly baseRevision: SqlRevision;
+}
+
+type SqlDocumentMutationUpdate<Context extends SqlDocumentContext> =
+  SqlDocumentUpdateBase & {
+    readonly document: SqlDocumentEdit;
+    readonly embeddedRegions: readonly SqlEmbeddedRegion[];
+    readonly context?: SqlContextInput<Context>;
+  };
+
+type SqlContextUpdate<Context extends SqlDocumentContext> =
+  SqlDocumentUpdateBase & {
+    readonly document?: never;
+    readonly context: SqlContextInput<Context>;
+    readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
+  };
+
+type SqlEmbeddedRegionUpdate =
+  SqlDocumentUpdateBase & {
+    readonly document?: never;
+    readonly context?: never;
+    readonly embeddedRegions: readonly SqlEmbeddedRegion[];
+  };
+
+/** An atomic transaction changing any non-empty subset of session inputs. */
 export type SqlDocumentUpdate<Context extends SqlDocumentContext> =
-  | {
-      readonly kind: "document";
-      readonly baseRevision: SqlRevision;
-      readonly document: SqlDocumentEdit;
-      readonly context?: SqlContextInput<Context>;
-    }
-  | {
-      readonly kind: "context";
-      readonly baseRevision: SqlRevision;
-      readonly context: SqlContextInput<Context>;
-    };
+  | SqlDocumentMutationUpdate<Context>
+  | SqlContextUpdate<Context>
+  | SqlEmbeddedRegionUpdate;
 
 export interface OpenSqlDocument<Context extends SqlDocumentContext> {
   readonly text: string;
   readonly context: SqlContextInput<Context>;
+  readonly embeddedRegions?: readonly SqlEmbeddedRegion[];
 }
 
 /** Owns all mutable state for one open SQL document. */

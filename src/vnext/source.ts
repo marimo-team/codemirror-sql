@@ -1,4 +1,4 @@
-import type { SqlTextRange } from "./types.js";
+import type { SqlEmbeddedRegion, SqlTextRange } from "./types.js";
 
 export const MAX_SQL_SOURCE_LENGTH = 16 * 1024 * 1024;
 export const MAX_SQL_EMBEDDED_REGIONS = 10_000;
@@ -6,6 +6,11 @@ export const MAX_SQL_EMBEDDED_REGIONS = 10_000;
 const MAX_EMBEDDED_LANGUAGE_LENGTH = 256;
 const MASK_CHUNK_LENGTH = 64 * 1024;
 const EMPTY_EMBEDDED_REGIONS: readonly SqlEmbeddedRegion[] = Object.freeze([]);
+const EMBEDDED_REGION_KEYS: ReadonlySet<string> = new Set([
+  "from",
+  "language",
+  "to",
+]);
 const sourceErrors = new WeakSet<object>();
 
 export type SqlSourceErrorCode =
@@ -30,10 +35,6 @@ export function isSqlSourceError(error: unknown): error is SqlSourceError {
     typeof error === "object" &&
     sourceErrors.has(error)
   );
-}
-
-export interface SqlEmbeddedRegion extends SqlTextRange {
-  readonly language: string;
 }
 
 export interface SqlSourceSnapshot {
@@ -189,6 +190,35 @@ function validateRegionArrayKeys(
         "SQL embedded regions cannot contain custom properties",
       );
     }
+    const descriptor = Object.getOwnPropertyDescriptor(regions, key);
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      !("value" in descriptor)
+    ) {
+      throw new SqlSourceError(
+        "invalid-region",
+        "SQL embedded regions must contain enumerable data entries",
+      );
+    }
+  }
+}
+
+function validateRegionObjectKeys(candidate: object, index: number): void {
+  for (const key of Reflect.ownKeys(candidate)) {
+    const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+    if (
+      typeof key !== "string" ||
+      !EMBEDDED_REGION_KEYS.has(key) ||
+      !descriptor ||
+      !descriptor.enumerable ||
+      !("value" in descriptor)
+    ) {
+      throw new SqlSourceError(
+        "invalid-region",
+        `SQL embedded region ${index} must contain only enumerable data properties`,
+      );
+    }
   }
 }
 
@@ -226,6 +256,7 @@ function normalizeEmbeddedRegions(
           `SQL embedded region ${index} must be an object`,
         );
       }
+      validateRegionObjectKeys(candidate, index);
       let range: SqlTextRange;
       try {
         range = normalizeSqlTextRange(

@@ -228,11 +228,30 @@ describe("SQL source snapshots", () => {
     expectSourceError("invalid-region", () => {
       createMaskedSqlSource("a", extended);
     });
+
+    const nonEnumerableRegion = { from: 0, language: "python", to: 1 };
+    Object.defineProperty(nonEnumerableRegion, "language", {
+      enumerable: false,
+      value: "python",
+    });
+    expectSourceError("invalid-region", () => {
+      createMaskedSqlSource("a", [nonEnumerableRegion]);
+    });
+
+    const symbolRegion = {
+      from: 0,
+      language: "python",
+      to: 1,
+      [Symbol("hidden")]: true,
+    };
+    expectSourceError("invalid-region", () => {
+      createMaskedSqlSource("a", [symbolRegion]);
+    });
   });
 
   it("does not invoke region accessors or array get traps", () => {
     let accessorInvoked = false;
-    expectSourceError("invalid-source", () => {
+    expectSourceError("invalid-region", () => {
       createMaskedSqlSource("a", [
         {
           get from() {
@@ -246,7 +265,7 @@ describe("SQL source snapshots", () => {
     });
     expect(accessorInvoked).toBe(false);
 
-    expectSourceError("invalid-source", () => {
+    expectSourceError("invalid-region", () => {
       createMaskedSqlSource("a", [
         {
           from: 0,
