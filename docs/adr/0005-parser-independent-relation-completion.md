@@ -278,7 +278,11 @@ A terminal `loading` response is not cached. A provider that later becomes
 ready must publish a strictly higher epoch through its subscription; same-epoch
 duplicate invalidation is not a readiness signal. A still-pending search
 promise can instead resolve ready under the service-owned response/refresh
-rules below.
+rules below. Every completion result carrying `catalog-loading`, whether caused
+by terminal loading or soft expiry, also carries a checked remaining
+completion-intent lease. For terminal loading that lease is independent of
+in-flight work ownership and is keyed to the exact session, query, and captured
+observed or unobserved epoch.
 
 Partial positive entities may be offered. A partial or absent result never
 proves that a relation does not exist. A complete empty search means only that
@@ -452,9 +456,10 @@ request has a checked catalog response budget, default 40 ms and configurable
 from 0 through 50 ms, measured from the start of the complete request. Local
 and CTE evidence is composed first and never waits past the remaining response
 budget. On soft expiry the request settles ready, possibly empty, with
-`isIncomplete: true`, `catalog-loading`, and bounded remaining refresh-lease
-metadata; its session may atomically retag the request consumer as a
-service-owned refresh observer.
+`isIncomplete: true`, `catalog-loading`, and bounded remaining
+completion-intent lease metadata; its session may atomically retag the request
+consumer as a service-owned refresh observer. The intent lease is no longer
+than the remaining work lease.
 That bounded refresh lease can retain the shared operation only until its
 existing hard deadline and active/queued service limits. With no consumers or
 live observers, the service removes and aborts the work. An observer is bound
@@ -536,6 +541,7 @@ The initial checked limits are:
 | Active completion consumers | 1 per session |
 | Catalog response budget | 40 ms default, 50 ms maximum |
 | Catalog refresh observers | 1 per session |
+| Completion-intent lease | 1,000 ms default, 5,000 ms maximum |
 
 Limit exhaustion produces an explicit unavailable or incomplete result. An
 oversized provider response is rejected; it is never silently truncated while
@@ -567,9 +573,10 @@ immediately before applying a result.
 For every recognized incomplete `catalog-loading` result, including an empty
 list that opens no menu, the adapter retains at most one bounded completion
 intent. The one-shot intent records the exact view, document, selection,
-context, and work identity and expires no later than the service-supplied
-remaining refresh lease. On `catalog-availability` or a catalog invalidation
-that can make evidence ready, the adapter aborts stale captured work and
+context, query, captured epoch, and work identity when work exists. It expires
+no later than the service-supplied completion-intent lease. On
+`catalog-availability` or a strictly higher catalog invalidation that can make
+terminal-loading evidence ready, the adapter aborts stale captured work and
 coalesces exactly one scheduled refresh when either the menu remains active or
 that intent is still valid.
 
@@ -617,6 +624,11 @@ expiry, or destruction before readiness with no reopen; a nonempty CTE plus
 loading catalog whose open menu refreshes once; and bounded 50-view fan-out.
 The coordinator suite also covers soft-expiry observer to same-key consumer
 handoff without abort/restart.
+
+They also cover immediate empty terminal loading followed by a higher ready
+epoch before intent expiry with exactly one no-typing refresh, and the same
+event after intent expiry, Escape, movement, blur, or destruction with no
+reopen.
 
 ## Parser semantics remain separate
 
