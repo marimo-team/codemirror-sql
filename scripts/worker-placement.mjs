@@ -36,8 +36,8 @@ const PARSER_MARKERS = [
 ];
 const BIGQUERY_GZIP_LIMIT = 50 * 1024;
 const POSTGRESQL_GZIP_LIMIT = 68 * 1024;
-const WORKER_TOTAL_GZIP_LIMIT = 124 * 1024;
-const WORKER_TOTAL_RAW_LIMIT = 590 * 1024;
+const WORKER_TOTAL_GZIP_LIMIT = 120 * 1024;
+const WORKER_TOTAL_RAW_LIMIT = 570 * 1024;
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -46,9 +46,6 @@ const MIME_TYPES = new Map([
 ]);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureSource = join(repository, "test", "worker-placement");
-const temporaryDirectory = mkdtempSync(
-  join(tmpdir(), "codemirror-sql-worker-placement-"),
-);
 const packageManagerExecutable = process.env.npm_execpath;
 
 function parseArguments(arguments_) {
@@ -137,45 +134,258 @@ function bundleReport(directory) {
   };
 }
 
+function requireModuleTrace(path) {
+  const trace = JSON.parse(readFileSync(path, "utf8"));
+  if (
+    typeof trace !== "object" ||
+    trace === null ||
+    !Array.isArray(trace.chunks)
+  ) {
+    throw new Error(`${basename(path)} did not contain a chunk trace`);
+  }
+  return trace;
+}
+
+function chunkMap(trace, workersDirectory) {
+  const chunks = new Map();
+  for (const chunk of trace.chunks) {
+    if (
+      typeof chunk !== "object" ||
+      chunk === null ||
+      typeof chunk.fileName !== "string" ||
+      !Array.isArray(chunk.imports) ||
+      !Array.isArray(chunk.dynamicImports) ||
+      !Array.isArray(chunk.moduleIds) ||
+      chunks.has(chunk.fileName) ||
+      !existsSync(join(workersDirectory, chunk.fileName))
+    ) {
+      throw new Error("Worker module trace contained an invalid chunk");
+    }
+    chunks.set(chunk.fileName, chunk);
+  }
+  return chunks;
+}
+
+function reachableChunks(chunks, roots, includeDynamicImports) {
+  const reachable = new Set();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const fileName = pending.pop();
+    if (fileName === undefined || reachable.has(fileName)) {
+      continue;
+    }
+    const chunk = chunks.get(fileName);
+    if (chunk === undefined) {
+      throw new Error(`Chunk trace referenced missing chunk ${fileName}`);
+    }
+    reachable.add(fileName);
+    pending.push(...chunk.imports);
+    if (includeDynamicImports) {
+      pending.push(...chunk.dynamicImports);
+    }
+  }
+  return reachable;
+}
+
+function metricsForFiles(report, fileNames) {
+  const filesByName = new Map(
+    report.files.map((file) => [file.file, file]),
+  );
+  const files = [...fileNames].sort().map((fileName) => {
+    const file = filesByName.get(fileName);
+    if (file === undefined) {
+      throw new Error(`Bundle report omitted traced file ${fileName}`);
+    }
+    return file;
+  });
+  return {
+    files: files.map((file) => file.file),
+    gzipBytes: files.reduce(
+      (total, file) => total + file.gzipBytes,
+      0,
+    ),
+    rawBytes: files.reduce(
+      (total, file) => total + file.rawBytes,
+      0,
+    ),
+  };
+}
+
 function verifyWorkerAssets(workersDirectory) {
   const report = bundleReport(workersDirectory);
-  const javascriptFiles = report.files.filter((file) =>
-    file.file.endsWith(".js"),
+  const pageTrace = requireModuleTrace(
+    join(workersDirectory, "page-module-trace.json"),
   );
-  const postgresqlFiles = javascriptFiles.filter((file) =>
-    /postgresql/i.test(file.file),
+  const workerTrace = requireModuleTrace(
+    join(workersDirectory, "worker-module-trace.json"),
   );
-  const bigqueryFiles = javascriptFiles.filter((file) =>
-    /bigquery/i.test(file.file),
+  const pageChunks = chunkMap(pageTrace, workersDirectory);
+  const workerChunks = chunkMap(workerTrace, workersDirectory);
+  const pageEntry = pageTrace.chunks.find(
+    (chunk) => chunk.isEntry === true,
   );
-  if (postgresqlFiles.length === 0 || bigqueryFiles.length === 0) {
-    throw new Error(
-      "Worker build did not emit separate dialect assets",
-    );
+  const workerEntry = workerTrace.chunks.find(
+    (chunk) =>
+      chunk.isEntry === true &&
+      chunk.facadeModuleId?.endsWith(
+        "src/parser-worker-entry.js",
+      ),
+  );
+  if (pageEntry === undefined || workerEntry === undefined) {
+    throw new Error("Build traces omitted a page or parser worker entry");
   }
+
+  const manifest = JSON.parse(
+    readFileSync(
+      join(workersDirectory, ".vite", "manifest.json"),
+      "utf8",
+    ),
+  );
+  const manifestEntry = Object.values(manifest).find(
+    (entry) => entry?.isEntry === true,
+  );
   if (
-    postgresqlFiles.some((postgresql) =>
-      bigqueryFiles.some((bigquery) => bigquery.file === postgresql.file),
+    manifestEntry === undefined ||
+    manifestEntry.file !== pageEntry.fileName
+  ) {
+    throw new Error("Vite manifest did not identify the traced page entry");
+  }
+  const pageReachable = reachableChunks(
+    pageChunks,
+    [pageEntry.fileName],
+    true,
+  );
+  const pageModuleIds = [...pageReachable].flatMap(
+    (fileName) => pageChunks.get(fileName)?.moduleIds ?? [],
+  );
+  if (
+    pageModuleIds.some((moduleId) =>
+      moduleId.includes("/node-sql-parser/"),
     )
   ) {
-    throw new Error("PostgreSQL and BigQuery shared a dialect-named asset");
+    throw new Error("Page entry graph included a parser grammar");
   }
-  const postgresqlGzipBytes = postgresqlFiles.reduce(
-    (total, file) => total + file.gzipBytes,
-    0,
+  const pageSource = readFileSync(
+    join(workersDirectory, pageEntry.fileName),
+    "utf8",
   );
-  const bigqueryGzipBytes = bigqueryFiles.reduce(
-    (total, file) => total + file.gzipBytes,
-    0,
+  if (!pageSource.includes(basename(workerEntry.fileName))) {
+    throw new Error("Page entry did not reference the traced parser worker");
+  }
+
+  const allWorkerModuleIds = workerTrace.chunks.flatMap(
+    (chunk) => chunk.moduleIds,
   );
-  if (postgresqlGzipBytes > POSTGRESQL_GZIP_LIMIT) {
+  const nodeSqlParserModuleIds = allWorkerModuleIds.filter(
+    (moduleId) => moduleId.includes("/node-sql-parser/"),
+  );
+  const postgresqlModuleIds = nodeSqlParserModuleIds.filter(
+    (moduleId) =>
+      moduleId.endsWith(
+        "/node-sql-parser/build/postgresql.js",
+      ),
+  );
+  const bigqueryModuleIds = nodeSqlParserModuleIds.filter(
+    (moduleId) =>
+      moduleId.endsWith("/node-sql-parser/build/bigquery.js"),
+  );
+  const unexpectedParserModuleIds = nodeSqlParserModuleIds.filter(
+    (moduleId) =>
+      !moduleId.endsWith(
+        "/node-sql-parser/build/postgresql.js",
+      ) &&
+      !moduleId.endsWith(
+        "/node-sql-parser/build/bigquery.js",
+      ),
+  );
+  if (
+    postgresqlModuleIds.length === 0 ||
+    bigqueryModuleIds.length === 0 ||
+    unexpectedParserModuleIds.length > 0
+  ) {
     throw new Error(
-      `PostgreSQL assets exceeded ${POSTGRESQL_GZIP_LIMIT} gzip bytes: ${postgresqlGzipBytes}`,
+      `Worker graph did not contain only the two exact deep builds: ${unexpectedParserModuleIds.join(", ")}`,
     );
   }
-  if (bigqueryGzipBytes > BIGQUERY_GZIP_LIMIT) {
+
+  const postgresqlChunk = workerTrace.chunks.find((chunk) =>
+    chunk.moduleIds.some((moduleId) =>
+      moduleId.endsWith(
+        "/node-sql-parser/build/postgresql.js",
+      ),
+    ),
+  );
+  const bigqueryChunk = workerTrace.chunks.find((chunk) =>
+    chunk.moduleIds.some((moduleId) =>
+      moduleId.endsWith("/node-sql-parser/build/bigquery.js"),
+    ),
+  );
+  if (
+    postgresqlChunk === undefined ||
+    bigqueryChunk === undefined ||
+    postgresqlChunk.fileName === bigqueryChunk.fileName
+  ) {
+    throw new Error("Dialect builds did not emit separate lazy chunks");
+  }
+  const staticWorkerEntry = reachableChunks(
+    workerChunks,
+    [workerEntry.fileName],
+    false,
+  );
+  if (
+    staticWorkerEntry.has(postgresqlChunk.fileName) ||
+    staticWorkerEntry.has(bigqueryChunk.fileName)
+  ) {
+    throw new Error("Parser worker statically included a grammar chunk");
+  }
+  const completeWorkerGraph = reachableChunks(
+    workerChunks,
+    [workerEntry.fileName],
+    true,
+  );
+  if (
+    !completeWorkerGraph.has(postgresqlChunk.fileName) ||
+    !completeWorkerGraph.has(bigqueryChunk.fileName)
+  ) {
+    throw new Error("Parser worker could not reach both grammar chunks");
+  }
+
+  const postgresqlClosure = reachableChunks(
+    workerChunks,
+    [postgresqlChunk.fileName],
+    false,
+  );
+  const bigqueryClosure = reachableChunks(
+    workerChunks,
+    [bigqueryChunk.fileName],
+    false,
+  );
+  const sharedGrammarChunks = new Set(
+    [...postgresqlClosure].filter((fileName) =>
+      bigqueryClosure.has(fileName),
+    ),
+  );
+  const postgresqlMetrics = metricsForFiles(
+    report,
+    postgresqlClosure,
+  );
+  const bigqueryMetrics = metricsForFiles(report, bigqueryClosure);
+  const sharedMetrics = metricsForFiles(
+    report,
+    sharedGrammarChunks,
+  );
+  const workerEntryMetrics = metricsForFiles(
+    report,
+    staticWorkerEntry,
+  );
+  if (postgresqlMetrics.gzipBytes > POSTGRESQL_GZIP_LIMIT) {
     throw new Error(
-      `BigQuery assets exceeded ${BIGQUERY_GZIP_LIMIT} gzip bytes: ${bigqueryGzipBytes}`,
+      `PostgreSQL graph exceeded ${POSTGRESQL_GZIP_LIMIT} gzip bytes: ${postgresqlMetrics.gzipBytes}`,
+    );
+  }
+  if (bigqueryMetrics.gzipBytes > BIGQUERY_GZIP_LIMIT) {
+    throw new Error(
+      `BigQuery graph exceeded ${BIGQUERY_GZIP_LIMIT} gzip bytes: ${bigqueryMetrics.gzipBytes}`,
     );
   }
   if (report.gzipBytes > WORKER_TOTAL_GZIP_LIMIT) {
@@ -192,15 +402,23 @@ function verifyWorkerAssets(workersDirectory) {
     ...report,
     dialects: {
       bigquery: {
-        files: bigqueryFiles.map((file) => file.file),
-        gzipBytes: bigqueryGzipBytes,
+        ...bigqueryMetrics,
         gzipLimit: BIGQUERY_GZIP_LIMIT,
       },
       postgresql: {
-        files: postgresqlFiles.map((file) => file.file),
-        gzipBytes: postgresqlGzipBytes,
+        ...postgresqlMetrics,
         gzipLimit: POSTGRESQL_GZIP_LIMIT,
       },
+    },
+    graph: {
+      allowedParserModuleIds: [
+        "node-sql-parser/build/bigquery.js",
+        "node-sql-parser/build/postgresql.js",
+      ],
+      pageEntry: pageEntry.fileName,
+      parserWorkerEntry: workerEntry.fileName,
+      sharedGrammarChunks: sharedMetrics,
+      workerEntry: workerEntryMetrics,
     },
     limits: {
       gzipBytes: WORKER_TOTAL_GZIP_LIMIT,
@@ -226,10 +444,23 @@ function verifyCoreExcludesParser(coreDirectory) {
       `Core-only build included parser modules: ${parserModules.join(", ")}`,
     );
   }
+  const workerModules = moduleIds.filter(
+    (moduleId) =>
+      typeof moduleId === "string" &&
+      /(?:^|[/\\])[^/\\]*worker[^/\\]*\.[cm]?[jt]s$/i.test(moduleId),
+  );
+  if (workerModules.length > 0) {
+    throw new Error(
+      `Core-only build included worker modules: ${workerModules.join(", ")}`,
+    );
+  }
   for (const path of listFiles(coreDirectory)) {
     const extension = extname(path);
     if (extension !== ".js" && extension !== ".json") {
       continue;
+    }
+    if (/worker/i.test(basename(path))) {
+      throw new Error(`Core-only build emitted worker asset ${basename(path)}`);
     }
     const contents = readFileSync(path, "utf8");
     const marker = PARSER_MARKERS.find((candidate) =>
@@ -238,6 +469,11 @@ function verifyCoreExcludesParser(coreDirectory) {
     if (marker !== undefined) {
       throw new Error(
         `Core-only output ${basename(path)} contained parser marker ${marker}`,
+      );
+    }
+    if (extension === ".js" && /new\s+Worker\s*\(/.test(contents)) {
+      throw new Error(
+        `Core-only output ${basename(path)} contained a worker constructor`,
       );
     }
   }
@@ -338,6 +574,8 @@ async function runChromium(fixtureDirectory, workersDirectory) {
   const { chromium } = fixtureRequire("playwright");
   const staticServer = await startStaticServer(workersDirectory);
   let browser;
+  let result;
+  let operationError;
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
@@ -382,25 +620,60 @@ async function runChromium(fixtureDirectory, workersDirectory) {
     if (
       typeof timings !== "object" ||
       timings === null ||
-      typeof timings.postgresql?.coldMs !== "number" ||
-      typeof timings.bigquery?.coldMs !== "number"
+      typeof timings.workerReadyMs !== "number" ||
+      typeof timings.postgresql?.firstRequestRoundTripMs !==
+        "number" ||
+      typeof timings.bigquery?.firstRequestRoundTripMs !== "number"
     ) {
       throw new Error("Browser fixture returned malformed timing data");
     }
-    return {
+    result = {
       browserVersion: browser.version(),
       csp: CONTENT_SECURITY_POLICY,
       timings,
     };
-  } finally {
-    if (browser !== undefined) {
-      await browser.close();
-    }
-    await staticServer.close();
+  } catch (error) {
+    operationError = error;
   }
+
+  const cleanupErrors = [];
+  if (browser !== undefined) {
+    try {
+      await browser.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  try {
+    await staticServer.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (operationError !== undefined) {
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        "Worker browser verification and cleanup failed",
+      );
+    }
+    throw operationError;
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      cleanupErrors,
+      "Worker browser verification cleanup failed",
+    );
+  }
+  if (result === undefined) {
+    throw new Error("Worker browser verification produced no result");
+  }
+  return result;
 }
 
 const reportPath = parseArguments(process.argv.slice(2));
+const temporaryDirectory = mkdtempSync(
+  join(tmpdir(), "codemirror-sql-worker-placement-"),
+);
 
 try {
   runPackageManager(["run", "build"], repository);
@@ -443,11 +716,23 @@ try {
   const packedPackage = JSON.parse(
     readFileSync(join(packageDirectory, "package.json"), "utf8"),
   );
+  const fixturePackage = JSON.parse(
+    readFileSync(join(fixtureDirectory, "package.json"), "utf8"),
+  );
   if (
     packedPackage.name !== "@marimo-team/codemirror-sql" ||
-    packedPackage.version !== manifest.version
+    packedPackage.version !== manifest.version ||
+    packedPackage.dependencies?.["node-sql-parser"] !== "5.4.0"
   ) {
     throw new Error("Extracted package did not match the pnpm pack manifest");
+  }
+  if (
+    fixturePackage.dependencies?.["node-sql-parser"] !==
+    packedPackage.dependencies["node-sql-parser"]
+  ) {
+    throw new Error(
+      "Fixture direct parser dependency did not match the packed transitive dependency",
+    );
   }
   verifySsrImport(fixtureDirectory);
 
@@ -462,9 +747,9 @@ try {
   );
   const workerBundles = verifyWorkerAssets(workersDirectory);
   if (
-    chromiumResult.timings.lazyResources.beforeCreation.length !== 0
+    chromiumResult.timings.resources.mainBeforeCreation.length !== 0
   ) {
-    throw new Error("Browser reported eager dialect asset loading");
+    throw new Error("Browser reported eager parser worker loading");
   }
   const report = {
     bundles: {
@@ -475,6 +760,9 @@ try {
       coreModuleCount,
       coreParserModules: 0,
       exactTarballSsrImport: true,
+      exactNodeSqlParserDependency: "5.4.0",
+      fixtureDirectDependencyReason:
+        "The fixture installs dependencies before extracting the exact tarball",
       parserMarkerCount: PARSER_MARKERS.length,
       strictSameOriginCsp: true,
     },

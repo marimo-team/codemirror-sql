@@ -71,6 +71,13 @@ wall-clock deadline, worker crash, malformed protocol, or service disposal
 terminates the generation. The placement benchmark must compare drain versus
 restart under rapid edits before the executor policy is frozen.
 
+The execution deadline belongs to the posted worker job, not to any attached
+consumer. Consumer cancellation never clears it. A draining operation retains
+the active lane until it returns or its generation is terminated; queued work
+has a separate wait deadline. Service disposal always terminates immediately.
+These rules prevent a cancelled hostile parse from occupying the only worker
+indefinitely.
+
 The safety deadline is separate from product latency targets. A deadline
 failure never upgrades parser authority and an active request is not
 automatically replayed after a crash or timeout.
@@ -182,7 +189,8 @@ run in CI. Source-workspace success is not packaging evidence.
 
 ## Evidence required before session wiring
 
-A production-shaped fixture built from the exact `npm pack` archive must prove:
+A production-shaped fixture built alongside the exact `npm pack` archive must
+prove:
 
 - Core-only import emits no parser or worker bytes.
 - PostgreSQL and BigQuery emit separate worker chunks.
@@ -216,37 +224,50 @@ Safety timeouts are not evidence that these product targets are met.
 ### Initial packed-consumer baseline
 
 The placement harness introduced with this decision builds the exact packed
-archive, consumes it from an isolated Vite 8 fixture, serves the production
-output with a same-origin CSP, and runs it in Chromium. Its first local
-Node 24 / Chromium 149 / arm64 macOS sample recorded:
+archive, verifies its core import in an isolated fixture, and separately uses
+fixture-owned worker code with the pinned `node-sql-parser` dependency to prove
+consumer-side Vite 8 placement feasibility. It serves the production output
+with a same-origin CSP and runs it in Chromium.
+
+The worker portion does not yet prove a packed optional parser integration;
+that entry does not exist. The protocol PR must move the worker implementation
+behind the packed package boundary and remove the fixture's direct parser
+dependency before making a public packaging claim.
+
+The latest local Node 24 / Chromium 149 / arm64 macOS sample recorded:
 
 | Output | Raw | gzip |
 | --- | ---: | ---: |
-| Core-only fixture | 24,462 B | 7,477 B |
-| PostgreSQL grammar plus worker entry | 318,628 B | 66,211 B |
-| BigQuery grammar plus worker entry | 222,769 B | 49,492 B |
-| Complete worker fixture | 567,271 B | 123,798 B |
+| Core-only fixture | 24,462 B | 7,475 B |
+| PostgreSQL transitive worker graph | 320,495 B | 67,214 B |
+| BigQuery transitive worker graph | 224,648 B | 50,205 B |
+| Complete worker fixture | 549,003 B | 117,941 B |
 
 The core module trace contained no `node-sql-parser` module. No dialect
-resource loaded before explicit construction. PostgreSQL and BigQuery were
-emitted as separate assets and both parsed successfully without changing the
-main-window parser sentinel.
+resource loaded before explicit construction. A single static module worker
+loaded PostgreSQL and then BigQuery through separate literal lazy imports;
+both parsed successfully without changing the main-window parser sentinel.
+The per-dialect figures conservatively include their complete static
+transitive closures, with shared chunks also reported separately.
 
-Two consecutive cold/warm runs measured:
+One sequential cold/warm run on the shared worker measured:
 
-| Dialect | Cold request range | Warm parse | Warm round trip |
-| --- | ---: | ---: | ---: |
-| PostgreSQL | 17.0–32.6 ms | 0.2 ms | 0.2–0.3 ms |
-| BigQuery | 10.1–10.8 ms | 0.3 ms | 0.3 ms |
+| Dialect | Grammar load and initialization | First parse | First round trip | Warm parse | Warm round trip |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PostgreSQL | 8.7 ms | 2.6 ms | 11.5 ms | 0.2 ms | 0.3 ms |
+| BigQuery | 4.3 ms | 2.3 ms | 6.6 ms | 0.4 ms | 0.5 ms |
+
+The worker ready handshake took 7.0 ms in that run.
 
 These numbers establish packaging feasibility and initial size guards. They
 are not percentile claims. Stable latency decisions require repeated,
 cross-platform samples over the representative and adversarial corpus.
 
-The checked-in harness fails above 68 KiB gzip for the PostgreSQL assets,
-50 KiB for BigQuery, or 124 KiB / 590 KiB for the complete worker fixture in
-gzip/raw form. These ceilings include small measurement headroom and are
-placement-spike guards, not the final optional-integration bundle budget.
+The checked-in harness fails above 68 KiB gzip for the PostgreSQL transitive
+graph, 50 KiB for the BigQuery transitive graph, or 120 KiB / 570 KiB for the
+complete worker fixture in gzip/raw form. These ceilings include small
+measurement headroom and are placement-spike guards, not the final
+optional-integration bundle budget.
 
 ## Implementation sequence
 

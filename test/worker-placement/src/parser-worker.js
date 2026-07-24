@@ -51,23 +51,84 @@ function findParserConstructor(moduleValue) {
   throw new Error("The dialect bundle did not expose a Parser constructor");
 }
 
-function snapshotGlobals() {
+function snapshotGlobals(target) {
   return GLOBAL_KEYS.map((key) => ({
-    descriptor: Object.getOwnPropertyDescriptor(globalThis, key),
+    descriptor: Object.getOwnPropertyDescriptor(target, key),
     key,
   }));
 }
 
-function restoreGlobals(snapshots) {
+function descriptorsEqual(left, right) {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  if (
+    left.configurable !== right.configurable ||
+    left.enumerable !== right.enumerable
+  ) {
+    return false;
+  }
+  if ("value" in left || "value" in right) {
+    return (
+      "value" in left &&
+      "value" in right &&
+      left.writable === right.writable &&
+      Object.is(left.value, right.value)
+    );
+  }
+  return (
+    left.get === right.get &&
+    left.set === right.set
+  );
+}
+
+function restoreGlobals(target, snapshots) {
   for (const { descriptor, key } of snapshots) {
     if (descriptor === undefined) {
-      if (!Reflect.deleteProperty(globalThis, key)) {
+      if (!Reflect.deleteProperty(target, key)) {
         throw new Error(`Could not remove worker global ${key}`);
       }
     } else {
-      Object.defineProperty(globalThis, key, descriptor);
+      Object.defineProperty(target, key, descriptor);
     }
   }
+  return Object.fromEntries(
+    snapshots.map(({ descriptor, key }) => [
+      key,
+      descriptorsEqual(
+        descriptor,
+        Object.getOwnPropertyDescriptor(target, key),
+      ),
+    ]),
+  );
+}
+
+function createGuardedModuleLoader(target) {
+  let poisoned = false;
+  return async (loadModule) => {
+    if (poisoned) {
+      throw new Error("The guarded module loader is poisoned");
+    }
+    const snapshots = snapshotGlobals(target);
+    let moduleValue;
+    let loadError;
+    try {
+      moduleValue = await loadModule();
+    } catch (error) {
+      loadError = error;
+    }
+    let descriptorEquality;
+    try {
+      descriptorEquality = restoreGlobals(target, snapshots);
+    } catch (error) {
+      poisoned = true;
+      throw error;
+    }
+    if (loadError !== undefined) {
+      throw loadError;
+    }
+    return { descriptorEquality, moduleValue };
+  };
 }
 
 function assertDedicatedWorkerRealm() {
@@ -80,38 +141,86 @@ function assertDedicatedWorkerRealm() {
   }
 }
 
-export function installParserWorker(loadModule) {
-  assertDedicatedWorkerRealm();
-  let parserPromise;
+function resourceEntries() {
+  return performance.getEntriesByType("resource").map((entry) => ({
+    decodedBodySize: entry.decodedBodySize,
+    encodedBodySize: entry.encodedBodySize,
+    initiatorType: entry.initiatorType,
+    name: entry.name,
+    transferSize: entry.transferSize,
+  }));
+}
 
-  async function getParser() {
-    if (parserPromise === undefined) {
-      parserPromise = (async () => {
-        const snapshots = snapshotGlobals();
-        let moduleValue;
-        let loadError;
-        try {
-          moduleValue = await loadModule();
-        } catch (error) {
-          loadError = error;
-        }
-        restoreGlobals(snapshots);
-        if (loadError !== undefined) {
-          throw loadError;
-        }
-        const Parser = findParserConstructor(moduleValue);
-        const parser = Reflect.construct(Parser, []);
-        if (
-          typeof parser !== "object" ||
-          parser === null ||
-          typeof parser.astify !== "function"
-        ) {
-          throw new Error("The dialect Parser did not expose astify");
-        }
-        return parser;
-      })();
+async function syntheticCleanupPoisonEvidence() {
+  const target = {};
+  const load = createGuardedModuleLoader(target);
+  let evaluations = 0;
+  let cleanupFailed = false;
+  try {
+    await load(async () => {
+      evaluations += 1;
+      Object.defineProperty(target, "NodeSQLParser", {
+        configurable: false,
+        value: "synthetic-pollution",
+      });
+      return {};
+    });
+  } catch {
+    cleanupFailed = true;
+  }
+  let poisonedRetryFailed = false;
+  try {
+    await load(async () => {
+      evaluations += 1;
+      return {};
+    });
+  } catch {
+    poisonedRetryFailed = true;
+  }
+  return {
+    cleanupFailed,
+    evaluations,
+    poisonedRetryFailed,
+  };
+}
+
+export function installParserWorker(moduleLoaders) {
+  assertDedicatedWorkerRealm();
+  const guardedLoad = createGuardedModuleLoader(globalThis);
+  const parsers = new Map();
+
+  async function getParser(grammar) {
+    const cached = parsers.get(grammar);
+    if (cached !== undefined) {
+      return {
+        cached: true,
+        grammarLoadAndInitMs: 0,
+        ...cached,
+      };
     }
-    return await parserPromise;
+    const startedAt = performance.now();
+    const loadModule = moduleLoaders[grammar];
+    const { descriptorEquality, moduleValue } =
+      await guardedLoad(loadModule);
+    const Parser = findParserConstructor(moduleValue);
+    const parser = Reflect.construct(Parser, []);
+    if (
+      typeof parser !== "object" ||
+      parser === null ||
+      typeof parser.astify !== "function"
+    ) {
+      throw new Error("The dialect Parser did not expose astify");
+    }
+    const initialized = {
+      descriptorEquality,
+      parser,
+    };
+    parsers.set(grammar, initialized);
+    return {
+      cached: false,
+      grammarLoadAndInitMs: performance.now() - startedAt,
+      ...initialized,
+    };
   }
 
   globalThis.addEventListener("message", async (event) => {
@@ -120,27 +229,51 @@ export function installParserWorker(loadModule) {
       typeof request !== "object" ||
       request === null ||
       !Number.isSafeInteger(request.id) ||
-      request.id < 0 ||
+      request.id < 0
+    ) {
+      globalThis.postMessage({
+        error: "invalid-request",
+        id: -1,
+        kind: "result",
+        resources: resourceEntries(),
+        status: "failed",
+      });
+      return;
+    }
+    if (request.kind === "test-cleanup-poison") {
+      globalThis.postMessage({
+        evidence: await syntheticCleanupPoisonEvidence(),
+        id: request.id,
+        kind: "cleanup-poison-result",
+        resources: resourceEntries(),
+      });
+      return;
+    }
+    if (
+      request.kind !== "parse" ||
+      (request.grammar !== "postgresql" &&
+        request.grammar !== "bigquery") ||
       typeof request.text !== "string" ||
       request.text.length > MAX_STATEMENT_LENGTH
     ) {
       globalThis.postMessage({
         error: "invalid-request",
-        id:
-          typeof request === "object" &&
-          request !== null &&
-          Number.isSafeInteger(request.id)
-            ? request.id
-            : -1,
+        id: request.id,
+        kind: "result",
+        resources: resourceEntries(),
         status: "failed",
       });
       return;
     }
 
-    const startedAt = performance.now();
     try {
-      const parser = await getParser();
-      const output = parser.astify(request.text, PARSER_OPTIONS);
+      const loaded = await getParser(request.grammar);
+      const astifyStartedAt = performance.now();
+      const output = loaded.parser.astify(
+        request.text,
+        PARSER_OPTIONS,
+      );
+      const astifyMs = performance.now() - astifyStartedAt;
       const root = Array.isArray(output) ? output[0] : output;
       if (
         typeof root !== "object" ||
@@ -151,16 +284,29 @@ export function installParserWorker(loadModule) {
       }
       globalThis.postMessage({
         astType: root.type,
+        astifyMs,
+        descriptorEquality: loaded.descriptorEquality,
+        grammar: request.grammar,
+        grammarLoadAndInitMs: loaded.grammarLoadAndInitMs,
         id: request.id,
-        parseMs: performance.now() - startedAt,
+        kind: "result",
+        moduleCached: loaded.cached,
+        resources: resourceEntries(),
         status: "parsed",
       });
     } catch {
       globalThis.postMessage({
         error: "parse-failed",
         id: request.id,
+        kind: "result",
+        resources: resourceEntries(),
         status: "failed",
       });
     }
+  });
+
+  globalThis.postMessage({
+    kind: "ready",
+    resources: resourceEntries(),
   });
 }
