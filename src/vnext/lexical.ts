@@ -291,6 +291,9 @@ export function scanSqlDollarQuote(
   if (hasSqlIdentifierBefore(text, from)) {
     return null;
   }
+  if (from + 1 >= limit) {
+    return null;
+  }
   const first = text.charCodeAt(from + 1);
   let cursor = from + 1;
   let delimiterTooLong = false;

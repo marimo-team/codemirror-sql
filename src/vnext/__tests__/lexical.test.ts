@@ -71,4 +71,10 @@ describe("shared SQL lexical primitives", () => {
       to: 10,
     });
   });
+
+  it("classifies dollar-quote openers only from the bounded prefix", () => {
+    for (const text of ["$", "$$", "$x"]) {
+      expect(scanSqlDollarQuote(text, 0, 1)).toBeNull();
+    }
+  });
 });
