@@ -116,7 +116,9 @@ node-sql-parser/build/bigquery.js
 
 The worker verifies that `self === globalThis` and that no DOM window exists.
 It snapshots and restores the exact `NodeSQLParser` and `global` descriptors
-around dialect loading. Cleanup failure poisons that worker generation.
+around the complete backend operation: dialect loading, module decoding,
+parser construction, parsing, and output normalization. Cleanup failure
+poisons that worker generation.
 
 ### Private wire protocol
 

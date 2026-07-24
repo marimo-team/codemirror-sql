@@ -59,9 +59,10 @@ exists, or `global` does not resolve exactly to `globalThis`, before loading a
 bundle. This blocks browser windows and Node DOM shims from exposing an
 unguarded secondary target. Pure Node loads restore the exact prior descriptors
 synchronously after module evaluation, including removing names that were
-previously absent. Cleanup failure permanently poisons loading. A
-dedicated-worker loader uses the same exact descriptor restoration rule within
-its isolated realm.
+previously absent. Cleanup failure permanently poisons loading. The dedicated
+worker applies the same exact restoration rule around the complete backend
+operation, including module evaluation, module decoding, parser construction,
+parsing, and output normalization.
 
 ### Private browser worker endpoint
 
@@ -82,7 +83,7 @@ The endpoint:
 - derives retryability from the closed failure code instead of trusting a
   separate wire flag;
 - restores the exact prior `NodeSQLParser` and `global` descriptors around
-  each dynamic import; and
+  each complete backend operation; and
 - permanently poisons and closes its worker realm if cleanup cannot be proven
   exact.
 
