@@ -1,9 +1,27 @@
 import type { SqlTextChange } from "./types.js";
+import {
+  hasEscapeStringPrefix,
+  isBigQueryRawString,
+  isSqlWhitespace,
+  scanSqlBlockComment,
+  scanSqlDollarQuote,
+  scanSqlQuoted,
+  sqlIdentifierContinueLengthAt,
+  sqlIdentifierStartLengthAt,
+  type SqlLexicalProfile,
+} from "./lexical.js";
+
+export {
+  BIGQUERY_SQL_LEXICAL_PROFILE,
+  DREMIO_SQL_LEXICAL_PROFILE,
+  DUCKDB_SQL_LEXICAL_PROFILE,
+  POSTGRESQL_SQL_LEXICAL_PROFILE,
+} from "./lexical.js";
+export type { SqlLexicalProfile } from "./lexical.js";
 
 const analysisRangeBrand: unique symbol = Symbol("SqlAnalysisRange");
 
 export const MAX_SQL_STATEMENT_SLOTS = 10_000;
-const MAX_DOLLAR_QUOTE_DELIMITER_LENGTH = 256;
 const MAX_PREFIX_TOKENS = 6;
 
 export interface SqlAnalysisRange {
@@ -69,59 +87,6 @@ export interface SqlStatementIndex {
   readonly slots: readonly SqlStatementSlot[];
 }
 
-type SqlSingleQuoteBackslash = "always" | "e-prefix" | "never";
-type SqlProceduralGuards = "bigquery" | "none" | "postgresql";
-
-export interface SqlLexicalProfile {
-  readonly backtickQuotedIdentifiers: boolean;
-  readonly bigQueryStrings: boolean;
-  readonly dollarQuotedStrings: boolean;
-  readonly hashLineComments: boolean;
-  readonly nestedBlockComments: boolean;
-  readonly proceduralGuards: SqlProceduralGuards;
-  readonly singleQuoteBackslash: SqlSingleQuoteBackslash;
-}
-
-export const POSTGRESQL_SQL_LEXICAL_PROFILE: SqlLexicalProfile = Object.freeze({
-  backtickQuotedIdentifiers: false,
-  bigQueryStrings: false,
-  dollarQuotedStrings: true,
-  hashLineComments: false,
-  nestedBlockComments: true,
-  proceduralGuards: "postgresql",
-  singleQuoteBackslash: "e-prefix",
-});
-
-export const DUCKDB_SQL_LEXICAL_PROFILE: SqlLexicalProfile = Object.freeze({
-  backtickQuotedIdentifiers: false,
-  bigQueryStrings: false,
-  dollarQuotedStrings: true,
-  hashLineComments: false,
-  nestedBlockComments: true,
-  proceduralGuards: "none",
-  singleQuoteBackslash: "e-prefix",
-});
-
-export const BIGQUERY_SQL_LEXICAL_PROFILE: SqlLexicalProfile = Object.freeze({
-  backtickQuotedIdentifiers: true,
-  bigQueryStrings: true,
-  dollarQuotedStrings: false,
-  hashLineComments: true,
-  nestedBlockComments: false,
-  proceduralGuards: "bigquery",
-  singleQuoteBackslash: "always",
-});
-
-export const DREMIO_SQL_LEXICAL_PROFILE: SqlLexicalProfile = Object.freeze({
-  backtickQuotedIdentifiers: false,
-  bigQueryStrings: false,
-  dollarQuotedStrings: false,
-  hashLineComments: false,
-  nestedBlockComments: false,
-  proceduralGuards: "none",
-  singleQuoteBackslash: "never",
-});
-
 const NORMAL_END_STATE: Extract<
   SqlLexicalEndState,
   { readonly kind: "normal" }
@@ -181,271 +146,8 @@ function createOpaqueSlot(
   });
 }
 
-function isAsciiIdentifierStart(code: number): boolean {
-  return (
-    code === 95 ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122)
-  );
-}
-
-function isAsciiIdentifierContinue(code: number): boolean {
-  return isAsciiIdentifierStart(code) || (code >= 48 && code <= 57);
-}
-
-function codePointLengthAt(text: string, index: number): 0 | 1 | 2 {
-  const codePoint = text.codePointAt(index);
-  if (codePoint === undefined) {
-    return 0;
-  }
-  return codePoint > 0xffff ? 2 : 1;
-}
-
-function sqlIdentifierStartLengthAt(text: string, index: number): 0 | 1 | 2 {
-  const code = text.charCodeAt(index);
-  if (code <= 0x7f) {
-    return isAsciiIdentifierStart(code) ? 1 : 0;
-  }
-  return codePointLengthAt(text, index);
-}
-
-function sqlIdentifierContinueLengthAt(
-  text: string,
-  index: number,
-): 0 | 1 | 2 {
-  const code = text.charCodeAt(index);
-  if (code <= 0x7f) {
-    return isAsciiIdentifierContinue(code) ? 1 : 0;
-  }
-  return codePointLengthAt(text, index);
-}
-
-function previousCodePointIndex(text: string, index: number): number {
-  if (index <= 0) {
-    return -1;
-  }
-  const last = text.charCodeAt(index - 1);
-  if (
-    last >= 0xdc00 &&
-    last <= 0xdfff &&
-    index >= 2
-  ) {
-    const first = text.charCodeAt(index - 2);
-    if (first >= 0xd800 && first <= 0xdbff) {
-      return index - 2;
-    }
-  }
-  return index - 1;
-}
-
-function hasSqlIdentifierBefore(text: string, index: number): boolean {
-  const previous = previousCodePointIndex(text, index);
-  if (previous < 0) {
-    return false;
-  }
-  return (
-    text.charCodeAt(previous) === 36 ||
-    sqlIdentifierContinueLengthAt(text, previous) > 0
-  );
-}
-
-function isSqlWhitespace(code: number): boolean {
-  return (
-    code === 9 ||
-    code === 10 ||
-    code === 11 ||
-    code === 12 ||
-    code === 13 ||
-    code === 32
-  );
-}
-
-function hasPrefixAtTokenBoundary(
-  text: string,
-  quoteAt: number,
-  prefix: string,
-): boolean {
-  const prefixFrom = quoteAt - prefix.length;
-  if (prefixFrom < 0) {
-    return false;
-  }
-  for (let index = 0; index < prefix.length; index += 1) {
-    const actual = text.charCodeAt(prefixFrom + index) | 32;
-    if (actual !== prefix.charCodeAt(index)) {
-      return false;
-    }
-  }
-  return (
-    prefixFrom === 0 ||
-    !hasSqlIdentifierBefore(text, prefixFrom)
-  );
-}
-
-function hasEscapeStringPrefix(text: string, quoteAt: number): boolean {
-  return hasPrefixAtTokenBoundary(text, quoteAt, "e");
-}
-
-function isBigQueryRawString(text: string, quoteAt: number): boolean {
-  return (
-    hasPrefixAtTokenBoundary(text, quoteAt, "r") ||
-    hasPrefixAtTokenBoundary(text, quoteAt, "br") ||
-    hasPrefixAtTokenBoundary(text, quoteAt, "rb")
-  );
-}
-
-interface QuoteScanResult {
-  readonly closed: boolean;
-  readonly to: number;
-}
-
-function scanQuoted(
-  text: string,
-  from: number,
-  quote: number,
-  quoteLength: 1 | 3,
-  backslashEscapes: boolean,
-  doubledQuoteEscapes: boolean,
-  stopAtLineBreak: boolean,
-): QuoteScanResult {
-  let cursor = from + quoteLength;
-  while (cursor < text.length) {
-    const code = text.charCodeAt(cursor);
-    if (stopAtLineBreak && (code === 10 || code === 13)) {
-      return { closed: false, to: text.length };
-    }
-    if (backslashEscapes && code === 92) {
-      const escapedCode = text.charCodeAt(cursor + 1);
-      if (
-        stopAtLineBreak &&
-        (escapedCode === 10 || escapedCode === 13)
-      ) {
-        return { closed: false, to: text.length };
-      }
-      cursor += Math.min(2, text.length - cursor);
-      continue;
-    }
-    if (code !== quote) {
-      cursor += 1;
-      continue;
-    }
-    if (quoteLength === 3) {
-      if (
-        text.charCodeAt(cursor + 1) === quote &&
-        text.charCodeAt(cursor + 2) === quote
-      ) {
-        return { closed: true, to: cursor + 3 };
-      }
-      cursor += 1;
-      continue;
-    }
-    if (doubledQuoteEscapes && text.charCodeAt(cursor + 1) === quote) {
-      cursor += 2;
-      continue;
-    }
-    return { closed: true, to: cursor + 1 };
-  }
-  return { closed: false, to: text.length };
-}
-
-interface BlockCommentScanResult {
-  readonly closed: boolean;
-  readonly to: number;
-}
-
-function scanBlockComment(
-  text: string,
-  from: number,
-  nested: boolean,
-): BlockCommentScanResult {
-  let cursor = from + 2;
-  let depth = 1;
-  while (cursor < text.length) {
-    const code = text.charCodeAt(cursor);
-    const next = text.charCodeAt(cursor + 1);
-    if (nested && code === 47 && next === 42) {
-      depth += 1;
-      cursor += 2;
-      continue;
-    }
-    if (code === 42 && next === 47) {
-      depth -= 1;
-      cursor += 2;
-      if (depth === 0) {
-        return { closed: true, to: cursor };
-      }
-      continue;
-    }
-    cursor += 1;
-  }
-  return { closed: false, to: text.length };
-}
-
-interface DollarQuoteScanResult {
-  readonly detectedAt: number;
-  readonly endState: ExactSqlStatementSlot["endState"] | null;
-  readonly opaqueReason: SqlOpaqueBoundaryReason | null;
-  readonly to: number;
-}
-
-function scanDollarQuote(
-  text: string,
-  from: number,
-): DollarQuoteScanResult | null {
-  if (hasSqlIdentifierBefore(text, from)) {
-    return null;
-  }
-  const first = text.charCodeAt(from + 1);
-  let cursor = from + 1;
-  let delimiterTooLong = false;
-  if (first !== 36) {
-    const firstLength = sqlIdentifierStartLengthAt(text, cursor);
-    if (firstLength === 0) {
-      return null;
-    }
-    cursor += firstLength;
-    while (cursor < text.length) {
-      const continueLength = sqlIdentifierContinueLengthAt(text, cursor);
-      if (continueLength === 0) {
-        break;
-      }
-      if (cursor - from + 1 > MAX_DOLLAR_QUOTE_DELIMITER_LENGTH) {
-        delimiterTooLong = true;
-      }
-      cursor += continueLength;
-    }
-    if (text.charCodeAt(cursor) !== 36) {
-      return null;
-    }
-    if (delimiterTooLong) {
-      return {
-        detectedAt: from,
-        endState: null,
-        opaqueReason: "resource-limit",
-        to: text.length,
-      };
-    }
-  }
-  const delimiterTo = cursor + 1;
-  const delimiter = text.slice(from, delimiterTo);
-  const closeAt = text.indexOf(delimiter, delimiterTo);
-  if (closeAt < 0) {
-    return {
-      detectedAt: from,
-      endState: createUnterminatedEndState("dollar-quoted-string", from),
-      opaqueReason: null,
-      to: text.length,
-    };
-  }
-  return {
-    detectedAt: from,
-    endState: NORMAL_END_STATE,
-    opaqueReason: null,
-    to: closeAt + delimiter.length,
-  };
-}
-
 class SqlPrefixGuard {
-  readonly #mode: SqlProceduralGuards;
+  readonly #mode: SqlLexicalProfile["proceduralGuards"];
   readonly #tokens: string[] = [];
   #labelColonAt: number | null = null;
   #parenthesisDepth = 0;
@@ -455,7 +157,7 @@ class SqlPrefixGuard {
   #reason: SqlOpaqueBoundaryReason | null = null;
   #reasonAt = 0;
 
-  constructor(mode: SqlProceduralGuards) {
+  constructor(mode: SqlLexicalProfile["proceduralGuards"]) {
     this.#mode = mode;
   }
 
@@ -725,9 +427,10 @@ function scanSqlStatementIndex(
       continue;
     }
     if (code === 47 && next === 42) {
-      const comment = scanBlockComment(
+      const comment = scanSqlBlockComment(
         analysisText,
         cursor,
+        analysisText.length,
         profile.nestedBlockComments,
       );
       if (!comment.closed) {
@@ -741,18 +444,22 @@ function scanSqlStatementIndex(
       profile.dollarQuotedStrings &&
       code === 36
     ) {
-      const dollarQuote = scanDollarQuote(analysisText, cursor);
+      const dollarQuote = scanSqlDollarQuote(
+        analysisText,
+        cursor,
+        analysisText.length,
+      );
       if (dollarQuote) {
         hasCode = true;
         prefixGuard.recordNonWord(code);
-        if (dollarQuote.opaqueReason !== null) {
-          return finishOpaque(
-            dollarQuote.opaqueReason,
-            dollarQuote.detectedAt,
-          );
+        if (dollarQuote.delimiterTooLong) {
+          return finishOpaque("resource-limit", cursor);
         }
-        if (dollarQuote.endState?.kind === "unterminated") {
-          finalEndState = dollarQuote.endState;
+        if (!dollarQuote.closed) {
+          finalEndState = createUnterminatedEndState(
+            "dollar-quoted-string",
+            cursor,
+          );
         }
         cursor = dollarQuote.to;
         continue;
@@ -768,9 +475,10 @@ function scanSqlStatementIndex(
       if (code === 96) {
         prefixGuard.recordQuotedIdentifier();
         prefixGuard.recordNonWord(code);
-        const quote = scanQuoted(
+        const quote = scanSqlQuoted(
           analysisText,
           cursor,
+          analysisText.length,
           code,
           1,
           true,
@@ -806,9 +514,10 @@ function scanSqlStatementIndex(
         prefixGuard.recordQuotedIdentifier();
       }
       prefixGuard.recordNonWord(code);
-      const quote = scanQuoted(
+      const quote = scanSqlQuoted(
         analysisText,
         cursor,
+        analysisText.length,
         code,
         quoteLength,
         backslashEscapes,
@@ -830,6 +539,19 @@ function scanSqlStatementIndex(
       const wordFrom = cursor;
       cursor += wordStartLength;
       while (cursor < analysisText.length) {
+        const continueCode = analysisText.charCodeAt(cursor);
+        if (
+          continueCode === 95 ||
+          (continueCode >= 48 && continueCode <= 57) ||
+          (continueCode >= 65 && continueCode <= 90) ||
+          (continueCode >= 97 && continueCode <= 122)
+        ) {
+          cursor += 1;
+          continue;
+        }
+        if (continueCode <= 0x7f) {
+          break;
+        }
         const continueLength = sqlIdentifierContinueLengthAt(
           analysisText,
           cursor,
