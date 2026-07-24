@@ -37,7 +37,11 @@ debounce, dispatch, and session disposal.
 
 Shared providers contain no request-local mutable state.
 
-## Stable introductory shape
+## Target introductory shape
+
+The service/session lifecycle in this section is stable direction. Catalog,
+search-path, embedded-region, completion, and service-originated notification
+spellings remain provisional until ADR 0005's stabilization gate.
 
 The target consumer shape is:
 
@@ -64,6 +68,7 @@ const service = createSqlLanguageService<MarimoSqlContext>({
 
 const session = service.openDocument({
   text: "SELECT * FROM users",
+  embeddedRegions: [],
   context: {
     dialect: duckdb.id,
     engine: "__marimo__",
@@ -104,10 +109,18 @@ interface SqlDocumentContext {
   readonly dialect: SqlDialectId;
   readonly catalog?: {
     readonly scope: string;
-    readonly searchPath?: readonly string[];
+    readonly searchPath?: readonly (readonly {
+      readonly value: string;
+      readonly quoted: boolean;
+    }[])[];
   };
 }
 ```
+
+Search paths are ordered component paths rather than dot-joined strings.
+Consequently a quoted identifier containing a dot is never confused with two
+path components. ADR 0005 keeps the exact public spelling provisional until
+the catalog vertical slice and consumer fixtures pass.
 
 The service resolves dialect IDs through its immutable registry and rejects
 unknown or duplicate IDs. Duplicate registration is rejected even when the
@@ -130,28 +143,38 @@ complete operation without mutation. The accepted snapshot is recursively
 frozen and is the only context observed by providers. Caller mutation therefore
 cannot change an in-flight request. Providers never read ambient editor state.
 
-The session updates text and context atomically:
+The session updates text, context, and embedded regions atomically:
 
 ```ts
 session.update({
-  kind: "document",
   baseRevision: session.revision,
   document: {
     kind: "changes",
     changes: [{ from: 14, to: 19, insert: "customers" }],
   },
   context: nextContext,
+  embeddedRegions: nextEmbeddedRegions,
 });
 ```
 
+A transaction contains `baseRevision` and any non-empty subset of `document`,
+`context`, and `embeddedRegions`. A document mutation requires the complete
+region set for its resulting text. Without a document mutation, an explicit
+complete region set can change alone or together with context; omission
+preserves the current regions. An explicit empty set clears them. Opening a
+document accepts the same optional complete set, with omission or an empty set
+meaning identity source.
+
 A full-text replacement is available for simple consumers. Incremental changes
 are ordered, non-overlapping, absolute UTF-16 ranges in the current document.
-The service validates the base revision and every range before mutating state.
+The service validates the base revision, every edit, context, and the complete
+resulting region set before mutating state. The transaction either commits one
+revision or changes nothing; callers never need a fake no-op document
+replacement to change template metadata.
 
-A context-only update is valid and also requires `baseRevision`. Accepted
-updates always create a new revision, including an `A → B → A` text cycle, so a
-previous result never becomes current again. A stale base rejects the complete
-update without partial mutation.
+Accepted updates always create a new revision, including an `A → B → A` text
+cycle, so a previous result never becomes current again. A stale base rejects
+the complete update without partial mutation.
 
 ## Revision and applicability
 
@@ -311,10 +334,25 @@ interface SqlDocumentSession<Context extends SqlDocumentContext> {
     request?: SqlFormatRequest,
   ) => Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
 
+  readonly onDidChange: (
+    listener: (event: {
+      readonly revision: SqlRevision;
+      readonly reason:
+        | "catalog"
+        | "catalog-availability"
+        | "provider-configuration";
+    }) => void,
+  ) => { readonly dispose: () => void };
+
   readonly isCurrent: (revision: SqlRevision) => boolean;
   readonly dispose: () => void;
 }
 ```
+
+`onDidChange` reports service-originated revision advances that do not come
+from the host's own document transaction. State changes before notification;
+listener failures are isolated; and both subscription and session disposal are
+idempotent. ADR 0005 specifies the first catalog use.
 
 The walking skeleton exposes only implemented features. Adding a method is
 backward-compatible; returning placeholder success from an unimplemented method
@@ -325,13 +363,13 @@ is not.
 Providers are narrow and async-only. Pure range, change, identifier, and
 statement-index primitives remain synchronous.
 
-Provider requests contain:
-
-- Immutable source snapshot with distinctly named `originalText`,
-  `analysisText`, and source mapping
-- Explicit document context
-- Provider configuration identity
-- `AbortSignal`
+Each provider receives only the minimum feature-specific immutable projection.
+Document-oriented validators may receive a distinctly named `originalText` or
+`analysisText`, source mapping, and their declared context projection. Catalog
+search receives only the catalog/query projection in ADR 0005. No provider
+automatically receives the full source snapshot or arbitrary host context.
+Provider configuration identity remains service-owned, and `AbortSignal` is
+passed separately.
 
 Each validator declares both `granularity: "document" | "statement"` and
 `input: "original" | "analysis"`. Regardless of input form, returned public
@@ -353,7 +391,8 @@ validates ranges and result limits before arbitration.
 
 Authority and arbitration are feature-specific:
 
-- Completion merges, deduplicates, and deterministically ranks.
+- Completion composes and deterministically ranks under its declared identity
+  rules; it never applies a generic catalog fold or deduplication policy.
 - Diagnostics use coverage and authority; they are not blindly unioned.
 - Hover can select or attribute sections.
 - Definitions use precedence, confidence, and provenance.
@@ -363,15 +402,12 @@ Provider completion order cannot affect final ordering.
 
 ## Parser-neutral artifacts
 
-The walking skeleton normalizes only evidence needed by its first vertical
-slice:
-
-- Statement ranges and state
-- Tokens
-- Diagnostics
-- Normalized relation references
-- Cursor-context facts
-- Exact completion replacement range
+The parser walking skeleton normalizes only bounded syntax evidence it can
+prove, initially statement kind, syntax acceptance/rejection, authenticated
+source locations, and explicit availability/limitations. Parser-independent
+statement indexing and relation completion keep their own smaller artifacts.
+The parser does not manufacture relation references, cursor-context facts, or
+completion ranges for ADR 0005.
 
 It does not expose `ast?: unknown` or attempt a universal SQL AST.
 
@@ -387,9 +423,10 @@ Catalog access is lazy and bounded. Providers search and resolve within an
 explicit scope, prefix, object-kind set, and service-clamped result limit.
 Responses carry stable entity IDs, provider epoch, pagination, and coverage.
 
-Empty-complete and empty-loading are distinct. A miss supports a definite
-unknown-object diagnostic only when the response proves complete coverage for
-the searched scope.
+Empty-complete and empty-loading are distinct. A complete-empty completion
+search proves only that the exact search produced no candidates. Only a
+separate authoritative resolution contract with explicit complete resolution
+coverage may support a definite unknown-object diagnostic.
 
 Catalog subscriptions are scoped and disposable. An invalidation identifies
 provider ID, affected scope, and:
@@ -421,9 +458,10 @@ coverage.
 
 The initial internal source primitive implements identity snapshots and this
 length-preserving masking only. It does not expose a transformer or source-map
-SPI. Sessions create a new source snapshot for document updates and reuse the
-existing snapshot for context-only updates. Non-identity generated/reordered
-source remains deferred until a concrete consumer validates the segment model.
+SPI. Sessions create a new source snapshot from the complete post-update region
+set for document or region updates and reuse the existing snapshot only when
+text and regions are unchanged. Non-identity generated/reordered source remains
+deferred until a concrete consumer validates the segment model.
 
 Current session edits use identity sources, so validated original-document
 changes are also trusted analysis-coordinate changes. A future transformed

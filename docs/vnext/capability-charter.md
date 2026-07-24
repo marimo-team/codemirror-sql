@@ -78,9 +78,11 @@ The stable session API is intended to support:
 - Statement and structure indicators
 - Explicit formatting through a selected formatter provider
 
-The walking skeleton implements relation completion first. Subsequent features
-reuse the same session, revision, range, cancellation, provenance, and result
-contracts. No feature gets a separate parser or schema configuration.
+The walking skeleton implements parser-independent relation completion first,
+so incomplete `FROM` and `JOIN` input does not wait for parser acceptance.
+Subsequent features reuse the same session, revision, range, cancellation,
+provenance, and result contracts. No feature gets a separate parser or schema
+configuration.
 
 ## Correctness contract
 
@@ -110,7 +112,9 @@ The service distinguishes:
 - Disposal
 
 An absent or partial catalog cannot justify a definite unknown-object
-diagnostic.
+diagnostic. A complete-empty completion search cannot either; only a distinct
+authoritative resolution contract with complete resolution coverage may prove
+absence.
 
 ## Provider boundary
 
@@ -153,6 +157,12 @@ Catalog requests must support scoped search and resolution with result limits.
 Responses distinguish loading, partial, complete, failed, and paginated
 coverage. Stable entity identity and provider epochs prevent evidence from
 different catalog states being combined as authoritative.
+
+For the first vertical slice the service configures one catalog provider; a
+host may make it a composite. The provider and scope own catalog matching and
+addressability, while dialect runtime data owns SQL token decoding and
+segment-role-aware rendering. The service does not infer catalog equality or
+absence by applying a generic dialect fold.
 
 Catalog invalidation identifies provider, affected scope, and an epoch
 containing a provider/scope-monotonic generation plus opaque snapshot token.

@@ -758,13 +758,32 @@ depend on them.
 Exit when arbitrary edit properties pass, stale results cannot apply, and
 unchanged statements are reused.
 
-### 4. Parser artifacts and semantic completion slice
+### 4. Parser integration and completion slices
 
 Deliver the parser contract, measured `node-sql-parser` adapter, normalized
-artifacts, query blocks, typed visibility, CTE/relation/alias/column bindings,
-explicit partial states, and a production-quality completion vertical slice.
+artifacts, isolated execution, bounded coordination, and authenticated syntax
+evidence.
 
-Exit when goldens pass, parser ASTs do not leak, and differences are classified.
+Deliver relation completion independently through a bounded partial-`SELECT`
+query-site recognizer and CTE-visibility recognizer plus one asynchronous,
+coverage-aware catalog provider. The host may implement that provider as a
+composite; multi-provider arbitration remains a later explicit design.
+This path must remain useful for incomplete SQL and must not construct or wait
+for the parser worker.
+
+Keep the public provider and completion types provisional until the vertical
+slice, two provider shapes, packed marimo integration, hostile decoding and
+lifecycle suites, and declaration snapshots pass.
+
+Then design query blocks, typed visibility, CTE/relation/alias/column bindings,
+and explicit partial semantic states against materially different dialect
+corpora before an additional parser-derived scope feature consumes them. The
+bounded CTE recognizer remains the explicit narrow exception. Flat parser
+relation lists are not a semantic model.
+
+Exit when relation completion works through the framework-independent session,
+catalog and parser failures remain independent, semantic goldens pass, parser
+ASTs do not leak, and dialect differences are classified.
 
 ### 5. Feature vertical slices
 
@@ -785,8 +804,9 @@ Expand the minimal contracts into lazy catalogs, stable
 identities/invalidation, production feature-specific authority, native/remote
 providers, and the recorded DuckDB/LSP/`sqruff` decisions.
 
-Exit when optional remote work never blocks the local baseline and all
-race/failure/partial-catalog contracts pass.
+Exit when optional remote work never delays the local baseline beyond the
+checked product response budget, incomplete local results remain useful, and
+all race/failure/partial-catalog contracts pass.
 
 ### 7. Marimo migration and release
 
