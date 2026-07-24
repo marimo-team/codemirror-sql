@@ -344,8 +344,8 @@ describe("partial SELECT relation query sites", () => {
 
   it("collects a bounded dialect-neutral identifier superset", () => {
     expect(
-      expectReady(recognize("SELECT * FROM foo$ba|r")).prefix.value,
-    ).toBe("foo$ba");
+      expectReady(recognize("SELECT * FROM foo$use|r")).prefix.value,
+    ).toBe("foo$use");
     expect(
       expectReady(
         recognize("SELECT * FROM my-project.dataset.ta|", {
