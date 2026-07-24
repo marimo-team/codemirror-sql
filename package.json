@@ -24,9 +24,9 @@
     "test:coverage:changed": "node ./scripts/changed-coverage.mjs",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
-    "test:package": "pnpm run build && node ./scripts/package-smoke.mjs",
+    "test:package": "node ./scripts/clean.mjs && tsc && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
-    "build": "pnpm run clean && tsc",
+    "build": "node ./scripts/clean.mjs && tsc",
     "clean": "node ./scripts/clean.mjs",
     "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build",
     "release": "pnpm version"

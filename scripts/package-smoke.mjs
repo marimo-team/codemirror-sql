@@ -13,25 +13,67 @@ import { fileURLToPath } from "node:url";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "codemirror-sql-package-"));
+const packageManagerExecutable = process.env.npm_execpath;
+if (!packageManagerExecutable) {
+  throw new Error("Package smoke must run through a package-manager script");
+}
+const packageManagerEnvironment = {
+  ...process.env,
+  npm_config_manage_package_manager_versions: "false",
+  npm_config_package_manager_strict_version: "false",
+};
 
 function run(command, args, cwd) {
   execFileSync(command, args, {
     cwd,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...packageManagerEnvironment,
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
     },
     stdio: "inherit",
   });
 }
 
+function runPackageManager(args, cwd) {
+  run(process.execPath, [packageManagerExecutable, ...args], cwd);
+}
+
 try {
-  const packOutput = JSON.parse(
-    execFileSync("pnpm", ["pack", "--json", "--pack-destination", temporaryDirectory], {
+  const packageManagerVersion = execFileSync(
+    process.execPath,
+    [packageManagerExecutable, "--version"],
+    {
       cwd: repository,
       encoding: "utf8",
-    }),
+      env: packageManagerEnvironment,
+    },
+  ).trim();
+  if (
+    process.env.EXPECTED_PNPM_VERSION &&
+    packageManagerVersion !== process.env.EXPECTED_PNPM_VERSION
+  ) {
+    throw new Error(
+      `Package-manager child switched from ${process.env.EXPECTED_PNPM_VERSION} to ${packageManagerVersion}`,
+    );
+  }
+
+  const packOutput = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        packageManagerExecutable,
+        "pack",
+        "--json",
+        "--pack-destination",
+        temporaryDirectory,
+      ],
+      {
+        cwd: repository,
+        encoding: "utf8",
+        env: packageManagerEnvironment,
+      },
+    ),
   );
   const manifest = Array.isArray(packOutput) ? packOutput[0] : packOutput;
   if (!manifest || typeof manifest.filename !== "string") {
@@ -43,8 +85,7 @@ try {
   copyFileSync(join(fixture, "package.json"), join(temporaryDirectory, "package.json"));
   copyFileSync(join(fixture, "pnpm-lock.yaml"), join(temporaryDirectory, "pnpm-lock.yaml"));
 
-  run(
-    "pnpm",
+  runPackageManager(
     ["install", "--frozen-lockfile", "--ignore-scripts"],
     temporaryDirectory,
   );
@@ -144,7 +185,7 @@ if (!parseResult.success || !parseResult.ast) {
     ),
   );
 
-  run("pnpm", ["exec", "tsc", "--project", "tsconfig.json"], temporaryDirectory);
+  runPackageManager(["exec", "tsc", "--project", "tsconfig.json"], temporaryDirectory);
   run(process.execPath, ["consumer.mjs"], temporaryDirectory);
 } finally {
   if (basename(temporaryDirectory).startsWith("codemirror-sql-package-")) {

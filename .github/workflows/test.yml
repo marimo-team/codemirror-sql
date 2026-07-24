@@ -101,6 +101,7 @@ jobs:
 
   package:
     env:
+      EXPECTED_PNPM_VERSION: ${{ matrix.pnpm-version }}
       npm_config_manage_package_manager_versions: "false"
       npm_config_package_manager_strict_version: "false"
     strategy:
