@@ -1,6 +1,7 @@
 # ADR 0004: Isolated Browser Parser Execution
 
-Status: accepted for implementation, session wiring gated by evidence  
+Status: accepted for implementation, session wiring gated by evidence
+
 Date: 2026-07-25
 
 ## Context
