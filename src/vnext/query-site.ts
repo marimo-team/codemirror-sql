@@ -104,8 +104,22 @@ export type SqlDecodedQueryPath =
     };
 
 export interface SqlQuerySiteDialect {
+  /** Accepts only a dialect-valid alias and returns its decoded value. */
+  readonly classifyRelationAlias: (
+    rawAlias: string,
+    quoted: boolean,
+    role: "explicit-alias" | "implicit-alias",
+  ) =>
+    | {
+        readonly status: "identifier";
+        readonly value: string;
+      }
+    | {
+        readonly status: "unsupported";
+      };
   readonly lexicalProfile: SqlLexicalProfile;
   readonly maximumPathDepth: number;
+  readonly supportsNaturalJoin: boolean;
   readonly decodeRelationPath: (
     rawPath: string,
     cursorOffset: number,
@@ -139,20 +153,29 @@ type FrameState =
   | "select-list"
   | "unavailable";
 
+type JoinPrefix =
+  | "cross"
+  | "full"
+  | "full-outer"
+  | "inner"
+  | "left"
+  | "left-outer"
+  | "natural"
+  | "natural-full"
+  | "natural-full-outer"
+  | "natural-inner"
+  | "natural-left"
+  | "natural-left-outer"
+  | "natural-right"
+  | "natural-right-outer"
+  | "right"
+  | "right-outer"
+  | null;
+
 interface QueryFrame {
   readonly baseDepth: number;
   anchor: "comma" | "from" | "join";
-  joinPrefix:
-    | "cross"
-    | "full"
-    | "full-outer"
-    | "inner"
-    | "left"
-    | "left-outer"
-    | "natural"
-    | "right"
-    | "right-outer"
-    | null;
+  joinPrefix: JoinPrefix;
   joinConstraintAllowed: boolean;
   joinConstraintSeen: boolean;
   selectWords: [string | null, string | null, string | null];
@@ -452,7 +475,7 @@ function wordEquals(text: string, token: Lexeme, expected: string): boolean {
 }
 
 function wordValue(text: string, token: Lexeme): string {
-  return token.to - token.from <= 16
+  return token.to - token.from <= MAX_QUERY_SITE_IDENTIFIER_LENGTH
     ? text.slice(token.from, token.to).toLowerCase()
     : "";
 }
@@ -526,13 +549,156 @@ function markUnavailable(
 }
 
 function joinAllowsConstraint(
-  prefix: QueryFrame["joinPrefix"],
+  prefix: JoinPrefix,
 ): boolean {
-  return prefix !== "cross" && prefix !== "natural";
+  return (
+    prefix !== "cross" &&
+    (prefix === null || !prefix.startsWith("natural"))
+  );
 }
 
-function processFrameWord(frame: QueryFrame, word: string): void {
+function processJoinPrefixWord(
+  frame: QueryFrame,
+  word: string,
+  supportsNaturalJoin: boolean,
+): boolean {
+  const prefix = frame.joinPrefix;
+  if (word === "outer") {
+    if (prefix === "left") {
+      frame.joinPrefix = "left-outer";
+    } else if (prefix === "right") {
+      frame.joinPrefix = "right-outer";
+    } else if (prefix === "full") {
+      frame.joinPrefix = "full-outer";
+    } else if (prefix === "natural-left") {
+      frame.joinPrefix = "natural-left-outer";
+    } else if (prefix === "natural-right") {
+      frame.joinPrefix = "natural-right-outer";
+    } else if (prefix === "natural-full") {
+      frame.joinPrefix = "natural-full-outer";
+    } else {
+      markUnavailable(frame, "ambiguous-query-site");
+    }
+    return true;
+  }
+  if (word === "natural") {
+    if (!supportsNaturalJoin) {
+      markUnavailable(frame, "unsupported-query-site");
+    } else if (prefix === null) {
+      frame.joinPrefix = "natural";
+    } else {
+      markUnavailable(frame, "ambiguous-query-site");
+    }
+    return true;
+  }
+  if (word === "cross") {
+    if (prefix === null) {
+      frame.joinPrefix = "cross";
+    } else {
+      markUnavailable(frame, "ambiguous-query-site");
+    }
+    return true;
+  }
+  if (word === "inner") {
+    if (prefix === null) {
+      frame.joinPrefix = "inner";
+    } else if (prefix === "natural") {
+      frame.joinPrefix = "natural-inner";
+    } else {
+      markUnavailable(frame, "ambiguous-query-site");
+    }
+    return true;
+  }
+  if (word === "left" || word === "right" || word === "full") {
+    if (prefix === null) {
+      frame.joinPrefix = word;
+    } else if (prefix === "natural") {
+      frame.joinPrefix =
+        word === "left"
+          ? "natural-left"
+          : word === "right"
+            ? "natural-right"
+            : "natural-full";
+    } else {
+      markUnavailable(frame, "ambiguous-query-site");
+    }
+    return true;
+  }
+  return false;
+}
+
+function classifyRelationAlias(
+  dialect: SqlQuerySiteDialect,
+  rawAlias: string,
+  quoted: boolean,
+  role: "explicit-alias" | "implicit-alias",
+): "identifier" | "unsupported" | null {
+  if (
+    rawAlias.length === 0 ||
+    (quoted && rawAlias.length <= 2)
+  ) {
+    return null;
+  }
+  try {
+    const classification = dialect.classifyRelationAlias(
+      rawAlias,
+      quoted,
+      role,
+    );
+    if (!isPlainRecord(classification)) {
+      return null;
+    }
+    const status = ownDataProperty(classification, "status");
+    const value = ownDataProperty(classification, "value");
+    if (
+      status === "identifier" &&
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= MAX_QUERY_SITE_IDENTIFIER_LENGTH
+    ) {
+      return "identifier";
+    }
+    return status === "unsupported" &&
+      value === INVALID_DATA_PROPERTY
+      ? "unsupported"
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function processFrameWord(
+  frame: QueryFrame,
+  dialect: SqlQuerySiteDialect,
+  supportsNaturalJoin: boolean,
+  text: string,
+  token: Lexeme,
+): void {
   if (frame.state === "unavailable" || frame.state === "closed") {
+    return;
+  }
+  const word = wordValue(text, token);
+  if (frame.state === "expect-alias") {
+    if (word.length === 0) {
+      markUnavailable(frame, "ambiguous-query-site");
+      return;
+    }
+    const classification = classifyRelationAlias(
+      dialect,
+      text.slice(token.from, token.to),
+      false,
+      "explicit-alias",
+    );
+    if (classification === "identifier") {
+      frame.state = "after-alias";
+      return;
+    }
+    markUnavailable(
+      frame,
+      classification === "unsupported"
+        ? "unsupported-query-site"
+        : "ambiguous-query-site",
+    );
     return;
   }
   if (isSetOperation(word)) {
@@ -565,35 +731,7 @@ function processFrameWord(frame: QueryFrame, word: string): void {
       markUnavailable(frame, "ambiguous-query-site");
       return;
     }
-    if (word === "outer") {
-      if (frame.joinPrefix === "left") {
-        frame.joinPrefix = "left-outer";
-        return;
-      }
-      if (frame.joinPrefix === "right") {
-        frame.joinPrefix = "right-outer";
-        return;
-      }
-      if (frame.joinPrefix === "full") {
-        frame.joinPrefix = "full-outer";
-        return;
-      }
-      markUnavailable(frame, "ambiguous-query-site");
-      return;
-    }
-    if (
-      word === "cross" ||
-      word === "full" ||
-      word === "inner" ||
-      word === "left" ||
-      word === "natural" ||
-      word === "right"
-    ) {
-      if (frame.joinPrefix !== null) {
-        markUnavailable(frame, "ambiguous-query-site");
-        return;
-      }
-      frame.joinPrefix = word;
+    if (processJoinPrefixWord(frame, word, supportsNaturalJoin)) {
       return;
     }
     if (word === "join") {
@@ -607,10 +745,6 @@ function processFrameWord(frame: QueryFrame, word: string): void {
     if (frame.joinPrefix !== null) {
       markUnavailable(frame, "ambiguous-query-site");
     }
-    return;
-  }
-  if (frame.state === "expect-alias") {
-    frame.state = "after-alias";
     return;
   }
   if (frame.state !== "after-relation" && frame.state !== "after-alias") {
@@ -642,35 +776,7 @@ function processFrameWord(frame: QueryFrame, word: string): void {
     frame.state = "expect-alias";
     return;
   }
-  if (word === "outer") {
-    if (frame.joinPrefix === "left") {
-      frame.joinPrefix = "left-outer";
-      return;
-    }
-    if (frame.joinPrefix === "right") {
-      frame.joinPrefix = "right-outer";
-      return;
-    }
-    if (frame.joinPrefix === "full") {
-      frame.joinPrefix = "full-outer";
-      return;
-    }
-    markUnavailable(frame, "ambiguous-query-site");
-    return;
-  }
-  if (
-    word === "cross" ||
-    word === "full" ||
-    word === "inner" ||
-    word === "left" ||
-    word === "natural" ||
-    word === "right"
-  ) {
-    if (frame.joinPrefix !== null) {
-      markUnavailable(frame, "ambiguous-query-site");
-      return;
-    }
-    frame.joinPrefix = word;
+  if (processJoinPrefixWord(frame, word, supportsNaturalJoin)) {
     return;
   }
   if (frame.joinPrefix !== null) {
@@ -678,7 +784,26 @@ function processFrameWord(frame: QueryFrame, word: string): void {
     return;
   }
   if (frame.state === "after-relation") {
-    frame.state = "after-alias";
+    if (word.length === 0) {
+      markUnavailable(frame, "ambiguous-query-site");
+      return;
+    }
+    const classification = classifyRelationAlias(
+      dialect,
+      text.slice(token.from, token.to),
+      false,
+      "implicit-alias",
+    );
+    if (classification === "identifier") {
+      frame.state = "after-alias";
+      return;
+    }
+    markUnavailable(
+      frame,
+      classification === "unsupported"
+        ? "unsupported-query-site"
+        : "ambiguous-query-site",
+    );
     return;
   }
   markUnavailable(frame, "ambiguous-query-site");
@@ -1130,16 +1255,19 @@ export function recognizeSqlRelationQuerySite(
 
   let lexicalProfile: SqlLexicalProfile;
   let maximumPathDepth: number;
+  let supportsNaturalJoin: boolean;
   try {
     lexicalProfile = dialect.lexicalProfile;
     maximumPathDepth = dialect.maximumPathDepth;
+    supportsNaturalJoin = dialect.supportsNaturalJoin;
   } catch {
     return unavailable("ambiguous-query-site");
   }
   if (
     !Number.isSafeInteger(maximumPathDepth) ||
     maximumPathDepth < 1 ||
-    maximumPathDepth > MAX_QUERY_SITE_PATH_COMPONENTS
+    maximumPathDepth > MAX_QUERY_SITE_PATH_COMPONENTS ||
+    typeof supportsNaturalJoin !== "boolean"
   ) {
     return unavailable("ambiguous-query-site");
   }
@@ -1253,12 +1381,15 @@ export function recognizeSqlRelationQuerySite(
       const punctuationFrame = topFrame(frames);
       queryCandidates.delete(depth);
       if (
-        code === 40 &&
         punctuationFrame?.baseDepth === depth &&
         punctuationFrame.state === "join-constraint" &&
         punctuationFrame.joinPrefix !== null
       ) {
-        punctuationFrame.joinPrefix = null;
+        if (code === 40) {
+          punctuationFrame.joinPrefix = null;
+        } else {
+          markUnavailable(punctuationFrame, "ambiguous-query-site");
+        }
       }
       if (
         punctuationFrame?.baseDepth === depth &&
@@ -1272,11 +1403,18 @@ export function recognizeSqlRelationQuerySite(
             : "ambiguous-query-site",
         );
       }
+      if (
+        punctuationFrame?.baseDepth === depth &&
+        punctuationFrame.state === "expect-alias"
+      ) {
+        markUnavailable(punctuationFrame, "ambiguous-query-site");
+      }
       if (code === 40) {
         const activeBeforeOpen = topFrame(frames);
         if (
           activeBeforeOpen?.baseDepth === depth &&
-          activeBeforeOpen.state === "after-relation"
+          (activeBeforeOpen.state === "after-relation" ||
+            activeBeforeOpen.state === "after-alias")
         ) {
           markUnavailable(activeBeforeOpen, "unsupported-query-site");
         }
@@ -1354,7 +1492,10 @@ export function recognizeSqlRelationQuerySite(
         const previousState = activeFrame.state;
         processFrameWord(
           activeFrame,
-          wordValue(source.analysisText, token),
+          dialect,
+          supportsNaturalJoin,
+          source.analysisText,
+          token,
         );
         openedRelation =
           previousState !== "expect-relation" &&
@@ -1371,7 +1512,39 @@ export function recognizeSqlRelationQuerySite(
         (activeFrame.state === "after-relation" ||
           activeFrame.state === "expect-alias")
       ) {
-        activeFrame.state = "after-alias";
+        if (activeFrame.joinPrefix !== null) {
+          markUnavailable(activeFrame, "ambiguous-query-site");
+          continue;
+        }
+        const role =
+          activeFrame.state === "expect-alias"
+            ? "explicit-alias"
+            : "implicit-alias";
+        const rawAlias = token.closed
+          ? source.analysisText.slice(token.from, token.to)
+          : "";
+        const classification = classifyRelationAlias(
+          dialect,
+          rawAlias,
+          true,
+          role,
+        );
+        if (classification === "identifier") {
+          activeFrame.state = "after-alias";
+        } else {
+          markUnavailable(
+            activeFrame,
+            classification === "unsupported"
+              ? "unsupported-query-site"
+              : "ambiguous-query-site",
+          );
+        }
+      } else if (
+        activeFrame?.baseDepth === depth &&
+        activeFrame.state === "join-constraint" &&
+        activeFrame.joinPrefix !== null
+      ) {
+        markUnavailable(activeFrame, "ambiguous-query-site");
       } else if (
         activeFrame?.baseDepth === depth &&
         activeFrame.state === "after-alias"
@@ -1388,13 +1561,14 @@ export function recognizeSqlRelationQuerySite(
       remainingFrame.state === "join-constraint" &&
       remainingFrame.joinPrefix !== null
     ) {
-      remainingFrame.joinPrefix = null;
+      markUnavailable(remainingFrame, "ambiguous-query-site");
     }
     if (
       (token.kind === "other" || token.kind === "string") &&
       remainingFrame?.baseDepth === depth &&
       (remainingFrame.state === "after-relation" ||
-        remainingFrame.state === "after-alias")
+        remainingFrame.state === "after-alias" ||
+        remainingFrame.state === "expect-alias")
     ) {
       markUnavailable(remainingFrame, "ambiguous-query-site");
     }

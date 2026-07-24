@@ -93,19 +93,83 @@ function decodeStandardPath(
   };
 }
 
+function classifyRelationAlias(
+  rawAlias: string,
+  quoted: boolean,
+):
+  | {
+      readonly status: "identifier";
+      readonly value: string;
+    }
+  | {
+      readonly status: "unsupported";
+    } {
+  if (quoted) {
+    const delimiter = rawAlias.at(0) ?? "";
+    const value = rawAlias
+      .slice(1, -1)
+      .replaceAll(`${delimiter}${delimiter}`, delimiter);
+    return value.length > 0
+      ? { status: "identifier", value }
+      : { status: "unsupported" };
+  }
+  const word = rawAlias.toLowerCase();
+  const unsupported =
+    word === "assert_rows_modified" ||
+    word === "as" ||
+    word === "cross" ||
+    word === "except" ||
+    word === "fetch" ||
+    word === "for" ||
+    word === "from" ||
+    word === "full" ||
+    word === "group" ||
+    word === "having" ||
+    word === "inner" ||
+    word === "intersect" ||
+    word === "join" ||
+    word === "lateral" ||
+    word === "left" ||
+    word === "limit" ||
+    word === "match_recognize" ||
+    word === "natural" ||
+    word === "on" ||
+    word === "offset" ||
+    word === "order" ||
+    word === "outer" ||
+    word === "pivot" ||
+    word === "qualify" ||
+    word === "right" ||
+    word === "select" ||
+    word === "tablesample" ||
+    word === "unpivot" ||
+    word === "union" ||
+    word === "using" ||
+    word === "where" ||
+    word === "window";
+  return unsupported
+    ? { status: "unsupported" }
+    : { status: "identifier", value: rawAlias };
+}
+
 const postgresDialect: SqlQuerySiteDialect = {
+  classifyRelationAlias,
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
   maximumPathDepth: 4,
+  supportsNaturalJoin: true,
 };
 
 const duckdbDialect: SqlQuerySiteDialect = {
+  classifyRelationAlias,
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
   maximumPathDepth: 16,
+  supportsNaturalJoin: true,
 };
 
 const bigQueryDialect: SqlQuerySiteDialect = {
+  classifyRelationAlias,
   decodeRelationPath: (rawPath, cursorOffset) => {
     if (!rawPath.startsWith("`")) {
       if (!rawPath.includes("-")) {
@@ -162,6 +226,7 @@ const bigQueryDialect: SqlQuerySiteDialect = {
   },
   lexicalProfile: BIGQUERY_SQL_LEXICAL_PROFILE,
   maximumPathDepth: 3,
+  supportsNaturalJoin: false,
 };
 
 function markedSource(marked: string): {
@@ -387,14 +452,53 @@ describe("partial SELECT relation query sites", () => {
   it.each([
     "SELECT * FROM users AS u JOIN |",
     "SELECT * FROM users AS \"u\" JOIN |",
+    "SELECT * FROM users AS \"LEFT\" JOIN |",
     "SELECT * FROM users \"u\" JOIN |",
     "SELECT * FROM users INNER JOIN |",
     "SELECT * FROM users CROSS JOIN |",
     "SELECT * FROM users NATURAL JOIN |",
+    "SELECT * FROM users NATURAL INNER JOIN |",
+    "SELECT * FROM users NATURAL LEFT JOIN |",
+    "SELECT * FROM users NATURAL LEFT OUTER JOIN |",
+    "SELECT * FROM users NATURAL RIGHT JOIN |",
+    "SELECT * FROM users NATURAL RIGHT OUTER JOIN |",
+    "SELECT * FROM users NATURAL FULL JOIN |",
+    "SELECT * FROM users NATURAL FULL OUTER JOIN |",
     "SELECT * FROM users RIGHT OUTER JOIN |",
     "SELECT * FROM users FULL OUTER JOIN |",
   ])("supports explicit join transitions in %s", (marked) => {
     expect(expectReady(recognize(marked)).anchor).toBe("join");
+  });
+
+  it("keeps NATURAL JOIN support dialect-owned", () => {
+    expect(
+      recognize("SELECT * FROM users NATURAL LEFT OUTER JOIN |", {
+        dialect: duckdbDialect,
+      }).status,
+    ).toBe("ready");
+    for (const marked of [
+      "SELECT * FROM users NATURAL JOIN |",
+      "SELECT * FROM users NATURAL INNER JOIN |",
+      "SELECT * FROM users NATURAL LEFT OUTER JOIN |",
+      "SELECT * FROM users NATURAL RIGHT JOIN |",
+      "SELECT * FROM users NATURAL FULL JOIN |",
+    ]) {
+      expect(
+        recognize(marked, { dialect: bigQueryDialect }).status,
+      ).toBe("unavailable");
+    }
+
+    const malformedDialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+    };
+    Object.defineProperty(malformedDialect, "supportsNaturalJoin", {
+      value: "yes",
+    });
+    expect(
+      recognize("SELECT * FROM users JOIN |", {
+        dialect: malformedDialect,
+      }).status,
+    ).toBe("unavailable");
   });
 });
 
@@ -442,11 +546,24 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT * FROM a JOIN b ON true LEFT potato JOIN |", "unavailable"],
     ["SELECT * FROM a LEFT, |", "unavailable"],
     ["SELECT * FROM a NATURAL, |", "unavailable"],
+    ["SELECT * FROM a NATURAL CROSS JOIN |", "unavailable"],
+    ["SELECT * FROM a LEFT NATURAL JOIN |", "unavailable"],
+    ["SELECT * FROM a NATURAL OUTER JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a NATURAL LEFT JOIN b ON true JOIN |",
+      "unavailable",
+    ],
     ["SELECT * FROM a LEFT /*x*/, |", "unavailable"],
     ["SELECT * FROM users + JOIN |", "unavailable"],
     ["SELECT * FROM users 'garbage' JOIN |", "unavailable"],
     ["SELECT * FROM users . junk JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b ON [x, y], |", "unavailable"],
+    ["SELECT * FROM users TABLESAMPLE JOIN |", "unavailable"],
+    ["SELECT * FROM users AS TABLESAMPLE JOIN |", "unavailable"],
+    ["SELECT * FROM users AS LEFT JOIN |", "unavailable"],
+    ["SELECT * FROM users AS CROSS JOIN |", "unavailable"],
+    ["SELECT * FROM users AS NATURAL JOIN |", "unavailable"],
+    ["SELECT * FROM users AS INNER JOIN |", "unavailable"],
     ["SELECT * FROM 'not a relation' JOIN |", "unavailable"],
     ["SELECT * FROM , |", "unavailable"],
     ["SELECT * FROM schema..|", "unavailable"],
@@ -462,6 +579,241 @@ describe("fail-closed query-site behavior", () => {
         dialect: bigQueryDialect,
       }).status,
     ).toBe("inactive");
+  });
+
+  it.each([
+    "SELECT * FROM users ASSERT_ROWS_MODIFIED JOIN |",
+    "SELECT * FROM users AS ASSERT_ROWS_MODIFIED JOIN |",
+    "SELECT * FROM users PIVOT JOIN |",
+    "SELECT * FROM users UNPIVOT JOIN |",
+    "SELECT * FROM users FOR JOIN |",
+    "SELECT * FROM users MATCH_RECOGNIZE JOIN |",
+  ])("fails closed for a BigQuery relation continuation in %s", (marked) => {
+    expect(
+      recognize(marked, { dialect: bigQueryDialect }).status,
+    ).toBe("unavailable");
+  });
+
+  it("fails closed when dialect continuation policy is malformed", () => {
+    const throwingDialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+      classifyRelationAlias: () => {
+        throw new Error("classification failed");
+      },
+    };
+    expect(
+      recognize("SELECT * FROM users alias |", {
+        dialect: throwingDialect,
+      }).status,
+    ).toBe("unavailable");
+
+    const malformedDialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+    };
+    Object.defineProperty(malformedDialect, "classifyRelationAlias", {
+      value: () => "bogus",
+    });
+    expect(
+      recognize("SELECT * FROM users alias |", {
+        dialect: malformedDialect,
+      }).status,
+    ).toBe("unavailable");
+
+    const inherited = Object.create({
+      status: "identifier",
+      value: "alias",
+    });
+    const accessor = Object.create(null);
+    Object.defineProperties(accessor, {
+      status: { get: () => "identifier" },
+      value: { get: () => "alias" },
+    });
+    const throwingProxy = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => {
+          throw new Error("prototype unavailable");
+        },
+      },
+    );
+    for (const result of [inherited, accessor, throwingProxy]) {
+      const invalidShapeDialect: SqlQuerySiteDialect = {
+        ...postgresDialect,
+      };
+      Object.defineProperty(
+        invalidShapeDialect,
+        "classifyRelationAlias",
+        {
+          value: () => result,
+        },
+      );
+      expect(
+        recognize("SELECT * FROM users alias JOIN |", {
+          dialect: invalidShapeDialect,
+        }).status,
+      ).toBe("unavailable");
+    }
+
+    for (const value of [
+      "",
+      "x".repeat(MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1),
+    ]) {
+      const invalidDecodedDialect: SqlQuerySiteDialect = {
+        ...postgresDialect,
+        classifyRelationAlias: () => ({
+          status: "identifier",
+          value,
+        }),
+      };
+      expect(
+        recognize("SELECT * FROM users alias JOIN |", {
+          dialect: invalidDecodedDialect,
+        }).status,
+      ).toBe("unavailable");
+    }
+  });
+
+  it("routes quoted aliases through the dialect policy with their role", () => {
+    const calls: {
+      rawAlias: string;
+      quoted: boolean;
+      role: "explicit-alias" | "implicit-alias";
+    }[] = [];
+    const dialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+      classifyRelationAlias: (rawAlias, quoted, role) => {
+        calls.push({ quoted, rawAlias, role });
+        return rawAlias === '"blocked"'
+          ? { status: "unsupported" }
+          : { status: "identifier", value: rawAlias.toLowerCase() };
+      },
+    };
+    expect(
+      recognize("SELECT * FROM users CamelAlias JOIN |", {
+        dialect,
+      }).status,
+    ).toBe("ready");
+    expect(
+      recognize('SELECT * FROM users "blocked" JOIN |', {
+        dialect,
+      }).status,
+    ).toBe("unavailable");
+    expect(
+      recognize('SELECT * FROM users AS "blocked" JOIN |', {
+        dialect,
+      }).status,
+    ).toBe("unavailable");
+    expect(calls).toEqual([
+      {
+        quoted: false,
+        rawAlias: "CamelAlias",
+        role: "implicit-alias",
+      },
+      {
+        quoted: true,
+        rawAlias: '"blocked"',
+        role: "implicit-alias",
+      },
+      {
+        quoted: true,
+        rawAlias: '"blocked"',
+        role: "explicit-alias",
+      },
+    ]);
+  });
+
+  it("never substitutes an empty word for an oversized alias token", () => {
+    const alias = "x".repeat(MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1);
+    expect(
+      recognize(`SELECT * FROM users ${alias} JOIN |`).status,
+    ).toBe("unavailable");
+    expect(
+      recognize(`SELECT * FROM users AS ${alias} JOIN |`).status,
+    ).toBe("unavailable");
+  });
+
+  it.each([
+    'SELECT * FROM users "" JOIN |',
+    'SELECT * FROM users AS "" JOIN |',
+  ])("rejects an empty PostgreSQL quoted alias in %s", (marked) => {
+    expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it.each([
+    "SELECT * FROM users `` JOIN |",
+    "SELECT * FROM users AS `` JOIN |",
+  ])("rejects an empty BigQuery quoted alias in %s", (marked) => {
+    expect(
+      recognize(marked, { dialect: bigQueryDialect }).status,
+    ).toBe("unavailable");
+  });
+
+  it("bounds explicit and implicit quoted aliases", () => {
+    const alias = `"${"x".repeat(
+      MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1,
+    )}"`;
+    expect(
+      recognize(`SELECT * FROM users ${alias} JOIN |`).status,
+    ).toBe("unavailable");
+    expect(
+      recognize(`SELECT * FROM users AS ${alias} JOIN |`).status,
+    ).toBe("unavailable");
+  });
+
+  it("bounds the decoded alias instead of its escaped source token", () => {
+    const alias = `"${'""'.repeat(
+      MAX_QUERY_SITE_IDENTIFIER_LENGTH,
+    )}"`;
+    expect(alias.length).toBe(
+      MAX_QUERY_SITE_IDENTIFIER_LENGTH * 2 + 2,
+    );
+    expect(
+      recognize(`SELECT * FROM users ${alias} JOIN |`).status,
+    ).toBe("ready");
+    expect(
+      recognize(`SELECT * FROM users AS ${alias} JOIN |`).status,
+    ).toBe("ready");
+  });
+
+  it.each([
+    'SELECT * FROM users LEFT "alias" JOIN |',
+    'SELECT * FROM users NATURAL "alias" JOIN |',
+    'SELECT * FROM a JOIN b ON true LEFT "alias" JOIN |',
+    "SELECT * FROM a JOIN b ON true LEFT . JOIN |",
+    "SELECT * FROM a JOIN b ON true LEFT 'x' JOIN |",
+    "SELECT * FROM a JOIN b ON true NATURAL 'x' JOIN |",
+    "SELECT * FROM a JOIN b ON true LEFT + JOIN |",
+  ])("does not launder a pending join modifier through %s", (marked) => {
+    expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it.each([
+    "SELECT * FROM users alias(garbage +) JOIN |",
+    "SELECT * FROM users MATCH_RECOGNIZE(garbage) JOIN |",
+  ])("does not launder a parenthesized relation suffix in %s", (marked) => {
+    expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it.each([
+    "SELECT * FROM users AS + alias JOIN |",
+    "SELECT * FROM users AS . alias JOIN |",
+    "SELECT * FROM users AS , alias JOIN |",
+    "SELECT * FROM users AS 'junk' alias JOIN |",
+  ])("does not skip invalid explicit-alias grammar in %s", (marked) => {
+    expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it.each([
+    "SELECT * FROM users AS WHERE JOIN |",
+    "SELECT * FROM users AS FROM JOIN |",
+    "SELECT * FROM users AS AS JOIN |",
+    "SELECT * FROM users AS SELECT JOIN |",
+    "SELECT * FROM users AS OFFSET JOIN |",
+    "SELECT * FROM users AS UNION JOIN |",
+    "SELECT * FROM users AS QUALIFY JOIN |",
+    "SELECT * FROM users AS LATERAL JOIN |",
+  ])("classifies a structural word in explicit-alias state for %s", (marked) => {
+    expect(recognize(marked).status).toBe("unavailable");
   });
 
   it.each([
@@ -647,9 +999,11 @@ describe("fail-closed query-site behavior", () => {
     const dialectWith = (
       decodeRelationPath: SqlQuerySiteDialect["decodeRelationPath"],
     ): SqlQuerySiteDialect => ({
+      classifyRelationAlias,
       decodeRelationPath,
       lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
       maximumPathDepth: 4,
+      supportsNaturalJoin: true,
     });
     expect(
       recognize("SELECT * FROM x|", {
