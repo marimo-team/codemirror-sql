@@ -27,6 +27,7 @@
     "test:worker-placement": "node ./scripts/worker-placement.mjs",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
     "bench:parser-adapter": "vitest bench --run src/vnext/__tests__/node-sql-parser-adapter.bench.ts",
+    "bench:query-site": "vitest bench --run src/vnext/__tests__/query-site.bench.ts",
     "bench:statement-index": "vitest bench --run src/vnext/__tests__/statement-index.bench.ts",
     "test:package": "node ./scripts/clean.mjs && tsc && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
