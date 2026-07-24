@@ -539,6 +539,19 @@ function scanSqlStatementIndex(
       const wordFrom = cursor;
       cursor += wordStartLength;
       while (cursor < analysisText.length) {
+        const continueCode = analysisText.charCodeAt(cursor);
+        if (
+          continueCode === 95 ||
+          (continueCode >= 48 && continueCode <= 57) ||
+          (continueCode >= 65 && continueCode <= 90) ||
+          (continueCode >= 97 && continueCode <= 122)
+        ) {
+          cursor += 1;
+          continue;
+        }
+        if (continueCode <= 0x7f) {
+          break;
+        }
         const continueLength = sqlIdentifierContinueLengthAt(
           analysisText,
           cursor,
