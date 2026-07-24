@@ -100,6 +100,21 @@ interface Deadline {
   readonly handle: unknown;
 }
 
+interface DetachedQueueEntry {
+  readonly deadline: Deadline | null;
+  readonly entry: QueueEntry;
+}
+
+interface DetachedActiveRequest {
+  readonly deadline: Deadline | null;
+  readonly request: ActiveRequest;
+}
+
+interface RevokedGeneration {
+  readonly startupDeadline: Deadline | null;
+  readonly target: WorkerGeneration;
+}
+
 interface QueueEntry {
   consumerSettled: boolean;
   grammar: NodeSqlParserWireGrammar;
@@ -440,28 +455,115 @@ export function createNodeSqlParserBrowserExecutor(
     queue.splice(index, 1);
     queuedTextUnits -= entry.textUnits;
     entry.location = "done";
-    clearDeadline(entry.queueDeadline);
+    const deadline = entry.queueDeadline;
     entry.queueDeadline = null;
     entry.text = "";
     entry.textUnits = 0;
+    clearDeadline(deadline);
     return true;
   }
 
-  function settleAllQueued(
-    createOutcome: () => NodeSqlParserBrowserExecutorOutcome,
-  ): void {
+  function detachAllQueued(): readonly DetachedQueueEntry[] {
     const entries = queue.splice(0);
     queuedTextUnits = 0;
-    for (const entry of entries) {
+    return entries.map((entry) => {
+      const deadline = entry.queueDeadline;
       entry.location = "done";
-      clearDeadline(entry.queueDeadline);
       entry.queueDeadline = null;
       entry.text = "";
       entry.textUnits = 0;
+      return { deadline, entry };
+    });
+  }
+
+  function cleanupDetachedQueue(
+    detached: readonly DetachedQueueEntry[],
+  ): void {
+    for (const { deadline } of detached) {
+      clearDeadline(deadline);
     }
-    for (const entry of entries) {
+  }
+
+  function settleDetachedQueue(
+    detached: readonly DetachedQueueEntry[],
+    createOutcome: () => NodeSqlParserBrowserExecutorOutcome,
+  ): void {
+    cleanupDetachedQueue(detached);
+    for (const { entry } of detached) {
       settleConsumer(entry, createOutcome());
     }
+  }
+
+  function detachActiveRequest(
+    target?: WorkerGeneration,
+  ): DetachedActiveRequest | null {
+    const request = active;
+    if (
+      request === null ||
+      (target !== undefined && request.generation !== target)
+    ) {
+      return null;
+    }
+    active = null;
+    const deadline = request.executionDeadline;
+    request.executionDeadline = null;
+    request.entry.location = "done";
+    request.entry.text = "";
+    request.entry.textUnits = 0;
+    return { deadline, request };
+  }
+
+  function cleanupDetachedActive(
+    detached: DetachedActiveRequest | null,
+  ): void {
+    if (detached !== null) {
+      clearDeadline(detached.deadline);
+    }
+  }
+
+  function settleDetachedActive(
+    detached: DetachedActiveRequest | null,
+    outcome: NodeSqlParserBrowserExecutorOutcome,
+  ): void {
+    cleanupDetachedActive(detached);
+    if (detached !== null && !detached.request.draining) {
+      settleConsumer(detached.request.entry, outcome);
+    }
+  }
+
+  function revokeGeneration(
+    target: WorkerGeneration,
+  ): RevokedGeneration | null {
+    if (target.state === "retired" || generation !== target) {
+      return null;
+    }
+    target.state = "retired";
+    generation = null;
+    const startupDeadline = target.startupDeadline;
+    target.startupDeadline = null;
+    return { startupDeadline, target };
+  }
+
+  function cleanupRevokedGeneration(
+    revoked: RevokedGeneration | null,
+  ): void {
+    if (revoked === null) {
+      return;
+    }
+    clearDeadline(revoked.startupDeadline);
+    removeGenerationListeners(revoked.target);
+    try {
+      revoked.target.worker.terminate();
+    } catch {
+      // A retired generation is never reused even if termination throws.
+    }
+  }
+
+  function rejectAllQueued(
+    createOutcome: () => NodeSqlParserBrowserExecutorOutcome,
+  ): void {
+    const detached = detachAllQueued();
+    settleDetachedQueue(detached, createOutcome);
   }
 
   function removeGenerationListeners(
@@ -510,24 +612,6 @@ export function createNodeSqlParserBrowserExecutor(
     return false;
   }
 
-  function retireGeneration(target: WorkerGeneration): void {
-    if (target.state === "retired") {
-      return;
-    }
-    target.state = "retired";
-    if (generation === target) {
-      generation = null;
-    }
-    clearDeadline(target.startupDeadline);
-    target.startupDeadline = null;
-    removeGenerationListeners(target);
-    try {
-      target.worker.terminate();
-    } catch {
-      // A retired generation is never reused even if termination throws.
-    }
-  }
-
   function startGeneration(): void {
     if (
       disposed ||
@@ -544,7 +628,7 @@ export function createNodeSqlParserBrowserExecutor(
       worker = workerFactory();
     } catch {
       creatingWorker = false;
-      settleAllQueued(() => failedOutcome("worker-failure"));
+      rejectAllQueued(() => failedOutcome("worker-failure"));
       return;
     }
     creatingWorker = false;
@@ -623,24 +707,27 @@ export function createNodeSqlParserBrowserExecutor(
       return;
     }
     const failedDuringStartup = target.state === "starting";
-    const ownedActive =
-      active !== null && active.generation === target ? active : null;
+    const detachedActive = detachActiveRequest(target);
+    const detachedQueue = failedDuringStartup
+      ? detachAllQueued()
+      : [];
+    const revoked = revokeGeneration(target);
 
-    retireGeneration(target);
-    if (ownedActive !== null) {
-      active = null;
-      clearDeadline(ownedActive.executionDeadline);
-      ownedActive.executionDeadline = null;
-      ownedActive.entry.location = "done";
-      ownedActive.entry.text = "";
-      ownedActive.entry.textUnits = 0;
-    }
+    cleanupDetachedActive(detachedActive);
+    cleanupDetachedQueue(detachedQueue);
+    cleanupRevokedGeneration(revoked);
 
-    if (failedDuringStartup) {
-      settleAllQueued(() => failedOutcome(code));
+    for (const { entry } of detachedQueue) {
+      settleConsumer(entry, failedOutcome(code));
     }
-    if (ownedActive !== null && !ownedActive.draining) {
-      settleConsumer(ownedActive.entry, failedOutcome(code));
+    if (
+      detachedActive !== null &&
+      !detachedActive.request.draining
+    ) {
+      settleConsumer(
+        detachedActive.request.entry,
+        failedOutcome(code),
+      );
     }
     if (!failedDuringStartup) {
       restartAfterReadyFailure();
@@ -651,13 +738,8 @@ export function createNodeSqlParserBrowserExecutor(
     request: ActiveRequest,
     outcome: NodeSqlParserBrowserExecutorOutcome,
   ): void {
-    active = null;
-    clearDeadline(request.executionDeadline);
-    request.executionDeadline = null;
-    request.entry.location = "done";
-    if (!request.draining) {
-      settleConsumer(request.entry, outcome);
-    }
+    const detached = detachActiveRequest(request.generation);
+    settleDetachedActive(detached, outcome);
     pump();
   }
 
@@ -677,9 +759,12 @@ export function createNodeSqlParserBrowserExecutor(
         return;
       }
       target.state = "ready";
-      clearDeadline(target.startupDeadline);
+      const startupDeadline = target.startupDeadline;
       target.startupDeadline = null;
-      pump();
+      clearDeadline(startupDeadline);
+      if (generation === target && target.state === "ready") {
+        pump();
+      }
       return;
     }
 
@@ -756,8 +841,13 @@ export function createNodeSqlParserBrowserExecutor(
     const requestId = allocateRequestId();
     if (requestId === null) {
       const target = generation;
-      retireGeneration(target);
-      settleAllQueued(() => failedOutcome("protocol-error"));
+      const detachedQueue = detachAllQueued();
+      const revoked = revokeGeneration(target);
+      cleanupDetachedQueue(detachedQueue);
+      cleanupRevokedGeneration(revoked);
+      for (const { entry } of detachedQueue) {
+        settleConsumer(entry, failedOutcome("protocol-error"));
+      }
       return;
     }
 
@@ -805,15 +895,33 @@ export function createNodeSqlParserBrowserExecutor(
       return;
     }
 
-    let wireRequest;
+    let postMessage: (message: unknown) => void;
     try {
-      wireRequest = encodeNodeSqlParserWireRequest(
+      postMessage = target.worker.postMessage;
+      if (typeof postMessage !== "function") {
+        throw new TypeError("worker postMessage must be callable");
+      }
+    } catch {
+      failGeneration(target, "worker-failure");
+      return;
+    }
+    if (
+      disposed ||
+      generation !== target ||
+      target.state !== "ready" ||
+      active !== request
+    ) {
+      return;
+    }
+
+    try {
+      const wireRequest = encodeNodeSqlParserWireRequest(
         entry.grammar,
         requestId,
         entry.text,
       );
       request.posted = true;
-      target.worker.postMessage(wireRequest);
+      Reflect.apply(postMessage, target.worker, [wireRequest]);
       entry.text = "";
       entry.textUnits = 0;
     } catch {
@@ -936,21 +1044,26 @@ export function createNodeSqlParserBrowserExecutor(
     }
     disposed = true;
     const target = generation;
-    if (target !== null) {
-      retireGeneration(target);
+    const detachedActive = detachActiveRequest();
+    const detachedQueue = detachAllQueued();
+    const revoked =
+      target === null ? null : revokeGeneration(target);
+
+    cleanupDetachedActive(detachedActive);
+    cleanupDetachedQueue(detachedQueue);
+    cleanupRevokedGeneration(revoked);
+
+    for (const { entry } of detachedQueue) {
+      settleConsumer(entry, failedOutcome("disposed"));
     }
-    const ownedActive = active;
-    active = null;
-    if (ownedActive !== null) {
-      clearDeadline(ownedActive.executionDeadline);
-      ownedActive.executionDeadline = null;
-      ownedActive.entry.location = "done";
-      ownedActive.entry.text = "";
-      ownedActive.entry.textUnits = 0;
-    }
-    settleAllQueued(() => failedOutcome("disposed"));
-    if (ownedActive !== null && !ownedActive.draining) {
-      settleConsumer(ownedActive.entry, failedOutcome("disposed"));
+    if (
+      detachedActive !== null &&
+      !detachedActive.request.draining
+    ) {
+      settleConsumer(
+        detachedActive.request.entry,
+        failedOutcome("disposed"),
+      );
     }
   }
 

@@ -99,6 +99,10 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
     | ((type: NodeSqlParserBrowserExecutorEventType) => void)
     | undefined;
   #postHook: ((message: unknown) => void) | undefined;
+  #removeHook:
+    | ((type: NodeSqlParserBrowserExecutorEventType) => void)
+    | undefined;
+  #terminateHook: (() => void) | undefined;
   #listeners = new Map<
     NodeSqlParserBrowserExecutorEventType,
     Set<WorkerListener>
@@ -159,6 +163,7 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
     if (!this.failures.retainRemovedListeners) {
       this.#listeners.get(type)?.delete(listener);
     }
+    this.#removeHook?.(type);
     if (this.failures.remove === type) {
       throw new Error("private removeEventListener failure");
     }
@@ -166,6 +171,7 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
 
   terminate(): void {
     this.#terminateCalls += 1;
+    this.#terminateHook?.();
     if (this.failures.terminate) {
       throw new Error("private terminate failure");
     }
@@ -177,6 +183,18 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
 
   setPostHook(hook: ((message: unknown) => void) | undefined): void {
     this.#postHook = hook;
+  }
+
+  setRemoveHook(
+    hook:
+      | ((type: NodeSqlParserBrowserExecutorEventType) => void)
+      | undefined,
+  ): void {
+    this.#removeHook = hook;
+  }
+
+  setTerminateHook(hook: (() => void) | undefined): void {
+    this.#terminateHook = hook;
   }
 
   setAddHook(
@@ -976,6 +994,102 @@ describe("node-sql-parser browser executor deadlines and cancellation", () => {
 });
 
 describe("node-sql-parser browser executor hostile worker handling", () => {
+  it.each(["clear", "remove", "terminate"] as const)(
+    "isolates original startup waiters from %s cleanup reentrancy",
+    async (boundary) => {
+      const factory = new FakeWorkerFactory();
+      const manual = new ManualDeadlineScheduler();
+      const firstWorker = new FakeWorker();
+      const replacementWorker = new FakeWorker();
+      factory.enqueue(firstWorker);
+      factory.enqueue(replacementWorker);
+      replacementWorker.setAddHook((type) => {
+        if (type === "message") {
+          ready(replacementWorker);
+        }
+      });
+      let executor:
+        | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+        | undefined;
+      let nested:
+        | NodeSqlParserBrowserExecutorSubmission
+        | undefined;
+      const submitNested = () => {
+        if (nested === undefined) {
+          nested = executor?.submit({
+            grammar: "bigquery",
+            text: "nested",
+          });
+        }
+      };
+      if (boundary === "remove") {
+        firstWorker.setRemoveHook((type) => {
+          if (type === "message") {
+            submitNested();
+          }
+        });
+      }
+      if (boundary === "terminate") {
+        firstWorker.setTerminateHook(submitNested);
+      }
+      executor = createNodeSqlParserBrowserExecutor({
+        deadlineScheduler: {
+          clearTimeout(handle): void {
+            if (boundary === "clear" && handle === 2) {
+              submitNested();
+            }
+            manual.clearTimeout(handle);
+          },
+          setTimeout: manual.setTimeout.bind(manual),
+        },
+        executionDeadlineMs: 30,
+        maxQueuedRequests: 3,
+        maxQueuedTextUnits: 100,
+        queueDeadlineMs: 20,
+        startupDeadlineMs: 10,
+        workerFactory: factory.create,
+      });
+      const originalFirst = executor.submit({
+        grammar: "postgresql",
+        text: "original-first",
+      });
+      const originalSecond = executor.submit({
+        grammar: "postgresql",
+        text: "original-second",
+      });
+
+      firstWorker.dispatch("error", {});
+      if (nested === undefined) {
+        throw new Error(
+          `${boundary} cleanup did not create nested work`,
+        );
+      }
+      expect(await outcome(originalFirst)).toStrictEqual({
+        code: "worker-failure",
+        kind: "failed",
+      });
+      expect(await outcome(originalSecond)).toStrictEqual({
+        code: "worker-failure",
+        kind: "failed",
+      });
+      expect(firstWorker.posted).toHaveLength(0);
+      expect(firstWorker.terminateCalls()).toBe(1);
+      expect(factory.created).toHaveLength(2);
+      expect(replacementWorker.posted).toHaveLength(1);
+      expect(postedRequest(replacementWorker)).toMatchObject({
+        grammar: "bigquery",
+        requestId: 1,
+        text: "nested",
+      });
+
+      respond(replacementWorker, { kind: "syntax-rejected" });
+      expect(await outcome(nested)).toStrictEqual({
+        kind: "syntax-rejected",
+      });
+      expect(manual.pendingCount()).toBe(0);
+    },
+  );
+
   it.each([
     undefined,
     null,
@@ -1175,6 +1289,36 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
         new Error("private event detail"),
       );
       expect(await outcome(submission)).toStrictEqual({
+        code: "worker-failure",
+        kind: "failed",
+      });
+      expect(worker.terminateCalls()).toBe(1);
+    },
+  );
+
+  it.each(["remove", "terminate"] as const)(
+    "keeps worker-failure ownership when %s cleanup reentrantly cancels active work",
+    async (boundary) => {
+      const { factory, options } = harness();
+      const executor = createNodeSqlParserBrowserExecutor(options);
+      const active = executor.submit({
+        grammar: "postgresql",
+        text: "active",
+      });
+      const worker = createdWorker(factory);
+      ready(worker);
+      if (boundary === "remove") {
+        worker.setRemoveHook((type) => {
+          if (type === "message") {
+            active.cancel();
+          }
+        });
+      } else {
+        worker.setTerminateHook(active.cancel);
+      }
+
+      worker.dispatch("error", {});
+      expect(await outcome(active)).toStrictEqual({
         code: "worker-failure",
         kind: "failed",
       });
@@ -1615,6 +1759,103 @@ describe("node-sql-parser browser executor host failure containment", () => {
     });
   });
 
+  it("does not call a postMessage accessor result after the accessor disposes", async () => {
+    const baseWorker = new FakeWorker();
+    const scheduler = new ManualDeadlineScheduler();
+    let executor:
+      | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+      | undefined;
+    let callableInvocations = 0;
+    const hostileWorker: NodeSqlParserBrowserExecutorWorker = {
+      addEventListener(type, listener): void {
+        baseWorker.addEventListener(type, listener);
+      },
+      get postMessage() {
+        executor?.dispose();
+        return (_message: unknown): void => {
+          callableInvocations += 1;
+        };
+      },
+      removeEventListener(type, listener): void {
+        baseWorker.removeEventListener(type, listener);
+      },
+      terminate(): void {
+        baseWorker.terminate();
+      },
+    };
+    executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: () => hostileWorker,
+    });
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+
+    ready(baseWorker);
+    expect(await outcome(submission)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+    expect(callableInvocations).toBe(0);
+    expect(baseWorker.terminateCalls()).toBe(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it("rejects a correlated response emitted by a postMessage accessor", async () => {
+    const baseWorker = new FakeWorker();
+    const scheduler = new ManualDeadlineScheduler();
+    let callableInvocations = 0;
+    const hostileWorker: NodeSqlParserBrowserExecutorWorker = {
+      addEventListener(type, listener): void {
+        baseWorker.addEventListener(type, listener);
+      },
+      get postMessage() {
+        baseWorker.emit(
+          encodeNodeSqlParserWireBackendOutcome(1, {
+            kind: "syntax-rejected",
+          }),
+        );
+        return (_message: unknown): void => {
+          callableInvocations += 1;
+        };
+      },
+      removeEventListener(type, listener): void {
+        baseWorker.removeEventListener(type, listener);
+      },
+      terminate(): void {
+        baseWorker.terminate();
+      },
+    };
+    const executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: () => hostileWorker,
+    });
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+
+    ready(baseWorker);
+    expect(await outcome(submission)).toStrictEqual({
+      code: "protocol-error",
+      kind: "failed",
+    });
+    expect(callableInvocations).toBe(0);
+    expect(baseWorker.terminateCalls()).toBe(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
   it.each(["error", "messageerror"] as const)(
     "stops listener installation after synchronous %s failure",
     async (eventType) => {
@@ -1906,6 +2147,36 @@ describe("node-sql-parser browser executor host failure containment", () => {
 });
 
 describe("node-sql-parser browser executor disposal and validation", () => {
+  it.each(["remove", "terminate"] as const)(
+    "keeps disposed ownership when %s cleanup reentrantly cancels active work",
+    async (boundary) => {
+      const { factory, options } = harness();
+      const executor = createNodeSqlParserBrowserExecutor(options);
+      const active = executor.submit({
+        grammar: "postgresql",
+        text: "active",
+      });
+      const worker = createdWorker(factory);
+      ready(worker);
+      if (boundary === "remove") {
+        worker.setRemoveHook((type) => {
+          if (type === "message") {
+            active.cancel();
+          }
+        });
+      } else {
+        worker.setTerminateHook(active.cancel);
+      }
+
+      executor.dispose();
+      expect(await outcome(active)).toStrictEqual({
+        code: "disposed",
+        kind: "failed",
+      });
+      expect(worker.terminateCalls()).toBe(1);
+    },
+  );
+
   it("disposes starting, active, and queued submissions exactly once", async () => {
     const { factory, options, scheduler } = harness();
     const executor = createNodeSqlParserBrowserExecutor(options);
