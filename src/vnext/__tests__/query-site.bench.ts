@@ -22,6 +22,7 @@ const dialect: SqlQuerySiteDialect = {
     status: "decoded",
   }),
   lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
+  maximumPathDepth: 16,
 };
 const tenKilobyteQuery = `SELECT ${Array.from(
   { length: 1_100 },

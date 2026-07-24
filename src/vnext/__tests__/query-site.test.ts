@@ -3,6 +3,7 @@ import {
   MAX_QUERY_SITE_DEPTH,
   MAX_QUERY_SITE_IDENTIFIER_LENGTH,
   MAX_QUERY_SITE_LEXEMES,
+  MAX_QUERY_SITE_PATH_COMPONENTS,
   MAX_QUERY_SITE_STATEMENT_LENGTH,
   recognizeSqlRelationQuerySite,
   type SqlDecodedQueryPath,
@@ -42,7 +43,7 @@ function decodeSegment(raw: string, prefix = false): {
   if (raw.length === 0 && prefix) {
     return { quoted: false, recovered: false, value: "" };
   }
-  return /^[\p{L}_][\p{L}\p{N}_]*$/u.test(raw)
+  return /^[\p{L}_][\p{L}\p{N}_$]*$/u.test(raw)
     ? { quoted: false, recovered: false, value: raw }
     : null;
 }
@@ -95,34 +96,72 @@ function decodeStandardPath(
 const postgresDialect: SqlQuerySiteDialect = {
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
+  maximumPathDepth: 4,
 };
 
 const duckdbDialect: SqlQuerySiteDialect = {
   decodeRelationPath: decodeStandardPath,
   lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
+  maximumPathDepth: 16,
 };
 
 const bigQueryDialect: SqlQuerySiteDialect = {
   decodeRelationPath: (rawPath, cursorOffset) => {
     if (!rawPath.startsWith("`")) {
-      return decodeStandardPath(rawPath, cursorOffset);
+      if (!rawPath.includes("-")) {
+        return decodeStandardPath(rawPath, cursorOffset);
+      }
+      const segments = rawPath.split(".");
+      const finalRaw = segments.pop() ?? "";
+      const segmentFrom = rawPath.length - finalRaw.length;
+      const cursorInFinal = cursorOffset - segmentFrom;
+      if (
+        cursorInFinal < 0 ||
+        cursorInFinal > finalRaw.length ||
+        !/^[\p{L}_][\p{L}\p{N}_-]*$/u.test(segments[0] ?? "") ||
+        segments.slice(1).some((segment) => !decodeSegment(segment))
+      ) {
+        return { reason: "invalid-identifier", status: "unavailable" };
+      }
+      const prefix = decodeSegment(finalRaw.slice(0, cursorInFinal), true);
+      if (!prefix) {
+        return { reason: "invalid-identifier", status: "unavailable" };
+      }
+      return {
+        finalSegment: { from: segmentFrom, to: rawPath.length },
+        prefix: { quoted: prefix.quoted, value: prefix.value },
+        qualifier: segments.map((value) => ({ quoted: false, value })),
+        quality: "exact",
+        status: "decoded",
+      };
     }
     const closed = rawPath.endsWith("`") && rawPath.length > 1;
     const contentTo = closed ? rawPath.length - 1 : rawPath.length;
-    const cursorInContent = Math.max(1, Math.min(cursorOffset, contentTo));
-    const beforeCursor = rawPath.slice(1, cursorInContent);
-    const values = beforeCursor.split(".");
-    const prefix = values.pop() ?? "";
-    const finalFrom = beforeCursor.lastIndexOf(".") + 2;
+    const content = rawPath.slice(1, contentTo);
+    const lastDot = content.lastIndexOf(".");
+    const finalFrom = lastDot + 2;
+    const cursorInContent = Math.min(cursorOffset, contentTo) - 1;
+    if (cursorInContent < finalFrom - 1) {
+      return { reason: "invalid-identifier", status: "unavailable" };
+    }
+    const qualifier =
+      lastDot < 0
+        ? []
+        : content
+            .slice(0, lastDot)
+            .split(".")
+            .map((value) => ({ quoted: true, value }));
+    const prefix = content.slice(finalFrom - 1, cursorInContent);
     return {
-      finalSegment: { from: finalFrom, to: contentTo },
+      finalSegment: { from: finalFrom, to: rawPath.length },
       prefix: { quoted: true, value: prefix },
-      qualifier: values.map((value) => ({ quoted: true, value })),
+      qualifier,
       quality: closed ? "exact" : "recovered",
       status: "decoded",
     };
   },
   lexicalProfile: BIGQUERY_SQL_LEXICAL_PROFILE,
+  maximumPathDepth: 3,
 };
 
 function markedSource(marked: string): {
@@ -183,7 +222,21 @@ describe("partial SELECT relation query sites", () => {
     ["SELECT * FROM users u JOIN |", "join"],
     ["SELECT * FROM users LEFT OUTER JOIN |", "join"],
     ["SELECT * FROM users, |", "comma"],
+    ["SELECT * FROM |, other", "from"],
+    ["SELECT * FROM a, |, b", "comma"],
+    ["SELECT * FROM a JOIN |, b", "join"],
     ["SELECT * FROM a JOIN b ON a.id = b.id JOIN |", "join"],
+    ["SELECT * FROM a JOIN b ON true LEFT JOIN |", "join"],
+    [
+      "SELECT * FROM a JOIN b ON LEFT(a.name, 1) = 'x' LEFT JOIN |",
+      "join",
+    ],
+    [
+      "SELECT * FROM a JOIN b ON RIGHT(a.name, 1) = 'x' CROSS JOIN |",
+      "join",
+    ],
+    ["SELECT * FROM a JOIN b ON a.id=b.id, |", "comma"],
+    ["SELECT * FROM a JOIN b USING(id), |", "comma"],
     ["SELECT (SELECT * FROM |)", "from"],
     ["SELECT * FROM (SELECT * FROM |) q", "from"],
     ["SELECT * FROM /* closed */ |", "from"],
@@ -212,8 +265,32 @@ describe("partial SELECT relation query sites", () => {
     expect(result.finalSegmentRange).toMatchObject({ from: 21, to: 26 });
   });
 
+  it("authenticates the complete path before returning a replacement", () => {
+    expect(recognize("SELECT * FROM sch|ema.users").status).toBe(
+      "unavailable",
+    );
+    expect(recognize("SELECT * FROM schema|.users").status).toBe(
+      "unavailable",
+    );
+    const result = expectReady(recognize("SELECT * FROM schema.|users"));
+    expect(result.prefix).toEqual({ quoted: false, value: "" });
+    expect(result.typedPathRange).toMatchObject({ from: 14, to: 26 });
+  });
+
   it("recognizes a trailing-dot empty prefix", () => {
     const result = expectReady(recognize("SELECT * FROM schema.|"));
+    expect(result.qualifier).toEqual([{ quoted: false, value: "schema" }]);
+    expect(result.prefix).toEqual({ quoted: false, value: "" });
+  });
+
+  it.each([
+    "SELECT * FROM schema.| JOIN other ON true",
+    "SELECT * FROM schema.| WHERE true",
+    "SELECT * FROM schema.| /*c*/ JOIN other ON true",
+    "SELECT * FROM schema.|)",
+    "SELECT * FROM schema.|, other",
+  ])("recognizes a trailing-dot site before an authenticated suffix in %s", (marked) => {
+    const result = expectReady(recognize(marked));
     expect(result.qualifier).toEqual([{ quoted: false, value: "schema" }]);
     expect(result.prefix).toEqual({ quoted: false, value: "" });
   });
@@ -244,12 +321,43 @@ describe("partial SELECT relation query sites", () => {
     ]);
     expect(result.prefix).toEqual({ quoted: true, value: "us" });
     expect(result.recognition.quality).toBe("recovered");
+    expect(
+      recognize("SELECT * FROM `project.|dataset.us`", {
+        dialect: bigQueryDialect,
+      }).status,
+    ).toBe("unavailable");
+    expect(
+      recognize("SELECT * FROM `project.dataset.us`|", {
+        dialect: bigQueryDialect,
+      }).status,
+    ).toBe("ready");
   });
 
   it("supports DuckDB independently of parser compatibility", () => {
     expect(expectReady(recognize("SELECT * FROM main.us|", {
       dialect: duckdbDialect,
     })).prefix.value).toBe("us");
+  });
+
+  it("collects a bounded dialect-neutral identifier superset", () => {
+    expect(
+      expectReady(recognize("SELECT * FROM foo$ba|r")).prefix.value,
+    ).toBe("foo$ba");
+    expect(
+      expectReady(
+        recognize("SELECT * FROM my-project.dataset.ta|", {
+          dialect: bigQueryDialect,
+        }),
+      ).qualifier,
+    ).toEqual([
+      { quoted: false, value: "my-project" },
+      { quoted: false, value: "dataset" },
+    ]);
+    expect(
+      recognize("SELECT * FROM a.b.c.d.e.f|", {
+        dialect: duckdbDialect,
+      }).status,
+    ).toBe("ready");
   });
 
   it.each([
@@ -264,6 +372,7 @@ describe("partial SELECT relation query sites", () => {
     "SELECT # FROM is trivia\n * FROM |",
     "SELECT 'FROM' FROM |",
     "SELECT r'FROM' FROM |",
+    "SELECT 'one''two' FROM |",
     "SELECT '''FROM''' FROM |",
     "SELECT \"\"\"FROM\"\"\" FROM |",
   ])("shares BigQuery lexical handling for %s", (marked) => {
@@ -291,11 +400,47 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT x IS DISTINCT FROM |", "inactive"],
     ["SELECT substring(x FROM |)", "inactive"],
     ["SELECT extract(YEAR FROM |)", "inactive"],
+    ["\"prefix\" SELECT * FROM |", "inactive"],
+    [". SELECT * FROM |", "inactive"],
+    [", SELECT * FROM |", "inactive"],
+    ["(SELECT 1) SELECT * FROM |", "inactive"],
+    ["((SELECT 1)) SELECT * FROM |", "inactive"],
     ["DELETE FROM |", "inactive"],
     ["COPY x FROM |", "inactive"],
     ["SELECT * FROM users alias |", "inactive"],
+    ["SELECT * FROM|", "inactive"],
+    ["SELECT * FROM users JOIN|", "inactive"],
     ["SELECT * FROM (|", "unavailable"],
     ["SELECT * FROM fn(|", "unavailable"],
+    ["SELECT * FROM fn|()", "unavailable"],
+    ["SELECT * FROM fn| ()", "unavailable"],
+    ["SELECT * FROM users| (x)", "unavailable"],
+    ["SELECT * FROM sch|ema . users", "unavailable"],
+    ["SELECT * FROM sch|ema /*c*/ . users", "unavailable"],
+    ["SELECT * FROM LATERAL users JOIN |", "unavailable"],
+    ["SELECT * FROM users LATERAL JOIN |", "unavailable"],
+    ["SELECT * FROM users ON true JOIN |", "unavailable"],
+    ["SELECT * FROM a CROSS JOIN b ON true JOIN |", "unavailable"],
+    ["SELECT * FROM a NATURAL JOIN b USING(x) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON x ON y JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(x) USING(y) JOIN |", "unavailable"],
+    [
+      "SELECT * FROM a JOIN b ON true CROSS JOIN c ON true JOIN |",
+      "unavailable",
+    ],
+    [
+      "SELECT * FROM a JOIN b ON true NATURAL JOIN c USING(x) JOIN |",
+      "unavailable",
+    ],
+    ["SELECT * FROM a JOIN b ON true LEFT, |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON true NATURAL, |", "unavailable"],
+    ["SELECT * FROM a LEFT, |", "unavailable"],
+    ["SELECT * FROM a NATURAL, |", "unavailable"],
+    ["SELECT * FROM a LEFT /*x*/, |", "unavailable"],
+    ["SELECT * FROM users + JOIN |", "unavailable"],
+    ["SELECT * FROM users 'garbage' JOIN |", "unavailable"],
+    ["SELECT * FROM users . junk JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b ON [x, y], |", "unavailable"],
     ["SELECT * FROM 'not a relation' JOIN |", "unavailable"],
     ["SELECT * FROM , |", "unavailable"],
     ["SELECT * FROM schema..|", "unavailable"],
@@ -303,6 +448,75 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT * FROM a QUALIFY x JOIN |", "unavailable"],
   ] as const)("does not invent a site for %s", (marked, status) => {
     expect(recognize(marked).status).toBe(status);
+  });
+
+  it("rejects a BigQuery quoted prefix before SELECT", () => {
+    expect(
+      recognize("`prefix` SELECT * FROM |", {
+        dialect: bigQueryDialect,
+      }).status,
+    ).toBe("inactive");
+  });
+
+  it.each([
+    "SELECT 'on|e''two' FROM users",
+    "SELECT 'one''tw|o' FROM users",
+  ])("keeps adjacent BigQuery strings opaque at %s", (marked) => {
+    expect(recognize(marked, { dialect: bigQueryDialect })).toEqual({
+      reason: "cursor-in-string",
+      status: "inactive",
+    });
+  });
+
+  it("fails closed when an embedded region is adjacent to a path", () => {
+    const marked = "SELECT * FROM u|s{x}";
+    const regionFrom = marked.indexOf("{x}");
+    expect(
+      recognize(marked, {
+        regions: [
+          { from: regionFrom - 1, language: "template", to: regionFrom + 2 },
+        ],
+      }).status,
+    ).toBe("unavailable");
+  });
+
+  it.each([
+    ["SELECT -- {x} FROM |", postgresDialect, "inactive"],
+    ["SELECT # {x} FROM |", bigQueryDialect, "inactive"],
+    ["SELECT \"ab{x} FROM |", postgresDialect, "unavailable"],
+    ["SELECT `ab{x} FROM |", bigQueryDialect, "unavailable"],
+  ] as const)(
+    "preserves lexical state across a masked region in %s",
+    (marked, dialect, status) => {
+      const regionFrom = marked.indexOf("{x}");
+      expect(
+        recognize(marked, {
+          dialect,
+          regions: [
+            { from: regionFrom, language: "template", to: regionFrom + 3 },
+          ],
+        }).status,
+      ).toBe(status);
+    },
+  );
+
+  it.each([
+    "SELECT (SELECT {x}) FROM |",
+    "SELECT * FROM users JOIN orders ON (SELECT {x}) JOIN |",
+    "{x} (SELECT * FROM |)",
+  ])("retains embedded-region evidence across nested frames in %s", (marked) => {
+    const regionFrom = marked.indexOf("{x}");
+    const result = expectReady(
+      recognize(marked, {
+        regions: [
+          { from: regionFrom, language: "template", to: regionFrom + 3 },
+        ],
+      }),
+    );
+    expect(result.recognition).toEqual({
+      issues: ["opaque-template-context"],
+      quality: "recovered",
+    });
   });
 
   it("distinguishes cursors inside comments and strings", () => {
@@ -321,6 +535,26 @@ describe("fail-closed query-site behavior", () => {
     expect(recognize("SELECT 'unclosed|")).toEqual({
       reason: "ambiguous-query-site",
       status: "unavailable",
+    });
+    expect(recognize("SELECT * FROM -- comment|")).toEqual({
+      reason: "cursor-in-comment",
+      status: "inactive",
+    });
+    expect(recognize("SELECT * FROM -- comment|\n")).toEqual({
+      reason: "cursor-in-comment",
+      status: "inactive",
+    });
+    expect(recognize("SELECT * FROM -- comment\n|").status).toBe("ready");
+    expect(recognize("SELECT * FROM /* comment */|").status).toBe(
+      "ready",
+    );
+    expect(
+      recognize("SELECT * FROM # comment|", {
+        dialect: bigQueryDialect,
+      }),
+    ).toEqual({
+      reason: "cursor-in-comment",
+      status: "inactive",
     });
   });
 
@@ -344,6 +578,9 @@ describe("fail-closed query-site behavior", () => {
     "SELECT * FROM users EXCEPT SELECT * FROM |",
     "SELECT * FROM users INTERSECT SELECT * FROM |",
     "SELECT * FROM users WINDOW value JOIN |",
+    "SELECT * FROM users alias . JOIN |",
+    "SELECT * FROM users alias + JOIN |",
+    "SELECT * FROM users \"one\" \"two\" JOIN |",
   ])("makes ambiguous transitions unavailable in %s", (marked) => {
     expect(recognize(marked).status).toBe("unavailable");
   });
@@ -406,6 +643,7 @@ describe("fail-closed query-site behavior", () => {
     ): SqlQuerySiteDialect => ({
       decodeRelationPath,
       lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
+      maximumPathDepth: 4,
     });
     expect(
       recognize("SELECT * FROM x|", {
@@ -448,6 +686,118 @@ describe("fail-closed query-site behavior", () => {
       }),
     ).toEqual({
       reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+
+    const validDecoded = (): Extract<
+      SqlDecodedQueryPath,
+      { readonly status: "decoded" }
+    > => ({
+      finalSegment: { from: 0, to: 1 },
+      prefix: { quoted: false, value: "x" },
+      qualifier: [],
+      quality: "exact",
+      status: "decoded",
+    });
+    const malformedResults: SqlQuerySiteDialect["decodeRelationPath"][] = [
+      () => {
+        throw new Error("decoder failed");
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.setPrototypeOf(decoded, []);
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded, "status", { value: "bogus" });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperties(decoded, {
+          reason: { value: "bogus" },
+          status: { value: "unavailable" },
+        });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded, "quality", { value: "bogus" });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded, "qualifier", { value: { length: 0 } });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        const qualifier = [{ quoted: false, value: "schema" }];
+        Reflect.deleteProperty(qualifier, "0");
+        Object.defineProperty(decoded, "qualifier", { value: qualifier });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        const component = { quoted: false, value: "schema" };
+        Object.defineProperty(component, "quoted", { value: "false" });
+        Object.defineProperty(decoded, "qualifier", {
+          value: [component],
+        });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded, "prefix", { value: null });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.setPrototypeOf(decoded.finalSegment, []);
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded.finalSegment, "to", { value: "1" });
+        return decoded;
+      },
+      () => {
+        const decoded = validDecoded();
+        Object.defineProperty(decoded.finalSegment, "from", {
+          get: () => {
+            throw new Error("accessed decoder getter");
+          },
+        });
+        return decoded;
+      },
+    ];
+    for (const decodeRelationPath of malformedResults) {
+      expect(
+        recognize("SELECT * FROM x|", {
+          dialect: dialectWith(decodeRelationPath),
+        }),
+      ).toEqual({
+        reason: "ambiguous-query-site",
+        status: "unavailable",
+      });
+    }
+
+    expect(
+      recognize("SELECT * FROM x|", {
+        dialect: dialectWith(() => ({
+          ...validDecoded(),
+          qualifier: [
+            {
+              quoted: false,
+              value: "x".repeat(MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1),
+            },
+          ],
+        })),
+      }),
+    ).toEqual({
+      reason: "resource-limit",
+      resource: "identifier-segment",
       status: "unavailable",
     });
   });
@@ -543,6 +893,10 @@ describe("embedded-region barriers", () => {
 
 describe("query-site resource limits", () => {
   it("bounds the active statement", () => {
+    const exact = `SELECT * FROM ${" ".repeat(
+      MAX_QUERY_SITE_STATEMENT_LENGTH - "SELECT * FROM ".length,
+    )}|`;
+    expect(recognize(exact).status).toBe("ready");
     const marked = `SELECT * FROM ${"x".repeat(
       MAX_QUERY_SITE_STATEMENT_LENGTH,
     )}|`;
@@ -554,6 +908,10 @@ describe("query-site resource limits", () => {
   });
 
   it("bounds lexical work and parenthesis depth", () => {
+    const exactTokens = `SELECT ${"x+".repeat(
+      MAX_QUERY_SITE_LEXEMES / 2 - 1,
+    )} FROM |`;
+    expect(recognize(exactTokens).status).toBe("ready");
     const tokens = `SELECT ${"x+".repeat(MAX_QUERY_SITE_LEXEMES / 2 + 1)} FROM |`;
     expect(recognize(tokens)).toEqual({
       reason: "resource-limit",
@@ -566,14 +924,23 @@ describe("query-site resource limits", () => {
       resource: "parenthesis-depth",
       status: "unavailable",
     });
+    expect(
+      recognize(`${"(".repeat(MAX_QUERY_SITE_DEPTH)}SELECT * FROM |`).status,
+    ).toBe("ready");
   });
 
   it("bounds path depth and decoded identifier length", () => {
+    expect(recognize("SELECT * FROM a.b.c.d|").status).toBe("ready");
     expect(recognize("SELECT * FROM a.b.c.d.e|")).toEqual({
       reason: "resource-limit",
       resource: "identifier-path",
       status: "unavailable",
     });
+    expect(
+      recognize(`SELECT * FROM ${"x".repeat(
+        MAX_QUERY_SITE_IDENTIFIER_LENGTH,
+      )}|`).status,
+    ).toBe("ready");
     expect(
       recognize(`SELECT * FROM ${"x".repeat(
         MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1,
@@ -583,10 +950,58 @@ describe("query-site resource limits", () => {
       resource: "identifier-segment",
       status: "unavailable",
     });
+
+    const globalPath = Array.from(
+      { length: MAX_QUERY_SITE_PATH_COMPONENTS },
+      () => "a",
+    ).join(".");
+    const globalDialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+      maximumPathDepth: MAX_QUERY_SITE_PATH_COMPONENTS,
+    };
+    expect(
+      recognize(`SELECT * FROM ${globalPath}|`, {
+        dialect: globalDialect,
+      }).status,
+    ).toBe("ready");
+    expect(
+      recognize("SELECT * FROM a|", {
+        dialect: {
+          ...globalDialect,
+          maximumPathDepth: MAX_QUERY_SITE_PATH_COMPONENTS + 1,
+        },
+      }).status,
+    ).toBe("unavailable");
   });
 });
 
 describe("query-site invariants", () => {
+  it("does not split astral or lone-surrogate cursor ranges", () => {
+    expect(recognize("SELECT * FROM \ud801|\udc00name").status).toBe(
+      "unavailable",
+    );
+    const astral = expectReady(recognize("SELECT * FROM \ud801\udc00na|me"));
+    expect(astral.typedPathRange).toMatchObject({ from: 14, to: 20 });
+    expect(recognize("SELECT * FROM \ud801|name").status).toBe(
+      "unavailable",
+    );
+  });
+
+  it("remains bounded with the maximum embedded-region count", () => {
+    const body = "x ".repeat(10_000);
+    const marked = `SELECT ${body}FROM |`;
+    const regions = Array.from({ length: 10_000 }, (_, index) => ({
+      from: "SELECT ".length + index * 2,
+      language: "template",
+      to: "SELECT ".length + index * 2 + 1,
+    }));
+    const result = expectReady(recognize(marked, { regions }));
+    expect(result.recognition).toEqual({
+      issues: ["opaque-template-context"],
+      quality: "recovered",
+    });
+  });
+
   it("keeps every ready range inside its exact statement under fuzzed input", () => {
     let state = 0x5eed1234;
     const random = (): number => {
