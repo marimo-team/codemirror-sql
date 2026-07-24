@@ -100,13 +100,18 @@ jobs:
         run: pnpm run test:browser
 
   package:
+    env:
+      npm_config_manage_package_manager_versions: "false"
+      npm_config_package_manager_strict_version: "false"
     strategy:
       fail-fast: false
       matrix:
         include:
           - node-version: "20.19.0"
+            pnpm-manifest: "test/package-smoke/package.json"
             pnpm-version: "10.28.2"
           - node-version: "24"
+            pnpm-manifest: "package.json"
             pnpm-version: "11.4.0"
     runs-on: ubuntu-latest
 
@@ -119,6 +124,7 @@ jobs:
       - name: ⎔ Setup pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
         with:
+          package_json_file: ${{ matrix.pnpm-manifest }}
           version: ${{ matrix.pnpm-version }}
 
       - name: ⎔ Setup Node.js
@@ -126,6 +132,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
+
+      - name: 🔒 Verify pnpm version
+        shell: bash
+        run: test "$(pnpm --version)" = "${{ matrix.pnpm-version }}"
 
       - name: 📥 Install dependencies
         run: pnpm install --ignore-scripts --frozen-lockfile
