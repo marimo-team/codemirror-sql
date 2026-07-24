@@ -8,6 +8,7 @@ import {
   defaultSqlHoverTheme,
   NodeSqlParser,
   QueryContextAnalyzer,
+  type SqlKeywordInfo,
   type SupportedDialects,
   sqlCompletion,
   sqlExtension,
@@ -63,7 +64,7 @@ const defaultKeymap = [
 ];
 
 // e.g. lazily load keyword docs
-const getKeywordDocs = async () => {
+const getKeywordDocs = async (): Promise<Record<string, SqlKeywordInfo>> => {
   const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
   const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
   return {

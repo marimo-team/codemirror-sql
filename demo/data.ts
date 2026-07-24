@@ -1,4 +1,4 @@
-import type { Schema } from "./custom-renderers";
+import type { Schema } from "./custom-renderers.js";
 
 // Default SQL content for the demo
 export const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!

@@ -9,6 +9,10 @@ interface PackedFile {
   path: string;
 }
 
+interface PackedManifest {
+  files: PackedFile[];
+}
+
 /**
  * Collect every string file path referenced anywhere in the package.json
  * `exports` map (recursing through conditional-export objects like
@@ -29,9 +33,17 @@ describe("published package", () => {
   // Run the real `npm pack` so we assert against the actual tarball contents,
   // not the source tree. Regression guard for the `./data/*` exports that
   // shipped dead in 0.2.5–0.2.7 because `src/data/` was missing at publish time.
-  const packed: PackedFile[] = JSON.parse(
-    execSync("npm pack --dry-run --json", { cwd: repoRoot, encoding: "utf8" }),
-  )[0].files;
+  const packOutput: PackedManifest | PackedManifest[] = JSON.parse(
+    execSync("pnpm pack --dry-run --json", {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }),
+  );
+  const manifest = Array.isArray(packOutput) ? packOutput[0] : packOutput;
+  if (!manifest) {
+    throw new Error("pnpm pack returned no package manifest");
+  }
+  const packed = manifest.files;
   const packedPaths = new Set(packed.map((f) => f.path));
 
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));

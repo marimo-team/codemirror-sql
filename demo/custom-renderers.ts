@@ -1,4 +1,5 @@
 import type { NamespaceTooltipData } from "../src/sql/hover.js";
+import { isArrayNamespace } from "../src/sql/namespace-utils.js";
 
 interface ColumnMetadata {
   type: string;
@@ -35,7 +36,11 @@ export type Schema = "users" | "posts" | "orders" | "customers" | "categories" |
 export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
   // Show table name, columns, description, primary key, foreign key, index, unique, check, default, comment
   const table = data.item.path.join(".");
-  const columns = data.item.namespace?.[table] ?? [];
+  const namespace = data.item.namespace;
+  const columns =
+    namespace && isArrayNamespace(namespace)
+      ? namespace.map((column) => (typeof column === "string" ? column : column.label))
+      : [];
 
   // Enhanced table metadata (simulated for demo purposes)
   const tableMetadata = getTableMetadata(table);
@@ -146,7 +151,7 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
 
 // Helper function to get enhanced table metadata
 function getTableMetadata(tableName: string): TableMetadata {
-  const metadata: Record<Schema, TableMetadata> = {
+  const metadata: Record<string, TableMetadata> = {
     users: {
       description: "User accounts and profile information",
       rowCount: "1,234",

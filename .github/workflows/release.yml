@@ -8,6 +8,28 @@ on:
       - 'v*'
 
 jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: ⎔ Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
+
+      - name: ⎔ Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 20.19.0
+          cache: pnpm
+
+      - name: 📥 Install dependencies
+        run: pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: 📦 Packed Package Smoke Test
+        run: pnpm run test:package
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -27,11 +49,26 @@ jobs:
       - name: 📥 Install dependencies
         run: pnpm install --ignore-scripts --frozen-lockfile
 
+      - name: 🧹 Lint
+        run: pnpm exec oxlint
+
+      - name: 🧪 Test Integrity
+        run: pnpm run test:integrity
+
       - name: 🔍 Type Check
         run: pnpm run typecheck
 
-      - name: 🧪 Test
-        run: pnpm run test
+      - name: 🧪 Unit Tests and Coverage
+        run: pnpm run test:coverage
+
+      - name: 🎭 Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: 🧪 Browser Tests
+        run: pnpm run test:browser
+
+      - name: 📦 Packed Package Smoke Test
+        run: pnpm run test:package
 
       - name: 🏗️ Build
         run: pnpm run build
@@ -76,7 +113,7 @@ jobs:
       contents: read
 
   publish:
-    needs: build
+    needs: [build, compatibility]
     runs-on: ubuntu-latest
     permissions:
       id-token: write

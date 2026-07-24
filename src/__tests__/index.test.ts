@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as dialects from "../dialects";
@@ -40,15 +40,17 @@ describe("index.ts exports", () => {
   });
 });
 
-describe("keywords", async () => {
-  it("should have the correct structure, keywords.keywords should be an object", async () => {
-    const dataDir = join(__dirname, "../data");
-    const files = await readdir(dataDir);
-    const keywordFiles = files.filter((file) => file.endsWith("-keywords.json"));
+describe("keywords", () => {
+  it("should have the correct structure, keywords.keywords should be an object", () => {
+    const dataDirectory = join(__dirname, "../data");
+    const keywordFiles = readdirSync(dataDirectory).filter((file) =>
+      file.endsWith("-keywords.json"),
+    );
 
+    expect(keywordFiles.length).toBeGreaterThan(0);
     for (const file of keywordFiles) {
-      const keywords = await import(`../data/${file}`);
-      expect(typeof keywords.keywords).toBe("object");
+      const data = JSON.parse(readFileSync(join(dataDirectory, file), "utf8"));
+      expect(typeof data.keywords).toBe("object");
     }
   });
 });

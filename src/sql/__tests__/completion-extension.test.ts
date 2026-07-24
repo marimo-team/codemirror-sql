@@ -7,7 +7,10 @@ import { sqlCompletion } from "../completion-extension.js";
 const schema = { users: ["id", "name", "email"] };
 
 /** Collect the `autocomplete` completion sources registered on the language. */
-function autocompleteSources(...extensions: Parameters<typeof EditorState.create>[0]["extensions"][]) {
+type EditorStateConfig = NonNullable<Parameters<typeof EditorState.create>[0]>;
+type EditorExtension = NonNullable<EditorStateConfig["extensions"]>;
+
+function autocompleteSources(...extensions: EditorExtension[]) {
   const state = EditorState.create({
     doc: "SELECT ",
     extensions: [sql({ dialect: PostgreSQL, schema }), ...extensions],

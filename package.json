@@ -13,14 +13,23 @@
   },
   "scripts": {
     "dev": "vite",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:tests && pnpm run typecheck:vnext-tests && pnpm run typecheck:demo",
+    "typecheck:src": "tsc --project tsconfig.json --noEmit",
+    "typecheck:tests": "tsc --project tsconfig.tests.json",
+    "typecheck:vnext-tests": "tsc --project tsconfig.vnext-tests.json",
+    "typecheck:demo": "tsc --project tsconfig.demo.json",
     "lint": "oxlint --fix",
-    "test": "vitest",
+    "test": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "test:coverage:changed": "node ./scripts/changed-coverage.mjs",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:integrity": "node ./scripts/check-test-integrity.mjs",
+    "test:package": "pnpm run build && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
-    "build": "tsc",
+    "build": "pnpm run clean && tsc",
+    "clean": "node ./scripts/clean.mjs",
     "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build",
-    "release": "pnpm version",
-    "test:browser": "vitest --config=vitest.browser.config.ts"
+    "release": "pnpm version"
   },
   "keywords": [
     "codemirror",
@@ -31,6 +40,7 @@
   "packageManager": "pnpm@11.4.0",
   "peerDependencies": {
     "@codemirror/autocomplete": "^6",
+    "@codemirror/lang-sql": "^6",
     "@codemirror/lint": "^6",
     "@codemirror/state": "^6",
     "@codemirror/view": "^6"
@@ -39,6 +49,7 @@
     "@codemirror/lang-sql": "6.10.0",
     "@codemirror/view": "6.43.0",
     "@testing-library/dom": "10.4.1",
+    "@types/node": "24.10.1",
     "@vitest/browser-playwright": "4.1.6",
     "@vitest/coverage-v8": "4.1.6",
     "codemirror": "6.0.2",
@@ -73,7 +84,7 @@
   "types": "./dist/index.d.ts",
   "type": "module",
   "engines": {
-    "node": "*"
+    "node": ">=20.19"
   },
   "module": "./dist/index.js",
   "dependencies": {
