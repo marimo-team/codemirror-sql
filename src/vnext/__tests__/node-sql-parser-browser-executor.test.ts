@@ -1564,6 +1564,29 @@ describe("node-sql-parser browser executor host failure containment", () => {
     expect(scheduler.pendingCount()).toBe(0);
   });
 
+  it("rejects a non-object worker factory result", async () => {
+    const { factory, options, scheduler } = harness();
+    const workerFactory = new Proxy(factory.create, {
+      apply() {
+        return () => undefined;
+      },
+    });
+    const executor = createNodeSqlParserBrowserExecutor({
+      ...options,
+      workerFactory,
+    });
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+
+    expect(await outcome(submission)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
   it("can create a fresh generation on a later submission after factory failure", async () => {
     const { factory, options } = harness();
     factory.fail();
