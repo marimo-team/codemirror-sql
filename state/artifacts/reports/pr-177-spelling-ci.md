@@ -2,9 +2,9 @@
 
 ## Root cause
 
-The adapter rejection tests used `SELEC 1` as deliberately invalid SQL. The
-repository spelling check correctly flagged `SELEC` even though it was test
-data.
+The adapter rejection tests used a misspelled SQL keyword as deliberately
+invalid SQL. The repository spelling check correctly flagged it even though it
+was test data.
 
 ## Resolution
 
