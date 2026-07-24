@@ -274,6 +274,75 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.closeCalls()).toBe(0);
   });
 
+  it("restores globals mutated during backend construction and parsing", async () => {
+    const scope = createTestWorkerScope();
+    const nodeSqlParserSentinel = Object.freeze({
+      owner: "worker-parser",
+    });
+    const globalSentinel = Object.freeze({
+      owner: "worker-global",
+    });
+    const nodeSqlParserDescriptor: PropertyDescriptor = {
+      configurable: true,
+      enumerable: false,
+      value: nodeSqlParserSentinel,
+      writable: false,
+    };
+    const globalDescriptor: PropertyDescriptor = {
+      configurable: true,
+      enumerable: true,
+      value: globalSentinel,
+      writable: true,
+    };
+    Object.defineProperty(
+      scope,
+      "NodeSQLParser",
+      nodeSqlParserDescriptor,
+    );
+    Object.defineProperty(scope, "global", globalDescriptor);
+
+    installNodeSqlParserBrowserWorkerEndpoint(
+      scope,
+      loaders({
+        postgresql: async () => ({
+          Parser: class Parser {
+            constructor() {
+              Object.defineProperty(scope, "NodeSQLParser", {
+                configurable: true,
+                value: "constructor-pollution",
+              });
+            }
+
+            astify(): unknown {
+              Object.defineProperty(scope, "global", {
+                configurable: true,
+                value: "parse-pollution",
+              });
+              return { type: "select" };
+            }
+          },
+        }),
+      }),
+    );
+
+    scope.dispatch(request(19));
+    await waitForMessageCount(scope, 2);
+
+    expect(scope.messages[1]).toStrictEqual({
+      kind: "parsed",
+      protocolVersion: 1,
+      requestId: 19,
+      statementKind: "query",
+    });
+    expect(
+      Object.getOwnPropertyDescriptor(scope, "NodeSQLParser"),
+    ).toStrictEqual(nodeSqlParserDescriptor);
+    expect(
+      Object.getOwnPropertyDescriptor(scope, "global"),
+    ).toStrictEqual(globalDescriptor);
+    expect(scope.closeCalls()).toBe(0);
+  });
+
   it("cleans up a rejected import and encodes only retry policy code", async () => {
     const scope = createTestWorkerScope();
     const rawImportError = Object.freeze({

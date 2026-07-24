@@ -48,11 +48,11 @@ interface GlobalDescriptorSnapshot {
   readonly key: (typeof GUARDED_GLOBAL_KEYS)[number];
 }
 
-interface GuardedModuleLoader {
+interface GuardedBackendRunner {
   readonly isPoisoned: () => boolean;
-  readonly load: (
-    loadModule: () => Promise<unknown>,
-  ) => Promise<NodeSqlParserModuleLoadOutcome>;
+  readonly parse: (
+    operation: () => Promise<NodeSqlParserBackendOutcome>,
+  ) => Promise<NodeSqlParserBackendOutcome>;
 }
 
 type EndpointState = "active" | "closed" | "idle";
@@ -143,41 +143,63 @@ function restoreGuardedGlobals(
   return restored;
 }
 
-function createGuardedModuleLoader(target: object): GuardedModuleLoader {
+function failedBackend(): NodeSqlParserBackendOutcome {
+  return Object.freeze({
+    code: "backend",
+    kind: "failed",
+    retryable: false,
+  });
+}
+
+function createModuleLoader(
+  loadModule: () => Promise<unknown>,
+): () => Promise<NodeSqlParserModuleLoadOutcome> {
+  return async () => {
+    try {
+      return Object.freeze({
+        kind: "loaded" as const,
+        moduleValue: await loadModule(),
+      });
+    } catch {
+      return failedModuleLoad("module-load", true);
+    }
+  };
+}
+
+function createGuardedBackendRunner(
+  target: object,
+): GuardedBackendRunner {
   let poisoned = false;
 
   return Object.freeze({
     isPoisoned: () => poisoned,
-    async load(
-      loadModule: () => Promise<unknown>,
-    ): Promise<NodeSqlParserModuleLoadOutcome> {
+    async parse(
+      operation: () => Promise<NodeSqlParserBackendOutcome>,
+    ): Promise<NodeSqlParserBackendOutcome> {
+      if (poisoned) {
+        return failedBackend();
+      }
       const snapshots = snapshotGuardedGlobals(target);
       if (snapshots === null) {
         poisoned = true;
-        return failedModuleLoad("backend", false);
+        return failedBackend();
       }
 
-      let loaded = false;
-      let moduleValue: unknown;
+      let completed = false;
+      let outcome: NodeSqlParserBackendOutcome = failedBackend();
       try {
-        moduleValue = await loadModule();
-        loaded = true;
+        outcome = await operation();
+        completed = true;
       } catch {
-        // The wire outcome deliberately carries no raw import error.
+        // The wire outcome deliberately carries no raw backend error.
       }
 
       const restored = restoreGuardedGlobals(target, snapshots);
       if (!restored) {
         poisoned = true;
-        return failedModuleLoad("backend", false);
+        return failedBackend();
       }
-      if (!loaded) {
-        return failedModuleLoad("module-load", true);
-      }
-      return Object.freeze({
-        kind: "loaded" as const,
-        moduleValue,
-      });
+      return completed ? outcome : failedBackend();
     },
   });
 }
@@ -198,7 +220,7 @@ function isDedicatedWorkerRealm(
 
 function shouldCloseAfterOutcome(
   outcome: NodeSqlParserBackendOutcome,
-  guard: GuardedModuleLoader,
+  guard: GuardedBackendRunner,
 ): boolean {
   return (
     guard.isPoisoned() ||
@@ -219,13 +241,13 @@ export function installNodeSqlParserBrowserWorkerEndpoint(
   let state: EndpointState = "idle";
   let listenerInstalled = false;
 
-  const guard = createGuardedModuleLoader(scope);
+  const guard = createGuardedBackendRunner(scope);
   const backends = Object.freeze({
-    bigquery: createNodeSqlParserBackend(() =>
-      guard.load(loaders.bigquery),
+    bigquery: createNodeSqlParserBackend(
+      createModuleLoader(loaders.bigquery),
     ),
-    postgresql: createNodeSqlParserBackend(() =>
-      guard.load(loaders.postgresql),
+    postgresql: createNodeSqlParserBackend(
+      createModuleLoader(loaders.postgresql),
     ),
   } satisfies Record<NodeSqlParserWireGrammar, unknown>);
 
@@ -259,8 +281,8 @@ export function installNodeSqlParserBrowserWorkerEndpoint(
     request: NodeSqlParserWireRequest,
   ): Promise<void> {
     try {
-      const outcome = await backends[request.grammar].parse(
-        request.text,
+      const outcome = await guard.parse(() =>
+        backends[request.grammar].parse(request.text),
       );
       if (state !== "active") {
         return;
