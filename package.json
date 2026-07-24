@@ -78,6 +78,12 @@
         "default": "./dist/dialects/index.js"
       }
     },
+    "./vnext": {
+      "import": {
+        "types": "./dist/vnext/index.d.ts",
+        "default": "./dist/vnext/index.js"
+      }
+    },
     "./data/common-keywords.json": "./src/data/common-keywords.json",
     "./data/duckdb-keywords.json": "./src/data/duckdb-keywords.json"
   },

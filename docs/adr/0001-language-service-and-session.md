@@ -125,8 +125,10 @@ The session updates text and context atomically:
 
 ```ts
 session.update({
+  kind: "document",
   baseRevision: session.revision,
   document: {
+    kind: "changes",
     changes: [{ from: 14, to: 19, insert: "customers" }],
   },
   context: nextContext,
@@ -147,13 +149,15 @@ update without partial mutation.
 The public revision is an opaque immutable service-generated token. Callers
 cannot construct one or supply their own version number.
 
-Internally, the revision records:
+Internally, the session snapshot associated with the revision tracks:
 
-- Session identity
 - Monotonic sequence
 - Document revision
 - Context and template revision
-- Relevant environment/catalog epoch
+
+Relevant environment/catalog epochs will join that snapshot when those
+subsystems are implemented. The revision token itself remains only an opaque
+immutable identity; it does not duplicate snapshot metadata.
 
 The public model is deliberately global per session: any accepted text,
 context, template, relevant catalog, or provider-configuration invalidation
@@ -251,34 +255,34 @@ Explicit methods are preferred over one generic `request({ kind })` API:
 interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
 
-  update(update: SqlDocumentUpdate<Context>): SqlRevision;
+  readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
 
-  complete(
+  readonly complete: (
     request: SqlCompletionRequest,
-  ): Promise<SqlRequestResult<SqlCompletionList>>;
+  ) => Promise<SqlRequestResult<SqlCompletionList>>;
 
-  diagnostics(
+  readonly diagnostics: (
     request?: SqlDiagnosticsRequest,
-  ): Promise<SqlRequestResult<SqlDiagnosticSet>>;
+  ) => Promise<SqlRequestResult<SqlDiagnosticSet>>;
 
-  hover(
+  readonly hover: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<SqlHover | null>>;
+  ) => Promise<SqlRequestResult<SqlHover | null>>;
 
-  definition(
+  readonly definition: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<readonly SqlLocation[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlLocation[]>>;
 
-  references(
+  readonly references: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<readonly SqlLocation[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlLocation[]>>;
 
-  format(
+  readonly format: (
     request?: SqlFormatRequest,
-  ): Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
 
-  isCurrent(revision: SqlRevision): boolean;
-  dispose(): void;
+  readonly isCurrent: (revision: SqlRevision) => boolean;
+  readonly dispose: () => void;
 }
 ```
 
