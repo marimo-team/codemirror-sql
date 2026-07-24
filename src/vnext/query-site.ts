@@ -1017,6 +1017,20 @@ export function recognizeSqlRelationQuerySite(
           wordValue(source.analysisText, token),
         );
       }
+    } else if (token.kind === "quoted-identifier") {
+      const activeFrame = topFrame(frames);
+      if (
+        activeFrame?.baseDepth === depth &&
+        (activeFrame.state === "after-relation" ||
+          activeFrame.state === "expect-alias")
+      ) {
+        activeFrame.state = "after-alias";
+      } else if (
+        activeFrame?.baseDepth === depth &&
+        activeFrame.state === "after-alias"
+      ) {
+        markUnavailable(activeFrame, "ambiguous-query-site");
+      }
     } else if (queryCandidates.has(depth)) {
       queryCandidates.delete(depth);
     }

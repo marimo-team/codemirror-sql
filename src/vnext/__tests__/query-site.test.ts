@@ -274,6 +274,8 @@ describe("partial SELECT relation query sites", () => {
 
   it.each([
     "SELECT * FROM users AS u JOIN |",
+    "SELECT * FROM users AS \"u\" JOIN |",
+    "SELECT * FROM users \"u\" JOIN |",
     "SELECT * FROM users INNER JOIN |",
     "SELECT * FROM users CROSS JOIN |",
     "SELECT * FROM users NATURAL JOIN |",
