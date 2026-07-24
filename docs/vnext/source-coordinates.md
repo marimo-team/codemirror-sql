@@ -44,3 +44,7 @@ functions remain internal. This slice intentionally does not publish a source
 transformer or source-map SPI. Generated or reordered source requires a
 versioned segment-map design and evidence from real consumers before becoming
 public.
+
+The internal [statement index](./statement-index.md) scans `analysisText` and
+uses its length-preserving offsets without publishing analysis-coordinate
+ranges.

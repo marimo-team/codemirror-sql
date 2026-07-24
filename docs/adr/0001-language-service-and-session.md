@@ -202,6 +202,20 @@ document offsets and statement-relative offsets use distinct branded types.
 Statement lookup uses explicit cursor affinity at boundaries and EOF. It must
 not reintroduce the v0.x inclusive-end behavior.
 
+The first statement-index implementation is an internal synchronous full-scan
+oracle. Exact slot extents partition the analysis text, terminators associate
+left, and trivia after a terminator associates with the following slot. Empty
+documents and terminal delimiters retain explicit empty slots. Lookup requires
+left or right affinity and uses binary search.
+
+The index does not contain statement text, line numbers, inferred kinds, parser
+validity, or AST data. It materializes at most 10,000 slots and collapses an
+unscanned remainder into an opaque slot on resource limits or unsupported
+delimiter/procedural constructs. Opaque slots cannot be passed to later parsing
+as exact source. Dialect lexical behavior uses internal configuration identity,
+never a caller-controlled dialect ID. Incremental reuse and session attachment
+remain a separate change tested against the full-scan oracle.
+
 ## Request outcomes
 
 Every session feature request settles with the same top-level union:
