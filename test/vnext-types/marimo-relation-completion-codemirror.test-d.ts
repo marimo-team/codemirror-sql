@@ -1,4 +1,3 @@
-import type { CompletionInfo } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
 
 import type {
@@ -7,22 +6,30 @@ import type {
 } from "../../src/vnext/codemirror/relation-completion-types.js";
 import type { SqlRelationCompletionItem } from "../../src/vnext/relation-completion-types.js";
 
+interface ReactRootLike {
+  readonly render: (value: unknown) => void;
+  readonly unmount: () => void;
+}
+
+declare function createReactRoot(container: Element): ReactRootLike;
+
 const resolveInfo: SqlCompletionInfoResolver = async (item, { signal }) => {
   signal.throwIfAborted();
   if (item.provenance.kind !== "catalog") {
     return null;
   }
 
-  const root = document.createElement("div");
-  root.textContent = `${item.provenance.providerId}:${item.provenance.entityId}`;
+  const dom = document.createElement("div");
+  const root = createReactRoot(dom);
+  root.render(`${item.provenance.providerId}:${item.provenance.entityId}`);
   return {
-    destroy: () => root.replaceChildren(),
-    dom: root,
+    destroy: () => root.unmount(),
+    dom,
   };
 };
 
 declare const item: SqlRelationCompletionItem;
-const resolved: CompletionInfo | Promise<CompletionInfo> = resolveInfo(item, {
+const resolved = resolveInfo(item, {
   signal: new AbortController().signal,
 });
 
@@ -46,8 +53,17 @@ const resolverReturningReactData: SqlCompletionInfoResolver = () => ({
   props: {},
   type: "table",
 });
+const resolverReturningNode: SqlCompletionInfoResolver = () =>
+  // @ts-expect-error custom UI must expose explicit cleanup
+  document.createElement("div");
+// @ts-expect-error custom UI resources require a destroy hook
+const resolverWithoutDestroy: SqlCompletionInfoResolver = () => ({
+  dom: document.createElement("div"),
+});
 
 void resolved;
+void resolverReturningNode;
 void resolverReturningNumber;
 void resolverReturningReactData;
+void resolverWithoutDestroy;
 void resolverWithView;

@@ -128,6 +128,44 @@ export interface SqlRelationCatalogProvider {
   ) => SqlDisposable;
 }
 
+export type SqlIdentifierDecodeResult =
+  | {
+      readonly status: "decoded";
+      readonly component: SqlIdentifierComponent;
+      readonly quality: "exact" | "recovered";
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason:
+        | "invalid-identifier"
+        | "unsupported-quote"
+        | "undecodable-identifier";
+    };
+
+export type SqlRenderedRelationPath =
+  | {
+      readonly status: "rendered";
+      readonly text: string;
+    }
+  | {
+      readonly status: "unsupported";
+      readonly reason: "illegal-role-sequence";
+    };
+
+export interface SqlRelationCompletionDialectRuntime {
+  readonly decodeIdentifier: (
+    token: string,
+    mode: "complete" | "completion-prefix",
+  ) => SqlIdentifierDecodeResult;
+  readonly renderRelationPath: (
+    path: SqlCanonicalRelationPath,
+  ) => SqlRenderedRelationPath;
+  readonly cteIdentifiersEqual: (
+    left: SqlIdentifierComponent,
+    right: SqlIdentifierComponent,
+  ) => boolean;
+}
+
 export interface SqlRelationCompletionOpenDocument<
   Context extends SqlDocumentContext,
 > {
@@ -180,9 +218,19 @@ export interface SqlSessionChangeEvent {
   readonly reason: SqlSessionChangeReason;
 }
 
+export type SqlCompletionTrigger =
+  | {
+      readonly kind: "invoked";
+    }
+  | {
+      readonly kind: "trigger-character";
+      readonly character: string;
+    };
+
 export interface SqlCompletionRequest {
   readonly position: number;
-  readonly trigger: "automatic" | "explicit";
+  readonly trigger: SqlCompletionTrigger;
+  readonly signal?: AbortSignal;
 }
 
 export interface SqlCteCompletionProvenance {
@@ -248,6 +296,7 @@ export type SqlRelationCompletionList =
     };
 
 export type SqlCompletionUnavailableReason =
+  | "inactive"
   | "unsupported-query-site"
   | "opaque-statement"
   | "ambiguous-query-site"
@@ -256,28 +305,66 @@ export type SqlCompletionUnavailableReason =
 export type SqlCompletionCancellationReason =
   | "caller"
   | "superseded"
-  | "session-disposed"
-  | "service-disposed";
+  | "disposed";
+
+export type SqlCatalogProviderUnavailableReason =
+  | "queue-overloaded"
+  | "queue-timeout"
+  | "execution-timeout"
+  | "synchronous-timeout"
+  | "provider-rejected"
+  | "malformed-response";
+
+interface SqlCatalogProviderReportBase {
+  readonly feature: "relation-catalog";
+  readonly providerId: string;
+}
+
+export type SqlCatalogProviderReport =
+  | (SqlCatalogProviderReportBase & {
+      readonly outcome: "ready";
+      readonly coverage: SqlCatalogReadyCoverage["kind"];
+    })
+  | (SqlCatalogProviderReportBase & {
+      readonly outcome: "loading";
+    })
+  | (SqlCatalogProviderReportBase & {
+      readonly outcome: "failed";
+      readonly code: SqlCatalogFailureCode;
+      readonly retry: SqlCatalogRetryPolicy;
+    })
+  | (SqlCatalogProviderReportBase & {
+      readonly outcome: "unavailable";
+      readonly reason: SqlCatalogProviderUnavailableReason;
+    });
+
+export interface SqlServiceFailure {
+  readonly code: "internal";
+  readonly retryable: boolean;
+}
 
 export type SqlRelationCompletionResult =
   | {
       readonly status: "ready";
       readonly revision: SqlRevision;
       readonly value: SqlRelationCompletionList;
-    }
-  | {
-      readonly status: "inactive";
-      readonly revision: SqlRevision;
+      readonly sources: readonly SqlCatalogProviderReport[];
     }
   | {
       readonly status: "unavailable";
       readonly revision: SqlRevision;
       readonly reason: SqlCompletionUnavailableReason;
+      readonly retryable: boolean;
     }
   | {
       readonly status: "cancelled";
       readonly revision: SqlRevision;
       readonly reason: SqlCompletionCancellationReason;
+    }
+  | {
+      readonly status: "failed";
+      readonly revision: SqlRevision;
+      readonly failure: SqlServiceFailure;
     };
 
 export interface SqlRelationCompletionSession<
@@ -289,7 +376,6 @@ export interface SqlRelationCompletionSession<
   ) => SqlRevision;
   readonly complete: (
     request: SqlCompletionRequest,
-    signal?: AbortSignal,
   ) => Promise<SqlRelationCompletionResult>;
   readonly onDidChange: (
     listener: (event: SqlSessionChangeEvent) => void,

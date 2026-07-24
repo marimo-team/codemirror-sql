@@ -6,13 +6,18 @@ import type {
 } from "../../src/vnext/index.js";
 import type {
   SqlCanonicalRelationPath,
+  SqlCatalogProviderReport,
   SqlCatalogReadyCoverage,
   SqlCatalogRelation,
   SqlCatalogSearchRequest,
   SqlCatalogSearchResponse,
+  SqlCompletionCancellationReason,
   SqlCompletionIssue,
+  SqlRelationCompletionItem,
+  SqlRelationCompletionList,
   SqlRelationCatalogProvider,
   SqlRelationCompletionDocumentTransaction,
+  SqlRelationCompletionDialectRuntime,
   SqlRelationCompletionOpenDocument,
   SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
@@ -82,11 +87,15 @@ const subscription = session.onDidChange((event) => {
 });
 subscription.dispose();
 subscription.dispose();
-void session.complete(
-  { position: 14, trigger: "explicit" },
-  new AbortController().signal,
-);
-void session.complete({ position: 14, trigger: "automatic" }).then((result) => {
+void session.complete({
+  position: 14,
+  signal: new AbortController().signal,
+  trigger: { kind: "invoked" },
+});
+void session.complete({
+  position: 14,
+  trigger: { character: ".", kind: "trigger-character" },
+}).then((result) => {
   // @ts-expect-error scheduler work identities never enter consumer results
   void result.workId;
   // @ts-expect-error catalog epochs never enter consumer results
@@ -126,6 +135,27 @@ const relation: SqlCatalogRelation = {
   relationKind: "table",
 };
 void relation;
+
+const dialectRuntime: SqlRelationCompletionDialectRuntime = {
+  cteIdentifiersEqual: (left, right) =>
+    left.quoted === right.quoted && left.value === right.value,
+  decodeIdentifier: (token) => ({
+    component: { quoted: false, value: token },
+    quality: "exact",
+    status: "decoded",
+  }),
+  renderRelationPath: (path) => ({
+    status: "rendered",
+    text: path.map((component) => component.value).join("."),
+  }),
+};
+void dialectRuntime;
+
+// @ts-expect-error semantic catalog roles are a closed set
+const invalidRole: SqlCatalogRelation["canonicalPath"][number]["role"] =
+  "database";
+// @ts-expect-error match evidence is provider-proven and closed
+const invalidMatch: SqlCatalogRelation["matchQuality"] = "prefix";
 
 const loadingIssue: SqlCompletionIssue = {
   reason: "catalog-loading",
@@ -206,6 +236,24 @@ const malformedLoading = {
   relations: [],
   status: "loading",
 } satisfies SqlCatalogSearchResponse;
+const providerRenderedSql = {
+  canonicalPath: relationPath,
+  completionPathStart: 1,
+  entityId: "users",
+  // @ts-expect-error providers return decoded paths, never SQL insertion text
+  insertText: "main.users",
+  matchQuality: "exact",
+  relationKind: "table",
+} satisfies SqlCatalogRelation;
+const leakedProviderFailure = {
+  code: "unavailable",
+  // @ts-expect-error raw provider errors never cross the completion boundary
+  error: new Error("secret"),
+  feature: "relation-catalog",
+  outcome: "failed",
+  providerId: "marimo",
+  retry: "next-request",
+} satisfies SqlCatalogProviderReport;
 const synchronousProvider: SqlRelationCatalogProvider = {
   id: "sync",
   // @ts-expect-error relation catalog providers are asynchronous
@@ -216,6 +264,31 @@ const synchronousProvider: SqlRelationCatalogProvider = {
 };
 // @ts-expect-error catalog-loading always carries its remaining intent lease
 const loadingWithoutLease: SqlCompletionIssue = { reason: "catalog-loading" };
+const mismatchedItem = {
+  edit: { from: 0, insert: "users", to: 0 },
+  label: "users",
+  provenance: {
+    // @ts-expect-error CTE items require CTE provenance
+    entityId: "users",
+    kind: "catalog",
+    providerId: "marimo",
+  },
+  relationKind: "cte",
+} satisfies SqlRelationCompletionItem;
+const contradictoryCompleteList = {
+  isIncomplete: false,
+  // @ts-expect-error complete lists cannot carry incomplete issues
+  issues: [{ reason: "catalog-partial" }],
+  items: [],
+} satisfies SqlRelationCompletionList;
+const contradictoryIncompleteList = {
+  isIncomplete: true,
+  issues: [],
+  items: [],
+  // @ts-expect-error incomplete lists require at least one issue
+} satisfies SqlRelationCompletionList;
+// @ts-expect-error timeouts are unavailable evidence, not cancellation
+const invalidCancellation: SqlCompletionCancellationReason = "timeout";
 // @ts-expect-error a document transaction cannot explicitly omit context
 const undefinedContext: SqlRelationCompletionDocumentTransaction<MarimoSqlContext> = {
   baseRevision: session.revision,
@@ -224,16 +297,24 @@ const undefinedContext: SqlRelationCompletionDocumentTransaction<MarimoSqlContex
 };
 
 void extraContinuation;
+void contradictoryCompleteList;
+void contradictoryIncompleteList;
 void flatSearchPath;
 void incompleteComponent;
+void invalidCancellation;
+void invalidMatch;
+void invalidRole;
 void leakedRequestState;
 void leakedDocumentText;
+void leakedProviderFailure;
 void loadingWithoutLease;
 void malformedLoading;
 void missingContinuation;
 void missingEngine;
 void missingRelation;
+void mismatchedItem;
 void openWithRegions;
 void openWithoutRegions;
+void providerRenderedSql;
 void synchronousProvider;
 void undefinedContext;
