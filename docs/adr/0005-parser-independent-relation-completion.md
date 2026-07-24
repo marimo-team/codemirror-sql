@@ -1,6 +1,6 @@
 # ADR 0005: Parser-Independent Relation Completion
 
-Status: proposed
+Status: accepted
 
 Date: 2026-07-25
 
@@ -575,10 +575,11 @@ list that opens no menu, the adapter retains at most one bounded completion
 intent. The one-shot intent records the exact view, document, selection,
 context, query, captured epoch, and work identity when work exists. It expires
 no later than the service-supplied completion-intent lease. On
-`catalog-availability` or a strictly higher catalog invalidation that can make
-terminal-loading evidence ready, the adapter aborts stale captured work and
-coalesces exactly one scheduled refresh when either the menu remains active or
-that intent is still valid.
+`catalog-availability` or a service higher-epoch catalog revision notification
+caused by either an accepted response or invalidation, the adapter aborts stale
+captured work and coalesces exactly one scheduled refresh when either the
+active menu still represents the captured loading request or its no-menu
+intent remains valid.
 
 A newer completion, selection/document/context change, explicit completion
 cancel or Escape, configured blur policy, lease expiry, or view/session
