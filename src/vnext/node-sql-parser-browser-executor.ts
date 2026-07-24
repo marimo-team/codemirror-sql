@@ -117,6 +117,7 @@ interface ActiveRequest {
   readonly entry: QueueEntry;
   executionDeadline: Deadline | null;
   readonly generation: WorkerGeneration;
+  posted: boolean;
   readonly requestId: number;
 }
 
@@ -377,6 +378,8 @@ export function createNodeSqlParserBrowserExecutor(
   let disposed = false;
   let generation: WorkerGeneration | null = null;
   let nextRequestId = 1;
+  let pumping = false;
+  let pumpRequested = false;
   let queuedTextUnits = 0;
   const queue: QueueEntry[] = [];
 
@@ -480,6 +483,33 @@ export function createNodeSqlParserBrowserExecutor(
     }
   }
 
+  function installGenerationListener(
+    target: WorkerGeneration,
+    type: NodeSqlParserBrowserExecutorEventType,
+    listener: (event: unknown) => void,
+  ): boolean {
+    try {
+      target.worker.addEventListener(type, listener);
+    } catch {
+      failGeneration(target, "worker-failure");
+      try {
+        target.worker.removeEventListener(type, listener);
+      } catch {
+        // The retired generation is never reused.
+      }
+      return false;
+    }
+    if (generation === target && target.state !== "retired") {
+      return true;
+    }
+    try {
+      target.worker.removeEventListener(type, listener);
+    } catch {
+      // The retired generation is never reused.
+    }
+    return false;
+  }
+
   function retireGeneration(target: WorkerGeneration): void {
     if (target.state === "retired") {
       return;
@@ -532,8 +562,8 @@ export function createNodeSqlParserBrowserExecutor(
         if (generation !== target || target.state === "retired") {
           return;
         }
-        preventDefault(event);
         failGeneration(target, "worker-failure");
+        preventDefault(event);
       },
       onMessage: (event) => {
         if (generation !== target || target.state === "retired") {
@@ -558,18 +588,24 @@ export function createNodeSqlParserBrowserExecutor(
     }
     target.startupDeadline = deadline;
 
-    try {
-      worker.addEventListener("error", target.onFailure);
-      if (generation !== target) {
-        return;
-      }
-      worker.addEventListener("messageerror", target.onFailure);
-      if (generation !== target) {
-        return;
-      }
-      worker.addEventListener("message", target.onMessage);
-    } catch {
-      failGeneration(target, "worker-failure");
+    if (
+      !installGenerationListener(
+        target,
+        "error",
+        target.onFailure,
+      ) ||
+      !installGenerationListener(
+        target,
+        "messageerror",
+        target.onFailure,
+      ) ||
+      !installGenerationListener(
+        target,
+        "message",
+        target.onMessage,
+      )
+    ) {
+      return;
     }
   }
 
@@ -657,6 +693,7 @@ export function createNodeSqlParserBrowserExecutor(
       target.state !== "ready" ||
       request === null ||
       request.generation !== target ||
+      !request.posted ||
       message.requestId !== request.requestId
     ) {
       failGeneration(target, "protocol-error");
@@ -704,7 +741,7 @@ export function createNodeSqlParserBrowserExecutor(
     return requestId;
   }
 
-  function pump(): void {
+  function pumpOnce(): void {
     if (disposed || active !== null || queue.length === 0) {
       return;
     }
@@ -728,19 +765,29 @@ export function createNodeSqlParserBrowserExecutor(
     if (entry === undefined) {
       return;
     }
+    const target = generation;
+    const queueDeadline = entry.queueDeadline;
     queuedTextUnits -= entry.textUnits;
-    clearDeadline(entry.queueDeadline);
     entry.queueDeadline = null;
     entry.location = "active";
-    const target = generation;
     const request: ActiveRequest = {
       draining: false,
       entry,
       executionDeadline: null,
       generation: target,
+      posted: false,
       requestId,
     };
     active = request;
+    clearDeadline(queueDeadline);
+    if (
+      disposed ||
+      generation !== target ||
+      target.state !== "ready" ||
+      active !== request
+    ) {
+      return;
+    }
 
     const executionDeadline = scheduleDeadline(() => {
       if (
@@ -765,6 +812,7 @@ export function createNodeSqlParserBrowserExecutor(
         requestId,
         entry.text,
       );
+      request.posted = true;
       target.worker.postMessage(wireRequest);
       entry.text = "";
       entry.textUnits = 0;
@@ -772,6 +820,22 @@ export function createNodeSqlParserBrowserExecutor(
       entry.text = "";
       entry.textUnits = 0;
       failGeneration(target, "worker-failure");
+    }
+  }
+
+  function pump(): void {
+    pumpRequested = true;
+    if (pumping) {
+      return;
+    }
+    pumping = true;
+    try {
+      while (pumpRequested) {
+        pumpRequested = false;
+        pumpOnce();
+      }
+    } finally {
+      pumping = false;
     }
   }
 
@@ -788,8 +852,10 @@ export function createNodeSqlParserBrowserExecutor(
       active.entry === entry
     ) {
       active.draining = true;
-      entry.text = "";
-      entry.textUnits = 0;
+      if (active.posted) {
+        entry.text = "";
+        entry.textUnits = 0;
+      }
       settleConsumer(entry, cancelledOutcome());
     }
   }

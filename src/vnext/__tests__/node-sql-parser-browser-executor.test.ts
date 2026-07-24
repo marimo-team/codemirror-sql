@@ -95,6 +95,9 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
   #addHook:
     | ((type: NodeSqlParserBrowserExecutorEventType) => void)
     | undefined;
+  #beforeAddHook:
+    | ((type: NodeSqlParserBrowserExecutorEventType) => void)
+    | undefined;
   #postHook: ((message: unknown) => void) | undefined;
   #listeners = new Map<
     NodeSqlParserBrowserExecutorEventType,
@@ -110,6 +113,7 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
     type: NodeSqlParserBrowserExecutorEventType,
     listener: WorkerListener,
   ): void {
+    this.#beforeAddHook?.(type);
     if (this.failures.add === type) {
       throw new Error("private addEventListener failure");
     }
@@ -181,6 +185,14 @@ class FakeWorker implements NodeSqlParserBrowserExecutorWorker {
       | undefined,
   ): void {
     this.#addHook = hook;
+  }
+
+  setBeforeAddHook(
+    hook:
+      | ((type: NodeSqlParserBrowserExecutorEventType) => void)
+      | undefined,
+  ): void {
+    this.#beforeAddHook = hook;
   }
 }
 
@@ -435,6 +447,65 @@ describe("node-sql-parser browser executor admission", () => {
     expect(scheduler.pendingCount()).toBe(0);
   });
 
+  it("drains a large bounded FIFO under synchronous terminal responses without recursion", async () => {
+    const requestCount = 20_000;
+    const factory = new FakeWorkerFactory();
+    const scheduler = new ManualDeadlineScheduler();
+    const worker = new FakeWorker();
+    factory.enqueue(worker);
+    worker.setPostHook((value) => {
+      const request = decodeNodeSqlParserWireRequest(value);
+      if (request === null) {
+        throw new Error("expected a valid request");
+      }
+      worker.emit(
+        encodeNodeSqlParserWireBackendOutcome(request.requestId, {
+          kind: "syntax-rejected",
+        }),
+      );
+    });
+    const executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 100,
+      maxQueuedRequests: requestCount,
+      maxQueuedTextUnits: 1_000_000,
+      queueDeadlineMs: 1_000_000,
+      startupDeadlineMs: 100,
+      workerFactory: factory.create,
+    });
+    const submissions = Array.from(
+      { length: requestCount },
+      (_, index) =>
+        executor.submit({
+          grammar: index % 2 === 0 ? "postgresql" : "bigquery",
+          text: `request-${index}`,
+        }),
+    );
+
+    ready(worker);
+    const results = await Promise.all(
+      submissions.map((submission) => submission.result),
+    );
+    expect(results).toHaveLength(requestCount);
+    expect(
+      results.every(
+        (result) => result.kind === "syntax-rejected",
+      ),
+    ).toBe(true);
+    expect(worker.posted).toHaveLength(requestCount);
+    for (let index = 0; index < requestCount; index += 1) {
+      const request = decodeNodeSqlParserWireRequest(
+        worker.posted[index],
+      );
+      if (request === null) {
+        throw new Error(`invalid request at FIFO index ${index}`);
+      }
+      expect(request.requestId).toBe(index + 1);
+      expect(request.text).toBe(`request-${index}`);
+    }
+    expect(scheduler.pendingCount()).toBe(0);
+  }, 10_000);
+
   it("bounds queued count without disturbing admitted work", async () => {
     const { factory, options } = harness({
       maxQueuedRequests: 1,
@@ -528,6 +599,157 @@ describe("node-sql-parser browser executor admission", () => {
 });
 
 describe("node-sql-parser browser executor deadlines and cancellation", () => {
+  it("contains disposal reentrancy while clearing a promoted queue deadline", async () => {
+    const factory = new FakeWorkerFactory();
+    const manual = new ManualDeadlineScheduler();
+    let executor:
+      | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+      | undefined;
+    executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: {
+        clearTimeout(handle): void {
+          if (handle === 1) {
+            executor?.dispose();
+          }
+          manual.clearTimeout(handle);
+        },
+        setTimeout: manual.setTimeout.bind(manual),
+      },
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: factory.create,
+    });
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT 1",
+    });
+    const worker = createdWorker(factory);
+
+    ready(worker);
+    expect(await outcome(submission)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+    expect(worker.posted).toHaveLength(0);
+    expect(worker.listenerCount()).toBe(0);
+    expect(worker.terminateCalls()).toBe(1);
+    expect(manual.pendingCount()).toBe(0);
+  });
+
+  it("drains cancellation reentrancy while clearing a promoted queue deadline", async () => {
+    const factory = new FakeWorkerFactory();
+    const manual = new ManualDeadlineScheduler();
+    let first:
+      | NodeSqlParserBrowserExecutorSubmission
+      | undefined;
+    const executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: {
+        clearTimeout(handle): void {
+          if (handle === 1) {
+            first?.cancel();
+          }
+          manual.clearTimeout(handle);
+        },
+        setTimeout: manual.setTimeout.bind(manual),
+      },
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: factory.create,
+    });
+    first = executor.submit({
+      grammar: "postgresql",
+      text: "first",
+    });
+    const second = executor.submit({
+      grammar: "postgresql",
+      text: "second",
+    });
+    const worker = createdWorker(factory);
+
+    ready(worker);
+    expect(await outcome(first)).toStrictEqual({
+      kind: "cancelled",
+    });
+    expect(worker.posted).toHaveLength(1);
+    expect(postedRequest(worker).text).toBe("first");
+    await expectPending(second);
+
+    respond(worker, { kind: "syntax-rejected" });
+    expect(worker.posted).toHaveLength(2);
+    expect(postedRequest(worker, 1).text).toBe("second");
+    respond(worker, { kind: "syntax-rejected" }, 1);
+    expect(await outcome(second)).toStrictEqual({
+      kind: "syntax-rejected",
+    });
+    expect(manual.pendingCount()).toBe(0);
+  });
+
+  it("preserves FIFO for nested submission while clearing a promoted queue deadline", async () => {
+    const factory = new FakeWorkerFactory();
+    const manual = new ManualDeadlineScheduler();
+    let nested:
+      | NodeSqlParserBrowserExecutorSubmission
+      | undefined;
+    let executor:
+      | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+      | undefined;
+    executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: {
+        clearTimeout(handle): void {
+          if (handle === 1) {
+            nested = executor?.submit({
+              grammar: "bigquery",
+              text: "nested",
+            });
+          }
+          manual.clearTimeout(handle);
+        },
+        setTimeout: manual.setTimeout.bind(manual),
+      },
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: factory.create,
+    });
+    const first = executor.submit({
+      grammar: "postgresql",
+      text: "first",
+    });
+    const worker = createdWorker(factory);
+
+    ready(worker);
+    if (nested === undefined) {
+      throw new Error("nested submission was not created");
+    }
+    expect(postedRequest(worker)).toMatchObject({
+      requestId: 1,
+      text: "first",
+    });
+    expect(worker.posted).toHaveLength(1);
+
+    respond(worker, { kind: "syntax-rejected" });
+    expect(await outcome(first)).toStrictEqual({
+      kind: "syntax-rejected",
+    });
+    expect(postedRequest(worker, 1)).toMatchObject({
+      requestId: 2,
+      text: "nested",
+    });
+    respond(worker, { kind: "syntax-rejected" }, 1);
+    expect(await outcome(nested)).toStrictEqual({
+      kind: "syntax-rejected",
+    });
+    expect(manual.pendingCount()).toBe(0);
+  });
+
   it("applies a startup deadline and retires a silent worker", async () => {
     const { factory, options, scheduler } = harness();
     const executor = createNodeSqlParserBrowserExecutor(options);
@@ -982,6 +1204,55 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
     expect(prevented).toBe(1);
   });
 
+  it("retires before preventDefault can reentrantly deliver an active response", async () => {
+    const { factory, options } = harness();
+    const firstWorker = new FakeWorker({
+      remove: "message",
+      retainRemovedListeners: true,
+    });
+    factory.enqueue(firstWorker);
+    const executor = createNodeSqlParserBrowserExecutor(options);
+    const active = executor.submit({
+      grammar: "postgresql",
+      text: "active",
+    });
+    const queued = executor.submit({
+      grammar: "postgresql",
+      text: "queued",
+    });
+    ready(firstWorker);
+    const staleResponse = encodeNodeSqlParserWireBackendOutcome(
+      postedRequest(firstWorker).requestId,
+      { kind: "syntax-rejected" },
+    );
+    let prevented = 0;
+
+    firstWorker.dispatch("error", {
+      preventDefault() {
+        prevented += 1;
+        firstWorker.emit(staleResponse);
+      },
+    });
+    expect(prevented).toBe(1);
+    expect(await outcome(active)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(firstWorker.terminateCalls()).toBe(1);
+    expect(firstWorker.posted).toHaveLength(1);
+
+    const secondWorker = createdWorker(factory, 1);
+    ready(secondWorker);
+    expect(postedRequest(secondWorker)).toMatchObject({
+      requestId: 2,
+      text: "queued",
+    });
+    respond(secondWorker, { kind: "syntax-rejected" });
+    expect(await outcome(queued)).toStrictEqual({
+      kind: "syntax-rejected",
+    });
+  });
+
   it("accepts primitive worker failure events without inspection", async () => {
     const { factory, options } = harness();
     const executor = createNodeSqlParserBrowserExecutor(options);
@@ -1219,6 +1490,102 @@ describe("node-sql-parser browser executor host failure containment", () => {
       expect(scheduler.pendingCount()).toBe(0);
     },
   );
+
+  it("contains both listener installation and explicit cleanup failures", async () => {
+    const { factory, options, scheduler } = harness();
+    const worker = new FakeWorker({
+      add: "message",
+      remove: "message",
+    });
+    factory.enqueue(worker);
+    const executor = createNodeSqlParserBrowserExecutor(options);
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+
+    expect(await outcome(submission)).toStrictEqual({
+      code: "worker-failure",
+      kind: "failed",
+    });
+    expect(worker.listenerCount()).toBe(0);
+    expect(worker.terminateCalls()).toBe(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it("removes a listener registered after addEventListener reentrantly disposes", async () => {
+    const factory = new FakeWorkerFactory();
+    const scheduler = new ManualDeadlineScheduler();
+    const worker = new FakeWorker();
+    factory.enqueue(worker);
+    let disposedDuringAdd = false;
+    let executor:
+      | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+      | undefined;
+    worker.setBeforeAddHook(() => {
+      if (!disposedDuringAdd) {
+        disposedDuringAdd = true;
+        executor?.dispose();
+      }
+    });
+    executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: factory.create,
+    });
+
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+    expect(disposedDuringAdd).toBe(true);
+    expect(await outcome(submission)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+    expect(worker.listenerCount()).toBe(0);
+    expect(worker.terminateCalls()).toBe(1);
+    expect(worker.removed).toContain("error");
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it("contains an add failure after addEventListener reentrantly disposes", async () => {
+    const factory = new FakeWorkerFactory();
+    const scheduler = new ManualDeadlineScheduler();
+    const worker = new FakeWorker({ add: "error" });
+    factory.enqueue(worker);
+    let executor:
+      | ReturnType<typeof createNodeSqlParserBrowserExecutor>
+      | undefined;
+    worker.setBeforeAddHook(() => {
+      executor?.dispose();
+    });
+    executor = createNodeSqlParserBrowserExecutor({
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 30,
+      maxQueuedRequests: 2,
+      maxQueuedTextUnits: 30,
+      queueDeadlineMs: 20,
+      startupDeadlineMs: 10,
+      workerFactory: factory.create,
+    });
+
+    const submission = executor.submit({
+      grammar: "postgresql",
+      text: "SELECT private",
+    });
+    expect(await outcome(submission)).toStrictEqual({
+      code: "disposed",
+      kind: "failed",
+    });
+    expect(worker.listenerCount()).toBe(0);
+    expect(worker.terminateCalls()).toBe(1);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
 
   it("contains postMessage failure and never replays the active request", async () => {
     const { factory, options } = harness();
