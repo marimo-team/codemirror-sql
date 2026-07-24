@@ -1,11 +1,13 @@
 {
   "extends": "./tsconfig.tests.json",
   "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true
   },
   "include": [
     "./src/vnext/**/*.ts",
+    "./test/vnext-types/**/*.ts",
     "./vitest.browser.config.ts",
     "./vitest.config.ts"
   ]

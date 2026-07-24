@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -110,6 +111,29 @@ try {
   }
 
   writeFileSync(
+    join(temporaryDirectory, "vnext-consumer.mjs"),
+    `import {
+  createSqlLanguageService,
+  defineSqlDialect,
+} from "@marimo-team/codemirror-sql/vnext";
+
+const service = createSqlLanguageService({
+  dialects: [defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+});
+const session = service.openDocument({
+  context: { dialect: "duckdb" },
+  text: "SELECT 1",
+});
+session.update({
+  kind: "document",
+  baseRevision: session.revision,
+  document: { kind: "replace", text: "SELECT 2" },
+});
+service.dispose();
+`,
+  );
+
+  writeFileSync(
     join(temporaryDirectory, "consumer.mts"),
     `import type { Extension } from "@codemirror/state";
 import {
@@ -122,17 +146,39 @@ import {
   DremioDialect,
   DuckDBDialect,
 } from "@marimo-team/codemirror-sql/dialects";
+import {
+  createSqlLanguageService,
+  defineSqlDialect,
+  type SqlDocumentContext,
+} from "@marimo-team/codemirror-sql/vnext";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
 import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
+
+interface HostContext extends SqlDocumentContext {
+  readonly engine: string;
+}
 
 const extensions: Extension[] = [
   sqlCompletion({ dialect: DuckDBDialect }),
   sqlExtension(),
 ];
 const parser = new NodeSqlParser();
+const service = createSqlLanguageService<HostContext>({
+  dialects: [defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+});
+const session = service.openDocument({
+  context: { dialect: "duckdb", engine: "local" },
+  text: "SELECT 1",
+});
+session.update({
+  kind: "document",
+  baseRevision: session.revision,
+  document: { kind: "changes", changes: [{ from: 7, insert: "2", to: 8 }] },
+});
 
 void extensions;
 void parser;
+void session;
 void BigQueryDialect;
 void DremioDialect;
 void commonKeywords;
@@ -145,6 +191,7 @@ void duckdbKeywords;
     `import { EditorState } from "@codemirror/state";
 import * as api from "@marimo-team/codemirror-sql";
 import * as dialects from "@marimo-team/codemirror-sql/dialects";
+import * as vnext from "@marimo-team/codemirror-sql/vnext";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
 import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
 
@@ -153,6 +200,12 @@ if (typeof api.sqlExtension !== "function" || typeof api.NodeSqlParser !== "func
 }
 if (!dialects.BigQueryDialect || !dialects.DremioDialect || !dialects.DuckDBDialect) {
   throw new Error("Dialect package exports are incomplete");
+}
+if (
+  typeof vnext.createSqlLanguageService !== "function" ||
+  typeof vnext.defineSqlDialect !== "function"
+) {
+  throw new Error("vNext package exports are incomplete");
 }
 if (!commonKeywords.keywords || !duckdbKeywords.keywords) {
   throw new Error("Keyword data exports are incomplete");
@@ -163,6 +216,24 @@ const parseResult = await new api.NodeSqlParser().parse("SELECT 1", { state });
 if (!parseResult.success || !parseResult.ast) {
   throw new Error("The packaged parser could not load its runtime dependency");
 }
+
+const service = vnext.createSqlLanguageService({
+  dialects: [vnext.defineSqlDialect({ displayName: "DuckDB", id: "duckdb" })],
+});
+const session = service.openDocument({
+  context: { dialect: "duckdb" },
+  text: "SELECT 1",
+});
+const originalRevision = session.revision;
+const updatedRevision = session.update({
+  kind: "document",
+  baseRevision: originalRevision,
+  document: { kind: "replace", text: "SELECT 2" },
+});
+if (session.isCurrent(originalRevision) || !session.isCurrent(updatedRevision)) {
+  throw new Error("The packaged vNext session violated revision identity");
+}
+service.dispose();
 `,
   );
 
@@ -186,6 +257,20 @@ if (!parseResult.success || !parseResult.ast) {
   );
 
   runPackageManager(["exec", "tsc", "--project", "tsconfig.json"], temporaryDirectory);
+  const isolatedDependencies = [
+    join(temporaryDirectory, "node_modules", "node-sql-parser"),
+    join(temporaryDirectory, "node_modules", "@codemirror"),
+  ];
+  for (const dependency of isolatedDependencies) {
+    renameSync(dependency, `${dependency}.isolated`);
+  }
+  try {
+    run(process.execPath, ["vnext-consumer.mjs"], temporaryDirectory);
+  } finally {
+    for (const dependency of isolatedDependencies) {
+      renameSync(`${dependency}.isolated`, dependency);
+    }
+  }
   run(process.execPath, ["consumer.mjs"], temporaryDirectory);
 } finally {
   if (basename(temporaryDirectory).startsWith("codemirror-sql-package-")) {

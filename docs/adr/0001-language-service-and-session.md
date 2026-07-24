@@ -125,8 +125,10 @@ The session updates text and context atomically:
 
 ```ts
 session.update({
+  kind: "document",
   baseRevision: session.revision,
   document: {
+    kind: "changes",
     changes: [{ from: 14, to: 19, insert: "customers" }],
   },
   context: nextContext,
@@ -251,34 +253,34 @@ Explicit methods are preferred over one generic `request({ kind })` API:
 interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
 
-  update(update: SqlDocumentUpdate<Context>): SqlRevision;
+  readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
 
-  complete(
+  readonly complete: (
     request: SqlCompletionRequest,
-  ): Promise<SqlRequestResult<SqlCompletionList>>;
+  ) => Promise<SqlRequestResult<SqlCompletionList>>;
 
-  diagnostics(
+  readonly diagnostics: (
     request?: SqlDiagnosticsRequest,
-  ): Promise<SqlRequestResult<SqlDiagnosticSet>>;
+  ) => Promise<SqlRequestResult<SqlDiagnosticSet>>;
 
-  hover(
+  readonly hover: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<SqlHover | null>>;
+  ) => Promise<SqlRequestResult<SqlHover | null>>;
 
-  definition(
+  readonly definition: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<readonly SqlLocation[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlLocation[]>>;
 
-  references(
+  readonly references: (
     request: SqlPositionRequest,
-  ): Promise<SqlRequestResult<readonly SqlLocation[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlLocation[]>>;
 
-  format(
+  readonly format: (
     request?: SqlFormatRequest,
-  ): Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
+  ) => Promise<SqlRequestResult<readonly SqlTextEdit[]>>;
 
-  isCurrent(revision: SqlRevision): boolean;
-  dispose(): void;
+  readonly isCurrent: (revision: SqlRevision) => boolean;
+  readonly dispose: () => void;
 }
 ```
 
