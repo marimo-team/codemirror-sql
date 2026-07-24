@@ -35,6 +35,13 @@ Parser outcomes never contain `empty`, `incomplete`, `opaque`, `cancelled`, or
 being mistaken for invalid SQL and prevents an incomplete lexical construct
 from being sent to a backend.
 
+The parser runner transports cancellation without classifying it: a
+pre-aborted request does not invoke the backend, and an in-flight abort rejects
+with the signal's exact reason if it wins the race with backend completion.
+Late backend rejection remains handled. The session decides whether that
+rejection represents cancellation, supersession, disposal, or another request
+lifecycle event.
+
 ### Eligibility
 
 | State | Meaning | Parser invoked |

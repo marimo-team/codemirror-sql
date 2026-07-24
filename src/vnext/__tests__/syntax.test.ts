@@ -777,31 +777,156 @@ describe("parser request boundary", () => {
     expect(result.analysis).toBe(expected);
   });
 
-  it("passes an already-aborted signal to the parser callback", async () => {
+  it("rejects pre-aborted requests without invoking the callback", async () => {
     const authority = createParserAuthority();
     const controller = new AbortController();
     const reason = new Error("superseded");
     controller.abort(reason);
+    let invoked = false;
+    const parser = createSqlStatementParser(
+      authority.authority,
+      async () => {
+        invoked = true;
+        return createUnsupportedParserAnalysis(
+          "backend-capability",
+          "SELECT 1",
+          authority.authority,
+        );
+      },
+    );
+
+    await expect(
+      runSqlStatementParser(
+        parser,
+        createSqlStatementParseRequest("SELECT 1", controller.signal),
+      ),
+    ).rejects.toBe(reason);
+    expect(invoked).toBe(false);
+  });
+
+  it("rejects in-flight requests with the exact abort reason", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
+    const reason = { kind: "superseded" };
+    let rejectCallback: ((reason: unknown) => void) | undefined;
+    const parser = createSqlStatementParser(
+      authority.authority,
+      () =>
+        new Promise((_, reject) => {
+          rejectCallback = reject;
+        }),
+    );
+    const result = runSqlStatementParser(
+      parser,
+      createSqlStatementParseRequest("SELECT 1", controller.signal),
+    );
+
+    controller.abort(reason);
+    await expect(result).rejects.toBe(reason);
+    rejectCallback?.(new Error("late backend rejection"));
+    await Promise.resolve();
+  });
+
+  it("keeps backend success that settles before a later abort", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
     const expected = createUnsupportedParserAnalysis(
       "backend-capability",
       "SELECT 1",
       authority.authority,
     );
+    let resolveCallback:
+      | ((analysis: typeof expected) => void)
+      | undefined;
     const parser = createSqlStatementParser(
       authority.authority,
-      async (request) => {
-        expect(request.signal).toBe(controller.signal);
-        expect(request.signal.aborted).toBe(true);
-        expect(request.signal.reason).toBe(reason);
-        return expected;
-      },
+      () =>
+        new Promise((resolve) => {
+          resolveCallback = resolve;
+        }),
     );
-
-    const result = await runSqlStatementParser(
+    const result = runSqlStatementParser(
       parser,
       createSqlStatementParseRequest("SELECT 1", controller.signal),
     );
-    expect(result.analysis).toBe(expected);
+
+    resolveCallback?.(expected);
+    controller.abort(new Error("late cancellation"));
+    expect((await result).analysis).toBe(expected);
+  });
+
+  it("keeps backend failure that settles before a later abort", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
+    const backendError = new Error("backend failure");
+    let rejectCallback: ((reason: unknown) => void) | undefined;
+    const parser = createSqlStatementParser(
+      authority.authority,
+      () =>
+        new Promise((_, reject) => {
+          rejectCallback = reject;
+        }),
+    );
+    const result = runSqlStatementParser(
+      parser,
+      createSqlStatementParseRequest("SELECT 1", controller.signal),
+    );
+
+    rejectCallback?.(backendError);
+    controller.abort(backendError);
+    expect((await result).analysis).toMatchObject({
+      reason: "backend-failure",
+      status: "failed",
+    });
+  });
+
+  it("lets cancellation win when the callback also throws", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
+    const reason = new SqlSyntaxContractError(
+      "invalid-analysis",
+      "superseded",
+    );
+    const parser = createSqlStatementParser(
+      authority.authority,
+      () => {
+        controller.abort(reason);
+        throw new Error("backend failed after cancellation");
+      },
+    );
+
+    await expect(
+      runSqlStatementParser(
+        parser,
+        createSqlStatementParseRequest("SELECT 1", controller.signal),
+      ),
+    ).rejects.toBe(reason);
+  });
+
+  it("preserves falsy abort reasons", async () => {
+    const authority = createParserAuthority();
+    const controller = new AbortController();
+    controller.abort(0);
+    const parser = createSqlStatementParser(
+      authority.authority,
+      async () =>
+        createUnsupportedParserAnalysis(
+          "backend-capability",
+          "SELECT 1",
+          authority.authority,
+        ),
+    );
+    let caught: unknown = Symbol("not rejected");
+
+    try {
+      await runSqlStatementParser(
+        parser,
+        createSqlStatementParseRequest("SELECT 1", controller.signal),
+      );
+    } catch (error: unknown) {
+      caught = error;
+    }
+    expect(Object.is(caught, 0)).toBe(true);
   });
 
   it("rejects malformed requests", () => {
@@ -833,6 +958,17 @@ describe("parser request boundary", () => {
         addEventListener() {},
         removeEventListener() {},
       },
+      {
+        aborted: false,
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        onabort: null,
+        reason: undefined,
+        removeEventListener() {},
+        throwIfAborted() {},
+      },
     ]) {
       expectContractError(
         () =>
@@ -852,6 +988,67 @@ describe("parser request boundary", () => {
       () => createSqlStatementParseRequest("SELECT 1", hostileSignal),
       "invalid-request",
     );
+    const hostileTag = Object.defineProperty(
+      {},
+      Symbol.toStringTag,
+      {
+        get() {
+          throw new Error("hostile identity");
+        },
+      },
+    );
+    expectContractError(
+      () => createSqlStatementParseRequest("SELECT 1", hostileTag),
+      "invalid-request",
+    );
+  });
+
+  it("accepts genuine cross-realm abort signals", async () => {
+    const iframe = document.createElement("iframe");
+    document.body.append(iframe);
+    try {
+      const foreignWindow = iframe.contentWindow;
+      expect(foreignWindow).not.toBeNull();
+      if (foreignWindow === null) {
+        throw new Error("iframe window unavailable");
+      }
+      const ForeignAbortController = Reflect.get(
+        foreignWindow,
+        "AbortController",
+      );
+      expect(typeof ForeignAbortController).toBe("function");
+      if (typeof ForeignAbortController !== "function") {
+        throw new Error("foreign AbortController unavailable");
+      }
+      const controller: unknown = Reflect.construct(
+        ForeignAbortController,
+        [],
+      );
+      if (controller === null || typeof controller !== "object") {
+        throw new Error("foreign AbortController is invalid");
+      }
+      const signal = Reflect.get(controller, "signal");
+      const request = createSqlStatementParseRequest(
+        "SELECT 1",
+        signal,
+      );
+      const authority = createParserAuthority();
+      const expected = createUnsupportedParserAnalysis(
+        "backend-capability",
+        "SELECT 1",
+        authority.authority,
+      );
+      const parser = createSqlStatementParser(
+        authority.authority,
+        async () => expected,
+      );
+      expect(request.signal).toBe(signal);
+      expect((await runSqlStatementParser(parser, request)).analysis).toBe(
+        expected,
+      );
+    } finally {
+      iframe.remove();
+    }
   });
 
   it("rejects fabricated parser identities and callbacks", () => {

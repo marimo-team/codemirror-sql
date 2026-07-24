@@ -1005,6 +1005,8 @@ function isAbortSignal(value: unknown): value is AbortSignal {
   }
   try {
     return (
+      Object.prototype.toString.call(value) ===
+        "[object AbortSignal]" &&
       "aborted" in value &&
       typeof value.aborted === "boolean" &&
       "reason" in value &&
@@ -1023,6 +1025,14 @@ function isAbortSignal(value: unknown): value is AbortSignal {
   } catch {
     return false;
   }
+}
+
+function isAborted(signal: AbortSignal): boolean {
+  return signal.aborted;
+}
+
+function getAbortReason(signal: AbortSignal): unknown {
+  return signal.reason;
 }
 
 export function createSqlStatementParseRequest(
@@ -1090,6 +1100,83 @@ function malformedParserOutput(
   );
 }
 
+type SqlParserCallbackOutcome =
+  | {
+    readonly kind: "returned";
+    readonly analysis: unknown;
+  }
+  | {
+    readonly kind: "threw";
+    readonly error: unknown;
+  };
+
+const parserAbortMarker = Object.freeze({
+  kind: "SqlParserAbortMarker",
+});
+
+async function invokeParserCallback(
+  callback: SqlStatementParserCallback,
+  request: SqlStatementParseRequest,
+): Promise<SqlParserCallbackOutcome> {
+  const { signal } = request;
+  if (isAborted(signal)) {
+    throw getAbortReason(signal);
+  }
+
+  let abortObserved = false;
+  let abortReason: unknown;
+  let onAbort: (() => void) | undefined;
+  const abortOutcome = new Promise<typeof parserAbortMarker>((resolve) => {
+    onAbort = () => {
+      abortReason = getAbortReason(signal);
+      abortObserved = true;
+      resolve(parserAbortMarker);
+    };
+    signal.addEventListener("abort", onAbort, {
+      once: true,
+    });
+  });
+
+  try {
+    let callbackOutcome: Promise<SqlParserAnalysis>;
+    try {
+      callbackOutcome = callback(request);
+    } catch (error: unknown) {
+      if (abortObserved) {
+        throw abortReason;
+      }
+      return {
+        error,
+        kind: "threw",
+      };
+    }
+
+    let analysis: SqlParserAnalysis | typeof parserAbortMarker;
+    try {
+      analysis = await Promise.race([
+        abortOutcome,
+        callbackOutcome,
+      ]);
+    } catch (error: unknown) {
+      return {
+        error,
+        kind: "threw",
+      };
+    }
+    if (analysis === parserAbortMarker) {
+      throw abortReason;
+    }
+    return {
+      analysis,
+      kind: "returned",
+    };
+  } finally {
+    if (onAbort !== undefined) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
 export async function runSqlStatementParser(
   parser: SqlStatementParser,
   request: SqlStatementParseRequest,
@@ -1110,10 +1197,9 @@ export async function runSqlStatementParser(
     );
   }
 
-  let analysis: unknown;
-  try {
-    analysis = await callback(request);
-  } catch (error: unknown) {
+  const outcome = await invokeParserCallback(callback, request);
+  if (outcome.kind === "threw") {
+    const { error } = outcome;
     if (error instanceof SqlSyntaxContractError) {
       return createAnalyzedSyntaxState(
         malformedParserOutput(request.text, parser.authority),
@@ -1129,6 +1215,7 @@ export async function runSqlStatementParser(
       ),
     );
   }
+  const { analysis } = outcome;
   if (!isSqlParserAnalysis(analysis)) {
     return createAnalyzedSyntaxState(
       malformedParserOutput(request.text, parser.authority),
