@@ -117,10 +117,12 @@ export interface SqlCatalogInvalidation {
 export interface SqlRelationCatalogProvider {
   readonly id: string;
   readonly search: (
+    this: void,
     request: SqlCatalogSearchRequest,
     signal: AbortSignal,
   ) => Promise<SqlCatalogSearchResponse>;
   readonly subscribe?: (
+    this: void,
     scope: string,
     onInvalidation: (event: SqlCatalogInvalidation) => void,
   ) => SqlDisposable;
