@@ -2909,10 +2909,19 @@ describe("session coverage hardening", () => {
   });
 
   it.each([
-    "DELIMITER $$",
-    `SELECT * FROM ${" ".repeat(65_537)}`,
-    "SELECT 1",
-  ])("returns closed local unavailability for %s", async (text) => {
+    {
+      reason: "opaque-statement",
+      text: "DELIMITER $$",
+    },
+    {
+      reason: "resource-limit",
+      text: `SELECT * FROM ${" ".repeat(65_537)}`,
+    },
+    {
+      reason: "inactive",
+      text: "SELECT 1",
+    },
+  ] as const)("returns $reason local unavailability", async ({ reason, text }) => {
     const service = createSqlLanguageService<TestContext>({
       dialects: [postgres],
     });
@@ -2925,7 +2934,11 @@ describe("session coverage hardening", () => {
         position: text.length,
         trigger: { kind: "invoked" },
       }),
-    ).resolves.toMatchObject({ status: "unavailable" });
+    ).resolves.toMatchObject({
+      reason,
+      retryable: false,
+      status: "unavailable",
+    });
     service.dispose();
   });
 
@@ -3043,8 +3056,11 @@ describe("session coverage hardening", () => {
 
   it("expires terminal loading intent and clears it idempotently", async () => {
     vi.useFakeTimers();
+    let service:
+      | ReturnType<typeof createSqlLanguageService<TestContext>>
+      | undefined;
     try {
-      const service = catalogService({
+      service = catalogService({
         id: "loading",
         search: async () => ({
           epoch: { generation: 0, token: "loading" },
@@ -3059,10 +3075,34 @@ describe("session coverage hardening", () => {
         },
         text: "SELECT * FROM ",
       });
-      await session.complete({
+      const revision = session.revision;
+      const events: string[] = [];
+      session.onDidChange((event) => {
+        events.push(event.reason);
+      });
+      await expect(session.complete({
         position: 14,
         trigger: { kind: "invoked" },
+      })).resolves.toMatchObject({
+        status: "ready",
+        value: {
+          issues: [
+            {
+              reason: "catalog-loading",
+              remainingIntentLeaseMs: 1_000,
+            },
+          ],
+        },
       });
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(vi.getTimerCount()).toBe(1);
+      expect(session.revision).toBe(revision);
+      expect(events).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(session.revision).toBe(revision);
+      expect(events).toEqual([]);
       await vi.advanceTimersByTimeAsync(1_000);
       session.update({
         baseRevision: session.revision,
@@ -3072,8 +3112,9 @@ describe("session coverage hardening", () => {
           engine: "changed",
         },
       });
-      service.dispose();
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
+      service?.dispose();
       vi.useRealTimers();
     }
   });
@@ -3603,9 +3644,44 @@ describe("session coverage hardening", () => {
   });
 
   it("ignores a hostile late abort callback after completion", async () => {
-    const { service, session } = openSession(
-      "SELECT * FROM ",
-    );
+    let searchCount = 0;
+    let resolveSecond:
+      | ((
+          response: Awaited<
+            ReturnType<SqlRelationCatalogProvider["search"]>
+          >,
+        ) => void)
+      | undefined;
+    let secondSignal: AbortSignal | undefined;
+    const secondResult = new Promise<
+      Awaited<ReturnType<SqlRelationCatalogProvider["search"]>>
+    >((resolve) => {
+      resolveSecond = resolve;
+    });
+    const service = catalogService({
+      id: "late-abort",
+      search: async (_request, signal) => {
+        searchCount += 1;
+        if (searchCount === 1) {
+          return {
+            coverage: { kind: "complete" },
+            epoch: { generation: 0, token: "initial" },
+            relations: [],
+            status: "ready",
+          };
+        }
+        secondSignal = signal;
+        return secondResult;
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:late-abort" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
     const controller = new AbortController();
     let captured:
       | EventListenerOrEventListenerObject
@@ -3629,12 +3705,34 @@ describe("session coverage hardening", () => {
       signal: controller.signal,
       trigger: { kind: "invoked" },
     });
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        kind: "replace",
+        text: "SELECT * FROM u",
+      },
+      embeddedRegions: [],
+    });
+    const current = session.complete({
+      position: 15,
+      trigger: { kind: "invoked" },
+    });
+    await Promise.resolve();
     if (typeof captured === "function") {
       captured(new Event("abort"));
     } else {
       captured?.handleEvent(new Event("abort"));
     }
-    expect(session.isCurrent(session.revision)).toBe(true);
+    expect(secondSignal?.aborted).toBe(false);
+    resolveSecond?.({
+      coverage: { kind: "complete" },
+      epoch: { generation: 0, token: "initial" },
+      relations: [],
+      status: "ready",
+    });
+    await expect(current).resolves.toMatchObject({
+      status: "ready",
+    });
     service.dispose();
   });
 
@@ -3663,15 +3761,22 @@ describe("session coverage hardening", () => {
 
   it("accepts a host timer whose opaque handle is null", async () => {
     const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    let scheduled = 0;
+    const cleared: unknown[] = [];
     Object.defineProperty(globalThis, "setTimeout", {
       configurable: true,
-      value: (
-        callback: TimerHandler,
-        delay?: number,
-        ...arguments_: unknown[]
-      ) => {
-        nativeSetTimeout(callback, delay, ...arguments_);
+      value: () => {
+        scheduled += 1;
         return null;
+      },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "clearTimeout", {
+      configurable: true,
+      value: (handle: unknown) => {
+        cleared.push(handle);
+        scheduled -= 1;
       },
       writable: true,
     });
@@ -3691,11 +3796,121 @@ describe("session coverage hardening", () => {
           trigger: { kind: "invoked" },
         }),
       ).resolves.toMatchObject({ status: "ready" });
+      expect(cleared).toContain(null);
+      service.dispose();
+      expect(scheduled).toBe(0);
+
+      const loadingService = catalogService({
+        id: "null-loading-timer",
+        search: async () => ({
+          epoch: { generation: 0, token: "loading" },
+          status: "loading",
+        }),
+      });
+      const loadingSession = loadingService.openDocument({
+        context: {
+          catalog: { scope: "connection:null-loading-timer" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await expect(loadingSession.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      })).resolves.toMatchObject({
+        status: "ready",
+        value: {
+          issues: [{ reason: "catalog-loading" }],
+        },
+      });
+      const clearedBeforeDispose = cleared.length;
+      loadingService.dispose();
+      expect(cleared.length).toBeGreaterThan(clearedBeforeDispose);
+      expect(cleared.at(-1)).toBe(null);
+      expect(scheduled).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, "setTimeout", {
+        configurable: true,
+        value: nativeSetTimeout,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "clearTimeout", {
+        configurable: true,
+        value: nativeClearTimeout,
+        writable: true,
+      });
+    }
+  });
+
+  it("handles synchronous terminal-intent timer completion", async () => {
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    const cleared: unknown[] = [];
+    let synchronousCalls = 0;
+    Object.defineProperty(globalThis, "setTimeout", {
+      configurable: true,
+      value: (
+        callback: TimerHandler,
+        delay?: number,
+        ...arguments_: unknown[]
+      ) => {
+        if (delay === 1_000) {
+          synchronousCalls += 1;
+          if (typeof callback === "function") {
+            Reflect.apply(callback, undefined, arguments_);
+          }
+          return null;
+        }
+        return nativeSetTimeout(callback, delay, ...arguments_);
+      },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "clearTimeout", {
+      configurable: true,
+      value: (handle: ReturnType<typeof setTimeout>) => {
+        cleared.push(handle);
+        nativeClearTimeout(handle);
+      },
+      writable: true,
+    });
+    try {
+      const service = catalogService({
+        id: "synchronous-intent-timer",
+        search: async () => ({
+          epoch: { generation: 0, token: "loading" },
+          status: "loading",
+        }),
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:synchronous-intent-timer" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await expect(session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      })).resolves.toMatchObject({
+        status: "ready",
+        value: {
+          issues: [{ reason: "catalog-loading" }],
+        },
+      });
+      expect(synchronousCalls).toBe(1);
+      expect(cleared).toContain(null);
       service.dispose();
     } finally {
       Object.defineProperty(globalThis, "setTimeout", {
         configurable: true,
         value: nativeSetTimeout,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "clearTimeout", {
+        configurable: true,
+        value: nativeClearTimeout,
         writable: true,
       });
     }
@@ -3760,12 +3975,28 @@ describe("session coverage hardening", () => {
         },
         text: "SELECT * FROM ",
       });
-      await expect(
-        session.complete({
-          position: 14,
-          trigger: { kind: "invoked" },
-        }),
-      ).resolves.toMatchObject({ status: "ready" });
+      const events: string[] = [];
+      session.onDidChange((event) => {
+        events.push(event.reason);
+      });
+      await expect(session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      })).resolves.toMatchObject({
+        sources: [
+          {
+            coverage: "complete",
+            outcome: "ready",
+            providerId: "settlement-race",
+          },
+        ],
+        status: "ready",
+        value: {
+          isIncomplete: false,
+          issues: [],
+        },
+      });
+      expect(events).toEqual([]);
       service.dispose();
     } finally {
       Object.defineProperty(globalThis, "setTimeout", {
@@ -3906,5 +4137,47 @@ describe("session coverage hardening", () => {
       reason: "disposed",
       status: "cancelled",
     });
+  });
+
+  it("stops catalog event delivery when a listener disposes the session", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = catalogService({
+      id: "dispose-listener",
+      search: async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "initial" },
+        relations: [],
+        status: "ready",
+      }),
+      subscribe: (_scope, listener) => {
+        invalidate = listener;
+        return () => undefined;
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:dispose-listener" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const events: string[] = [];
+    session.onDidChange((event) => {
+      events.push(event.reason);
+      session.dispose();
+    });
+    session.onDidChange((event) => {
+      events.push(`${event.reason}:late`);
+    });
+
+    invalidate?.({
+      epoch: { generation: 1, token: "changed" },
+    });
+
+    expect(events).toEqual(["catalog"]);
+    service.dispose();
   });
 });

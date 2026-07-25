@@ -757,7 +757,10 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #refreshIntent: CompletionRequestState | null = null;
   #snapshot: SessionSnapshot<Context>;
   #statementIndexCache: StatementIndexCache | null = null;
-  #terminalIntentTimer: ReturnType<typeof setTimeout> | null = null;
+  #terminalIntentTimer:
+    | ReturnType<typeof setTimeout>
+    | undefined;
+  #terminalIntentTimerScheduled = false;
   #updating = false;
 
   constructor(
@@ -831,10 +834,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   }
 
   #clearTerminalIntent(): void {
-    if (this.#terminalIntentTimer !== null) {
-      clearTimeout(this.#terminalIntentTimer);
-      this.#terminalIntentTimer = null;
-    }
+    if (!this.#terminalIntentTimerScheduled) return;
+    this.#terminalIntentTimerScheduled = false;
+    const timer = this.#terminalIntentTimer;
+    this.#terminalIntentTimer = undefined;
+    clearTimeout(timer);
   }
 
   #dispatchChange(
@@ -1226,8 +1230,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             0,
             this.#catalogResponseBudgetMs - elapsed,
           );
-          let responseTimer: ReturnType<typeof setTimeout> | null =
-            null;
+          let responseTimer:
+            | ReturnType<typeof setTimeout>
+            | undefined;
           const raced = await Promise.race([
             ticket.result.then((outcome) =>
               Object.freeze({
@@ -1242,7 +1247,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               );
             }),
           ]);
-          if (responseTimer !== null) clearTimeout(responseTimer);
+          clearTimeout(responseTimer);
           if (
             this.#activeCompletion !== active ||
             active.cancelReason !== null ||
@@ -1328,9 +1333,16 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               if (outcome.response.status === "loading") {
                 remainingIntentLeaseMs =
                   TERMINAL_LOADING_INTENT_LEASE_MS;
-                this.#terminalIntentTimer = setTimeout(() => {
-                  this.#terminalIntentTimer = null;
+                this.#terminalIntentTimerScheduled = true;
+                const timer = setTimeout(() => {
+                  this.#terminalIntentTimerScheduled = false;
+                  this.#terminalIntentTimer = undefined;
                 }, remainingIntentLeaseMs);
+                if (this.#terminalIntentTimerScheduled) {
+                  this.#terminalIntentTimer = timer;
+                } else {
+                  clearTimeout(timer);
+                }
               }
             }
           }
