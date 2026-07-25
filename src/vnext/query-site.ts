@@ -650,6 +650,8 @@ function classifyIdentifierToken(
 ): "identifier" | "unsupported" | null {
   if (
     rawIdentifier.length === 0 ||
+    (!quoted &&
+      rawIdentifier.length > MAX_QUERY_SITE_IDENTIFIER_LENGTH) ||
     (quoted && rawIdentifier.length <= 2)
   ) {
     return null;

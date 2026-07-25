@@ -849,6 +849,47 @@ describe("fail-closed query-site behavior", () => {
     ).toBe("unavailable");
   });
 
+  it("enforces the bare identifier ceiling before dialect code for every role", () => {
+    const maximumIdentifier = "x".repeat(
+      MAX_QUERY_SITE_IDENTIFIER_LENGTH,
+    );
+    const oversizedIdentifier = "x".repeat(
+      MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1,
+    );
+    const roles: (
+      | "explicit-alias"
+      | "implicit-alias"
+      | "using-column"
+    )[] = [];
+    const dialect: SqlQuerySiteDialect = {
+      ...postgresDialect,
+      classifyIdentifierToken: (_rawIdentifier, _quoted, role) => {
+        roles.push(role);
+        return { status: "identifier", value: "decoded" };
+      },
+    };
+    for (const marked of [
+      `SELECT * FROM users ${maximumIdentifier} JOIN |`,
+      `SELECT * FROM users AS ${maximumIdentifier} JOIN |`,
+      `SELECT * FROM a JOIN b USING(${maximumIdentifier}) JOIN |`,
+    ]) {
+      expect(recognize(marked, { dialect }).status).toBe("ready");
+    }
+    expect(roles).toEqual([
+      "implicit-alias",
+      "explicit-alias",
+      "using-column",
+    ]);
+    for (const marked of [
+      `SELECT * FROM users ${oversizedIdentifier} JOIN |`,
+      `SELECT * FROM users AS ${oversizedIdentifier} JOIN |`,
+      `SELECT * FROM a JOIN b USING(${oversizedIdentifier}) JOIN |`,
+    ]) {
+      expect(recognize(marked, { dialect }).status).toBe("unavailable");
+    }
+    expect(roles).toHaveLength(3);
+  });
+
   it.each([
     'SELECT * FROM users "" JOIN |',
     'SELECT * FROM users AS "" JOIN |',
