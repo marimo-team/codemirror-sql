@@ -144,10 +144,27 @@ export function isExactSqlStatementSlotSnapshotFor(
   analysisText: string,
   profile: SqlLexicalProfile,
 ): candidate is ExactSqlStatementSlot {
+  return (
+    isExactSqlStatementSlotSnapshot(candidate) &&
+    isSqlStatementSlotSnapshotFor(
+      index,
+      candidate,
+      analysisText,
+      profile,
+    )
+  );
+}
+
+export function isSqlStatementSlotSnapshotFor(
+  index: unknown,
+  candidate: unknown,
+  analysisText: string,
+  profile: SqlLexicalProfile,
+): candidate is SqlStatementSlot {
   if (
     index === null ||
     typeof index !== "object" ||
-    !isExactSqlStatementSlotSnapshot(candidate)
+    !isSqlStatementSlotSnapshot(candidate)
   ) {
     return false;
   }
