@@ -26,6 +26,12 @@ interface HostEmbeddedRegion extends SqlEmbeddedRegion {
 
 const dialect = duckdbDialect();
 const typedDialect: SqlDialect = dialect;
+// @ts-expect-error dialect implementation callbacks are package-private
+void typedDialect.decodeIdentifier;
+// @ts-expect-error dialect grammar is package-private
+void typedDialect.grammar;
+// @ts-expect-error dialect rendering policy is package-private
+void typedDialect.renderRelationPath;
 const service = createSqlLanguageService<HostContext>({ dialects: [dialect] });
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },

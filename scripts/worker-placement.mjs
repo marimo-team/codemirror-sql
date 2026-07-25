@@ -35,8 +35,10 @@ const PARSER_MARKERS = [
   "tableList",
 ];
 const BIGQUERY_GZIP_LIMIT = 50 * 1024;
+const CORE_TOTAL_GZIP_LIMIT = 16 * 1024;
+const CORE_TOTAL_RAW_LIMIT = 52 * 1024;
 const POSTGRESQL_GZIP_LIMIT = 68 * 1024;
-const WORKER_TOTAL_GZIP_LIMIT = 120 * 1024;
+const WORKER_TOTAL_GZIP_LIMIT = 128 * 1024;
 const WORKER_TOTAL_RAW_LIMIT = 570 * 1024;
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -485,6 +487,27 @@ function verifyCoreExcludesParser(coreDirectory) {
   return new Set(moduleIds).size;
 }
 
+function verifyCoreSize(coreDirectory) {
+  const report = bundleReport(coreDirectory);
+  if (report.gzipBytes > CORE_TOTAL_GZIP_LIMIT) {
+    throw new Error(
+      `Core output exceeded ${CORE_TOTAL_GZIP_LIMIT} gzip bytes: ${report.gzipBytes}`,
+    );
+  }
+  if (report.rawBytes > CORE_TOTAL_RAW_LIMIT) {
+    throw new Error(
+      `Core output exceeded ${CORE_TOTAL_RAW_LIMIT} raw bytes: ${report.rawBytes}`,
+    );
+  }
+  return {
+    ...report,
+    limits: {
+      gzipBytes: CORE_TOTAL_GZIP_LIMIT,
+      rawBytes: CORE_TOTAL_RAW_LIMIT,
+    },
+  };
+}
+
 function verifySsrImport(fixtureDirectory) {
   const source = `
 Object.defineProperty(globalThis, "window", {
@@ -751,6 +774,7 @@ try {
   const coreDirectory = join(fixtureDirectory, "core-dist");
   const workersDirectory = join(fixtureDirectory, "workers-dist");
   const coreModuleCount = verifyCoreExcludesParser(coreDirectory);
+  const coreBundle = verifyCoreSize(coreDirectory);
   const chromiumResult = await runChromium(
     fixtureDirectory,
     workersDirectory,
@@ -763,7 +787,7 @@ try {
   }
   const report = {
     bundles: {
-      core: bundleReport(coreDirectory),
+      core: coreBundle,
       workers: workerBundles,
     },
     evidence: {

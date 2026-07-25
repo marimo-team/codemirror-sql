@@ -19,7 +19,6 @@ import type {
   SqlRelationCompletionItem,
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
-  SqlRelationCompletionDialectRuntime,
   SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
 
@@ -144,25 +143,6 @@ const relation: SqlCatalogRelation = {
   relationKind: "table",
 };
 void relation;
-
-const dialectRuntime: SqlRelationCompletionDialectRuntime = {
-  compareCteIdentifiers: (left, right) =>
-    left.quoted === right.quoted && left.value === right.value
-      ? "equal"
-      : "distinct",
-  cteIdentifierMatchesPrefix: (candidate, prefix) =>
-    candidate.value.startsWith(prefix.value) ? "match" : "no-match",
-  decodeIdentifier: (token) => ({
-    component: { quoted: false, value: token },
-    quality: "exact",
-    status: "decoded",
-  }),
-  renderRelationPath: (path) => ({
-    status: "rendered",
-    text: path.map((component) => component.value).join("."),
-  }),
-};
-void dialectRuntime;
 
 // @ts-expect-error semantic catalog roles are a closed set
 const invalidRole: SqlCatalogRelation["canonicalPath"][number]["role"] =

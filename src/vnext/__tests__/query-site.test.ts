@@ -11,231 +11,26 @@ import {
   type SqlQuerySiteResult,
 } from "../query-site.js";
 import {
+  BIGQUERY_SQL_RELATION_DIALECT,
+  DUCKDB_SQL_RELATION_DIALECT,
+  POSTGRESQL_SQL_RELATION_DIALECT,
+} from "../relation-dialect.js";
+import {
   createIdentitySqlSource,
   createMaskedSqlSource,
   type SqlSourceSnapshot,
 } from "../source.js";
 import {
-  BIGQUERY_SQL_LEXICAL_PROFILE,
   buildSqlStatementIndex,
-  DUCKDB_SQL_LEXICAL_PROFILE,
   findSqlStatementSlot,
   POSTGRESQL_SQL_LEXICAL_PROFILE,
 } from "../statement-index.js";
 
-function decodeSegment(raw: string, prefix = false): {
-  readonly quoted: boolean;
-  readonly value: string;
-  readonly recovered: boolean;
-} | null {
-  if (raw.startsWith("\"")) {
-    const closed = raw.endsWith("\"") && raw.length > 1;
-    if (!closed && !prefix) {
-      return null;
-    }
-    const content = raw.slice(1, closed ? -1 : undefined);
-    return {
-      quoted: true,
-      recovered: !closed,
-      value: content.replaceAll("\"\"", "\""),
-    };
-  }
-  if (raw.length === 0 && prefix) {
-    return { quoted: false, recovered: false, value: "" };
-  }
-  return /^[\p{L}_][\p{L}\p{N}_$]*$/u.test(raw)
-    ? { quoted: false, recovered: false, value: raw }
-    : null;
-}
-
-function decodeStandardPath(
-  rawPath: string,
-  cursorOffset: number,
-): SqlDecodedQueryPath {
-  const rawSegments = rawPath.split(".");
-  const qualifier = [];
-  let segmentFrom = 0;
-  for (let index = 0; index < rawSegments.length - 1; index += 1) {
-    const raw = rawSegments[index] ?? "";
-    const decoded = decodeSegment(raw);
-    if (!decoded) {
-      return { reason: "invalid-identifier", status: "unavailable" };
-    }
-    qualifier.push({ quoted: decoded.quoted, value: decoded.value });
-    segmentFrom += raw.length + 1;
-  }
-  const finalRaw = rawSegments[rawSegments.length - 1] ?? "";
-  const cursorInFinal = cursorOffset - segmentFrom;
-  if (cursorInFinal < 0 || cursorInFinal > finalRaw.length) {
-    return { reason: "invalid-identifier", status: "unavailable" };
-  }
-  let prefixRaw = finalRaw.slice(0, cursorInFinal);
-  if (finalRaw.startsWith("\"") && finalRaw.endsWith("\"")) {
-    prefixRaw = `${prefixRaw}"`;
-  }
-  const prefix = decodeSegment(prefixRaw, true);
-  if (!prefix) {
-    return { reason: "invalid-identifier", status: "unavailable" };
-  }
-  return {
-    finalSegment: {
-      from: segmentFrom,
-      to: segmentFrom + finalRaw.length,
-    },
-    prefix: { quoted: prefix.quoted, value: prefix.value },
-    qualifier,
-    quality:
-      prefix.recovered ||
-      (finalRaw.startsWith("\"") && !finalRaw.endsWith("\""))
-        ? "recovered"
-        : "exact",
-    status: "decoded",
-  };
-}
-
-function classifyIdentifierToken(
-  rawIdentifier: string,
-  quoted: boolean,
-):
-  | {
-      readonly status: "identifier";
-      readonly value: string;
-    }
-  | {
-      readonly status: "unsupported";
-    } {
-  if (quoted) {
-    const delimiter = rawIdentifier.at(0) ?? "";
-    const value = rawIdentifier
-      .slice(1, -1)
-      .replaceAll(`${delimiter}${delimiter}`, delimiter);
-    return value.length > 0
-      ? { status: "identifier", value }
-      : { status: "unsupported" };
-  }
-  const word = rawIdentifier.toLowerCase();
-  const unsupported =
-    word === "assert_rows_modified" ||
-    word === "as" ||
-    word === "collate" ||
-    word === "cross" ||
-    word === "default" ||
-    word === "distinct" ||
-    word === "end" ||
-    word === "escape" ||
-    word === "except" ||
-    word === "fetch" ||
-    word === "filter" ||
-    word === "for" ||
-    word === "from" ||
-    word === "full" ||
-    word === "group" ||
-    word === "having" ||
-    word === "inner" ||
-    word === "intersect" ||
-    word === "join" ||
-    word === "lateral" ||
-    word === "left" ||
-    word === "limit" ||
-    word === "match_recognize" ||
-    word === "natural" ||
-    word === "on" ||
-    word === "offset" ||
-    word === "order" ||
-    word === "outer" ||
-    word === "over" ||
-    word === "pivot" ||
-    word === "qualify" ||
-    word === "right" ||
-    word === "select" ||
-    word === "tablesample" ||
-    word === "unpivot" ||
-    word === "union" ||
-    word === "using" ||
-    word === "where" ||
-    word === "window" ||
-    word === "within";
-  return unsupported
-    ? { status: "unsupported" }
-    : { status: "identifier", value: rawIdentifier };
-}
-
-const postgresDialect: SqlQuerySiteDialect = {
-  classifyIdentifierToken,
-  decodeRelationPath: decodeStandardPath,
-  lexicalProfile: POSTGRESQL_SQL_LEXICAL_PROFILE,
-  maximumPathDepth: 4,
-  supportsNaturalJoin: true,
-};
-
-const duckdbDialect: SqlQuerySiteDialect = {
-  classifyIdentifierToken,
-  decodeRelationPath: decodeStandardPath,
-  lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
-  maximumPathDepth: 16,
-  supportsNaturalJoin: true,
-};
-
-const bigQueryDialect: SqlQuerySiteDialect = {
-  classifyIdentifierToken,
-  decodeRelationPath: (rawPath, cursorOffset) => {
-    if (!rawPath.startsWith("`")) {
-      if (!rawPath.includes("-")) {
-        return decodeStandardPath(rawPath, cursorOffset);
-      }
-      const segments = rawPath.split(".");
-      const finalRaw = segments.pop() ?? "";
-      const segmentFrom = rawPath.length - finalRaw.length;
-      const cursorInFinal = cursorOffset - segmentFrom;
-      if (
-        cursorInFinal < 0 ||
-        cursorInFinal > finalRaw.length ||
-        !/^[\p{L}_][\p{L}\p{N}_-]*$/u.test(segments[0] ?? "") ||
-        segments.slice(1).some((segment) => !decodeSegment(segment))
-      ) {
-        return { reason: "invalid-identifier", status: "unavailable" };
-      }
-      const prefix = decodeSegment(finalRaw.slice(0, cursorInFinal), true);
-      if (!prefix) {
-        return { reason: "invalid-identifier", status: "unavailable" };
-      }
-      return {
-        finalSegment: { from: segmentFrom, to: rawPath.length },
-        prefix: { quoted: prefix.quoted, value: prefix.value },
-        qualifier: segments.map((value) => ({ quoted: false, value })),
-        quality: "exact",
-        status: "decoded",
-      };
-    }
-    const closed = rawPath.endsWith("`") && rawPath.length > 1;
-    const contentTo = closed ? rawPath.length - 1 : rawPath.length;
-    const content = rawPath.slice(1, contentTo);
-    const lastDot = content.lastIndexOf(".");
-    const finalFrom = lastDot + 2;
-    const cursorInContent = Math.min(cursorOffset, contentTo) - 1;
-    if (cursorInContent < finalFrom - 1) {
-      return { reason: "invalid-identifier", status: "unavailable" };
-    }
-    const qualifier =
-      lastDot < 0
-        ? []
-        : content
-            .slice(0, lastDot)
-            .split(".")
-            .map((value) => ({ quoted: true, value }));
-    const prefix = content.slice(finalFrom - 1, cursorInContent);
-    return {
-      finalSegment: { from: finalFrom, to: rawPath.length },
-      prefix: { quoted: true, value: prefix },
-      qualifier,
-      quality: closed ? "exact" : "recovered",
-      status: "decoded",
-    };
-  },
-  lexicalProfile: BIGQUERY_SQL_LEXICAL_PROFILE,
-  maximumPathDepth: 3,
-  supportsNaturalJoin: false,
-};
+const postgresDialect = POSTGRESQL_SQL_RELATION_DIALECT.querySite;
+const duckdbDialect = DUCKDB_SQL_RELATION_DIALECT.querySite;
+const bigQueryDialect = BIGQUERY_SQL_RELATION_DIALECT.querySite;
+const classifyIdentifierToken =
+  postgresDialect.classifyIdentifierToken;
 
 function markedSource(marked: string): {
   readonly position: number;
@@ -407,7 +202,7 @@ describe("partial SELECT relation query sites", () => {
     })).prefix.value).toBe("us");
   });
 
-  it("collects a bounded dialect-neutral identifier superset", () => {
+  it("applies each built-in identifier and path policy", () => {
     expect(
       expectReady(recognize("SELECT * FROM foo$use|r")).prefix.value,
     ).toBe("foo$use");
@@ -422,10 +217,19 @@ describe("partial SELECT relation query sites", () => {
       { quoted: false, value: "dataset" },
     ]);
     expect(
-      recognize("SELECT * FROM a.b.c.d.e.f|", {
+      recognize("SELECT * FROM memory.main.users|", {
         dialect: duckdbDialect,
       }).status,
     ).toBe("ready");
+    expect(
+      recognize("SELECT * FROM a.b.c.d|", {
+        dialect: duckdbDialect,
+      }),
+    ).toEqual({
+      reason: "resource-limit",
+      resource: "identifier-path",
+      status: "unavailable",
+    });
   });
 
   it.each([
@@ -968,10 +772,18 @@ describe("fail-closed query-site behavior", () => {
     "SELECT * FROM users AS SELECT JOIN |",
     "SELECT * FROM users AS OFFSET JOIN |",
     "SELECT * FROM users AS UNION JOIN |",
-    "SELECT * FROM users AS QUALIFY JOIN |",
     "SELECT * FROM users AS LATERAL JOIN |",
   ])("classifies a structural word in explicit-alias state for %s", (marked) => {
     expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it("accepts a dialect-unreserved structural word after AS", () => {
+    expect(
+      recognize("SELECT * FROM users AS QUALIFY JOIN |").status,
+    ).toBe("ready");
+    expect(
+      recognize("SELECT * FROM users PIVOT JOIN |").status,
+    ).toBe("ready");
   });
 
   it.each([
@@ -1454,7 +1266,7 @@ describe("query-site resource limits", () => {
         if (role === "using-column") {
           usingColumnCalls += 1;
         }
-        return classifyIdentifierToken(rawIdentifier, quoted);
+        return classifyIdentifierToken(rawIdentifier, quoted, role);
       },
     };
     const columns = Array.from(
@@ -1471,8 +1283,10 @@ describe("query-site resource limits", () => {
   });
 
   it("bounds path depth and decoded identifier length", () => {
-    expect(recognize("SELECT * FROM a.b.c.d|").status).toBe("ready");
-    expect(recognize("SELECT * FROM a.b.c.d.e|")).toEqual({
+    expect(recognize("SELECT * FROM public.users|").status).toBe(
+      "ready",
+    );
+    expect(recognize("SELECT * FROM a.b.c|")).toEqual({
       reason: "resource-limit",
       resource: "identifier-path",
       status: "unavailable",
@@ -1487,8 +1301,7 @@ describe("query-site resource limits", () => {
         MAX_QUERY_SITE_IDENTIFIER_LENGTH + 1,
       )}|`),
     ).toEqual({
-      reason: "resource-limit",
-      resource: "identifier-segment",
+      reason: "ambiguous-query-site",
       status: "unavailable",
     });
 
@@ -1498,6 +1311,28 @@ describe("query-site resource limits", () => {
     ).join(".");
     const globalDialect: SqlQuerySiteDialect = {
       ...postgresDialect,
+      decodeRelationPath: (rawPath, cursorOffset) => {
+        if (cursorOffset !== rawPath.length) {
+          return {
+            reason: "invalid-identifier",
+            status: "unavailable",
+          };
+        }
+        const parts = rawPath.split(".");
+        const prefix = parts.at(-1) ?? "";
+        return {
+          finalSegment: {
+            from: rawPath.length - prefix.length,
+            to: rawPath.length,
+          },
+          prefix: { quoted: false, value: prefix },
+          qualifier: parts
+            .slice(0, -1)
+            .map((value) => ({ quoted: false, value })),
+          quality: "exact",
+          status: "decoded",
+        };
+      },
       maximumPathDepth: MAX_QUERY_SITE_PATH_COMPONENTS,
     };
     expect(
