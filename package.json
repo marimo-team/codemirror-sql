@@ -93,6 +93,12 @@
         "default": "./dist/vnext/index.js"
       }
     },
+    "./vnext/codemirror": {
+      "import": {
+        "types": "./dist/vnext/codemirror/index.d.ts",
+        "default": "./dist/vnext/codemirror/index.js"
+      }
+    },
     "./data/common-keywords.json": "./src/data/common-keywords.json",
     "./data/duckdb-keywords.json": "./src/data/duckdb-keywords.json"
   },
