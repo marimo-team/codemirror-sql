@@ -1365,6 +1365,32 @@ describe("hostile subscription lifecycle", () => {
     hostileMembership.dispose();
     hostileMembership.dispose();
 
+    let catchReads = 0;
+    const throwingCatchResult = Promise.reject(
+      new Error("shadowed catch rejection"),
+    );
+    Object.defineProperty(throwingCatchResult, "catch", {
+      get() {
+        catchReads += 1;
+        throw new Error("hostile catch getter");
+      },
+    });
+    const throwingCatchOwner = coordinator(
+      () => () => throwingCatchResult,
+    );
+    active(throwingCatchOwner, "scope").dispose();
+
+    const nonCallableCatchResult = Promise.reject(
+      new Error("non-callable catch rejection"),
+    );
+    Object.defineProperty(nonCallableCatchResult, "catch", {
+      value: null,
+    });
+    const nonCallableCatchOwner = coordinator(
+      () => () => nonCallableCatchResult,
+    );
+    active(nonCallableCatchOwner, "scope").dispose();
+
     let thenCalls = 0;
     let reentrantOwner: SqlCatalogEpochCoordinator;
     const reentrantResult = Object.defineProperty(
@@ -1397,6 +1423,7 @@ describe("hostile subscription lifecycle", () => {
     expect(asyncCleanupCalls).toBe(1);
     expect(applyCalls).toBe(1);
     expect(thenReads).toBe(1);
+    expect(catchReads).toBe(0);
     expect(thenCalls).toBe(1);
   });
 

@@ -377,7 +377,10 @@ function cleanupSubscription(subscription: SubscriptionState): void {
   subscription.cleanup = null;
   try {
     const result = Reflect.apply(cleanup, undefined, []);
-    void Promise.resolve(result).catch(IGNORE_CLEANUP_REJECTION);
+    const settlement = new Promise<unknown>((resolve) => {
+      resolve(result);
+    });
+    void settlement.then(undefined, IGNORE_CLEANUP_REJECTION);
   } catch {
     // Provider cleanup is isolated after state is inert.
   }
