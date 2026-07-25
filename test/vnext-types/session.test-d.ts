@@ -9,6 +9,9 @@ import {
   type SqlLanguageService,
   type SqlRelationCatalogProvider,
   type SqlRevision,
+  type SqlStatementBoundariesIntersectingResult,
+  type SqlStatementBoundaryAtResult,
+  type SqlStatementBoundary,
   type SqlTextChange,
   type SqlTextRange,
 } from "../../src/vnext/index.js";
@@ -196,6 +199,33 @@ const embeddedRegion: SqlEmbeddedRegion = {
 embeddedRegion.language = "jinja";
 // @ts-expect-error session revision is readonly
 session.revision = revision;
+const statement = session.statementBoundaryAt({
+  affinity: "left",
+  position: 0,
+});
+const statementResult: SqlStatementBoundaryAtResult = statement;
+const statementBoundary: SqlStatementBoundary = statement.boundary;
+if (statementBoundary.boundaryQuality === "exact") {
+  if (statementBoundary.hasCode) {
+    const codeRange: SqlTextRange = statementBoundary.code;
+    void codeRange;
+  } else {
+    const noCode: null = statementBoundary.code;
+    void noCode;
+  }
+}
+const statements: SqlStatementBoundariesIntersectingResult =
+  session.statementBoundariesIntersecting({ from: 0, to: 1 });
+// @ts-expect-error statement boundary results are readonly
+statement.boundary.extent.from = 1;
+// @ts-expect-error affinity is explicit and bounded
+session.statementBoundaryAt({ affinity: "nearest", position: 0 });
+// @ts-expect-error statement positions are numeric UTF-16 offsets
+session.statementBoundaryAt({ affinity: "right", position: "0" });
+// @ts-expect-error intersection ranges use numeric UTF-16 offsets
+session.statementBoundariesIntersecting({ from: 0, to: "1" });
+// @ts-expect-error intersecting boundary arrays are readonly
+statements.boundaries.push(statementBoundary);
 // @ts-expect-error statement indexes remain an internal session detail
 session.getStatementIndexForTesting();
 // @ts-expect-error dialect IDs are readonly
@@ -206,6 +236,10 @@ createSqlLanguageService({ dialects: [{ id: "duckdb", displayName: "DuckDB" }] }
 void objectRevision;
 void numberRevision;
 void range;
+void statement;
+void statementBoundary;
+void statementResult;
+void statements;
 void embeddedRegion;
 void identitySession;
 void typedDialect;

@@ -166,6 +166,30 @@ function fakeService(
         get revision() {
           return revision;
         },
+        statementBoundaryAt: () => ({
+          boundary: {
+            boundaryQuality: "exact",
+            code: null,
+            endState: { kind: "normal" },
+            extent: { from: 0, to: 0 },
+            hasCode: false,
+            source: { from: 0, to: 0 },
+            terminator: null,
+          },
+          revision,
+        }),
+        statementBoundariesIntersecting: () => ({
+          boundaries: [{
+            boundaryQuality: "exact",
+            code: null,
+            endState: { kind: "normal" },
+            extent: { from: 0, to: 0 },
+            hasCode: false,
+            source: { from: 0, to: 0 },
+            terminator: null,
+          }],
+          revision,
+        }),
         update: (update) => {
           updates.push(update);
           if (rejectUpdates) {

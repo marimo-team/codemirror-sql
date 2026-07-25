@@ -1394,6 +1394,327 @@ describe("statement-index session cache", () => {
   });
 });
 
+describe("public statement boundaries", () => {
+  it("projects exact boundaries with explicit cursor affinity", () => {
+    const { session } = openSession("SELECT 1;SELECT 2");
+
+    const left = session.statementBoundaryAt({
+      affinity: "left",
+      position: 9,
+    });
+    const right = session.statementBoundaryAt({
+      affinity: "right",
+      position: 9,
+    });
+
+    expect(left).toEqual({
+      boundary: {
+        boundaryQuality: "exact",
+        code: { from: 0, to: 8 },
+        endState: { kind: "normal" },
+        extent: { from: 0, to: 9 },
+        hasCode: true,
+        source: { from: 0, to: 8 },
+        terminator: { from: 8, to: 9 },
+      },
+      revision: session.revision,
+    });
+    expect(right.boundary).toEqual({
+      boundaryQuality: "exact",
+      code: { from: 9, to: 17 },
+      endState: { kind: "normal" },
+      extent: { from: 9, to: 17 },
+      hasCode: true,
+      source: { from: 9, to: 17 },
+      terminator: null,
+    });
+    expect(Object.isFrozen(left)).toBe(true);
+    expect(Object.isFrozen(left.boundary)).toBe(true);
+    expect(Object.isFrozen(left.boundary.extent)).toBe(true);
+    if (left.boundary.boundaryQuality === "exact") {
+      expect(Object.isFrozen(left.boundary.code)).toBe(true);
+      expect(Object.isFrozen(left.boundary.source)).toBe(true);
+      expect(Object.isFrozen(left.boundary.terminator)).toBe(true);
+      expect(Object.isFrozen(left.boundary.endState)).toBe(true);
+    }
+  });
+
+  it("distinguishes empty, consecutive, and terminal boundaries", () => {
+    const empty = openSession("").session.statementBoundaryAt({
+      affinity: "right",
+      position: 0,
+    });
+    expect(empty.boundary).toMatchObject({
+      boundaryQuality: "exact",
+      extent: { from: 0, to: 0 },
+      hasCode: false,
+    });
+
+    const { session } = openSession("SELECT 1;;");
+    expect(session.statementBoundaryAt({
+      affinity: "left",
+      position: 9,
+    }).boundary).toMatchObject({
+      hasCode: true,
+      terminator: { from: 8, to: 9 },
+    });
+    expect(session.statementBoundaryAt({
+      affinity: "right",
+      position: 9,
+    }).boundary).toMatchObject({
+      hasCode: false,
+      terminator: { from: 9, to: 10 },
+    });
+    expect(session.statementBoundaryAt({
+      affinity: "left",
+      position: 10,
+    }).boundary).toMatchObject({
+      extent: { from: 9, to: 10 },
+      hasCode: false,
+    });
+    expect(session.statementBoundaryAt({
+      affinity: "right",
+      position: 10,
+    }).boundary).toMatchObject({
+      extent: { from: 10, to: 10 },
+      hasCode: false,
+    });
+  });
+
+  it("preserves explicit no-code and unterminated states", () => {
+    const comment = openSession("/* comment */").session.statementBoundaryAt({
+      affinity: "right",
+      position: 0,
+    });
+    expect(comment.boundary).toMatchObject({
+      boundaryQuality: "exact",
+      hasCode: false,
+      source: { from: 0, to: 13 },
+    });
+
+    const unterminated = openSession("SELECT '🦆").session.statementBoundaryAt({
+      affinity: "left",
+      position: 10,
+    });
+    expect(unterminated.boundary).toMatchObject({
+      boundaryQuality: "exact",
+      endState: {
+        construct: "single-quoted-string",
+        from: 7,
+        kind: "unterminated",
+      },
+    });
+
+    const text = "  /* lead */ SELECT 1 /* tail */  ";
+    const trimmed = openSession(text).session.statementBoundaryAt({
+      affinity: "right",
+      position: 0,
+    });
+    expect(trimmed.boundary).toMatchObject({
+      code: {
+        from: text.indexOf("SELECT"),
+        to: text.indexOf(" /* tail */"),
+      },
+      source: { from: 0, to: text.length },
+    });
+  });
+
+  it("reports original coordinates across masked host regions", () => {
+    const service = createService();
+    const text = "SELECT {x;y};SELECT 2";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      embeddedRegions: [{
+        from: 7,
+        language: "python",
+        to: 12,
+      }],
+      text,
+    });
+
+    expect(session.statementBoundaryAt({
+      affinity: "left",
+      position: 13,
+    }).boundary).toMatchObject({
+      extent: { from: 0, to: 13 },
+      source: { from: 0, to: 12 },
+      terminator: { from: 12, to: 13 },
+    });
+    expect(session.statementBoundaryAt({
+      affinity: "right",
+      position: 13,
+    }).boundary).toMatchObject({
+      extent: { from: 13, to: text.length },
+      source: { from: 13, to: text.length },
+    });
+  });
+
+  it("reports opaque boundaries without executable source", () => {
+    const text =
+      "CREATE FUNCTION f() RETURNS int LANGUAGE SQL BEGIN ATOMIC SELECT 1; END;";
+    const { session } = openSession(text);
+    session.update({
+      baseRevision: session.revision,
+      context: { dialect: "postgresql", engine: "warehouse" },
+    });
+    const result = session.statementBoundaryAt({
+      affinity: "right",
+      position: 32,
+    });
+
+    expect(result.boundary).toEqual({
+      boundaryQuality: "opaque",
+      extent: { from: 0, to: text.length },
+      reason: "procedural-block",
+    });
+    expect("source" in result.boundary).toBe(false);
+  });
+
+  it("projects custom-delimiter and resource-limit opacity", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [bigQueryDialect()],
+    });
+    const custom = service.openDocument({
+      context: { dialect: "bigquery", engine: "warehouse" },
+      text: "DELIMITER $$\nSELECT 1$$",
+    });
+    expect(custom.statementBoundaryAt({
+      affinity: "right",
+      position: 0,
+    }).boundary).toMatchObject({
+      boundaryQuality: "opaque",
+      reason: "custom-delimiter",
+    });
+
+    const text = ";".repeat(10_001);
+    const limited = service.openDocument({
+      context: { dialect: "bigquery", engine: "warehouse" },
+      text,
+    });
+    expect(limited.statementBoundaryAt({
+      affinity: "right",
+      position: text.length,
+    }).boundary).toMatchObject({
+      boundaryQuality: "opaque",
+      reason: "resource-limit",
+    });
+  });
+
+  it("returns the current revision after atomic updates", () => {
+    const { session } = openSession("SELECT 1");
+    const previous = session.statementBoundaryAt({
+      affinity: "left",
+      position: 8,
+    });
+    session.update({
+      baseRevision: session.revision,
+      document: {
+        changes: [{ from: 7, insert: "20", to: 8 }],
+        kind: "changes",
+      },
+      embeddedRegions: [],
+    });
+
+    const current = session.statementBoundaryAt({
+      affinity: "left",
+      position: 9,
+    });
+    expect(current.revision).toBe(session.revision);
+    expect(current.revision).not.toBe(previous.revision);
+    expect(current.boundary).toMatchObject({
+      source: { from: 0, to: 9 },
+    });
+  });
+
+  it("returns every boundary intersecting a viewport range", () => {
+    const text = ";SELECT 1;/* trailing */";
+    const { session } = openSession(text);
+    const result = session.statementBoundariesIntersecting({
+      from: 0,
+      to: text.length,
+    });
+
+    expect(result.revision).toBe(session.revision);
+    expect(result.boundaries).toHaveLength(3);
+    expect(result.boundaries.map((boundary) =>
+      boundary.boundaryQuality === "exact" && boundary.hasCode
+    )).toEqual([false, true, false]);
+    expect(result.boundaries[1]).toMatchObject({
+      code: { from: 1, to: 9 },
+      extent: { from: 1, to: 10 },
+      source: { from: 1, to: 9 },
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.boundaries)).toBe(true);
+    expect(session.statementBoundariesIntersecting({
+      from: 1,
+      to: 1,
+    }).boundaries).toEqual([]);
+  });
+
+  it("validates requests and rejects disposed sessions", () => {
+    const { session } = openSession("SELECT 1");
+    for (const request of [
+      null,
+      {},
+      { affinity: "center", position: 0 },
+      { affinity: "left", position: -1 },
+      { affinity: "left", position: Number.NaN },
+      { affinity: "right", position: 9 },
+    ]) {
+      expectSessionError("invalid-statement-boundary-request", () => {
+        session.statementBoundaryAt(request as never);
+      });
+    }
+    let getterCalls = 0;
+    expectSessionError("invalid-statement-boundary-request", () => {
+      session.statementBoundaryAt(
+        Object.defineProperty(
+          { affinity: "left" },
+          "position",
+          {
+            get: () => {
+              getterCalls += 1;
+              return 0;
+            },
+          },
+        ) as never,
+      );
+    });
+    expect(getterCalls).toBe(0);
+    expectSessionError("invalid-statement-boundary-request", () => {
+      session.statementBoundaryAt(
+        Object.create({ affinity: "left", position: 0 }) as never,
+      );
+    });
+    expectSessionError("invalid-statement-boundary-request", () => {
+      session.statementBoundaryAt(new Proxy({}, {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("host descriptor trap");
+        },
+      }) as never);
+    });
+    for (const range of [
+      null,
+      {},
+      { from: -1, to: 0 },
+      { from: 2, to: 1 },
+      { from: 0, to: 9 },
+    ]) {
+      expectSessionError("invalid-statement-boundary-request", () => {
+        session.statementBoundariesIntersecting(range as never);
+      });
+    }
+    session.dispose();
+    expectSessionError("session-disposed", () => {
+      session.statementBoundaryAt({ affinity: "left", position: 0 });
+    });
+    expectSessionError("session-disposed", () => {
+      session.statementBoundariesIntersecting({ from: 0, to: 0 });
+    });
+  });
+});
+
 describe("document revisions", () => {
   it("starts with a frozen current revision", () => {
     const { session } = openSession();
