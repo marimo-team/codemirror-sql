@@ -9,8 +9,12 @@ import type {
 
 // Provisional package-private declarations until the vertical slice is proven.
 export interface SqlDisposable {
-  readonly dispose: () => void;
+  readonly dispose: (this: void) => void;
 }
+
+export type SqlCatalogSubscriptionCleanup = (
+  this: void,
+) => void | PromiseLike<void>;
 
 export type SqlCatalogContainerRole =
   | "catalog"
@@ -125,7 +129,7 @@ export interface SqlRelationCatalogProvider {
     this: void,
     scope: string,
     onInvalidation: (event: SqlCatalogInvalidation) => void,
-  ) => SqlDisposable;
+  ) => SqlCatalogSubscriptionCleanup;
 }
 
 export type SqlIdentifierDecodeResult =

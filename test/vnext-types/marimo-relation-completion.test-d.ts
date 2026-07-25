@@ -14,8 +14,10 @@ import type {
   SqlCatalogRelation,
   SqlCatalogSearchRequest,
   SqlCatalogSearchResponse,
+  SqlCatalogSubscriptionCleanup,
   SqlCompletionCancellationReason,
   SqlCompletionIssue,
+  SqlDisposable,
   SqlRelationCompletionItem,
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
@@ -125,7 +127,7 @@ const provider: SqlRelationCatalogProvider = {
   },
   subscribe: (_scope, onInvalidation) => {
     onInvalidation({ epoch: { generation: 1, token: "tables-updated" } });
-    return { dispose: () => undefined };
+    return () => undefined;
   },
 };
 void provider;
@@ -147,6 +149,21 @@ const receiverDependentProvider: SqlRelationCatalogProvider = {
   // @ts-expect-error provider callbacks are this-free closures
   search: receiverDependentSearch,
 };
+
+const receiverDependentDispose = function (
+  this: { readonly id: string },
+): void {
+  void this.id;
+};
+const receiverDependentDisposable: SqlDisposable = {
+  // @ts-expect-error disposable callbacks are this-free closures
+  dispose: receiverDependentDispose,
+};
+
+// @ts-expect-error catalog cleanup callbacks are this-free closures
+const receiverDependentCatalogCleanup: SqlCatalogSubscriptionCleanup =
+  receiverDependentDispose;
+void receiverDependentCatalogCleanup;
 
 const relationPath = [
   { quoted: false, role: "catalog", value: "memory" },
@@ -328,5 +345,6 @@ void openWithRegions;
 void openWithoutRegions;
 void providerRenderedSql;
 void receiverDependentProvider;
+void receiverDependentDisposable;
 void synchronousProvider;
 void undefinedContext;

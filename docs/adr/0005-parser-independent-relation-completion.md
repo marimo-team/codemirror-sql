@@ -481,17 +481,107 @@ The service reference-counts one provider subscription per provider
 configuration and scope, then fans invalidation out to subscribed sessions.
 The installed callback closure supplies authenticated provider and scope
 identity; the untrusted invalidation payload therefore contains only an epoch.
-Subscription membership is installed atomically before a provider can call
-back synchronously. A newly joining session captures an already-observed epoch
-without a synthetic revision bump. Disposal removes membership before
-unsubscribing or running external cleanup. Fifty sessions sharing a scope do
-not create fifty provider subscriptions.
+Membership uses a two-phase prepare/commit protocol: the session stores its
+prepared lease before commit can invoke provider code. Commit installs the
+membership atomically before a provider can call back synchronously. Because a
+subscription callback is always a change event, a valid callback fired during
+`subscribe` advances that committed member after subscription installation
+succeeds; it is not reclassified as an initial snapshot. A later joining
+session captures an already-observed epoch without a synthetic revision bump.
+Disposal removes membership before unsubscribing or running external cleanup.
+Retirement also clears the membership's target and coordinator link before
+that cleanup, so a consumer retaining a disposed lease retains only inert,
+bounded membership metadata. The coordinator stores only the copied provider
+ID and captured subscription function; it does not retain the unused search
+function. Coordinator disposal revokes that subscription reference before
+external cleanup, so a consumer retaining the disposed coordinator handle does
+not retain the provider graph.
+Fifty sessions sharing a scope do not create fifty provider subscriptions.
+The coordinator reserves membership state and capacity before reading the
+revision target callback. A throwing or invalid callback getter rolls that
+reservation back with `invalid-target` unavailable evidence. Reentrant
+coordinator disposal instead reports `disposed` and leaves no reserved
+membership or captured callback behind.
 
 Each installed subscription has a service-owned incarnation identity captured
 by its callback. The identity is revoked before external unsubscribe or
 cleanup, and every callback checks it before entering the serialized epoch
 gate. Cleanup from a retired incarnation is keyed to that identity and cannot
 remove, mutate, or notify a reentrantly installed replacement.
+
+The callback closes over a revocable cell rather than the service, scope state,
+or sessions. Retirement clears the cell before external cleanup, so a provider
+that retains an old callback retains only an inert bounded object. Synchronous
+callbacks are decoded into frozen epochs while `subscribe` is running; raw
+payloads and premature audience snapshots are not buffered. After the returned
+cleanup closure is validated, the buffered epochs are staged together in FIFO
+order. Each accepted baseline or advance snapshots active membership and
+installs the epoch as one serialized step with no external call between those
+operations. A member joined during one event's dispatch therefore
+participates in a later pending event, but not the event already committed.
+A thrown subscription or malformed returned cleanup value discards that buffer
+and disables automatic invalidation for the live scope; explicit search
+remains available.
+The returned cleanup closure is itself untrusted: the service captures only a
+function, calls it with `this === undefined` at most once, and isolates
+malformed values, thrown cleanup, and rejected or hostile thenable results.
+Detached cleanup settlement retains no coordinator state. A closure avoids a
+structural TypeScript contract that would accept class instances or inherited
+methods which the hostile runtime boundary could not safely validate. Dropping
+the last owner removes the complete scope incarnation before cleanup. A later
+join creates a new unobserved incarnation and may attempt a fresh subscription.
+
+Malformed, duplicate, stale, or token-conflicting invalidations do not mutate
+state and do not tear down an otherwise valid subscription. Every raw callback
+still consumes the callback reset-window allowance. Exceeding that allowance
+revokes the incarnation and disables automatic invalidation before decoding
+further payloads. The conservative window resets from a zero-delay timer
+scheduled by the first callback. It intentionally makes no claim about formal
+JavaScript task or turn boundaries, while still preventing a provider from
+evading the allowance with a microtask chain. If hostile payload inspection
+synchronously reenters the same callback, the nested callback consumes that
+allowance but is ignored fail-closed; the coordinator does not retain the raw
+payload or invert callback order.
+
+An epoch capture authenticates the exact provider configuration, scope
+incarnation, membership, observed epoch, and notification sequence. An
+equal-current response is publishable only if no accepted invalidation or
+higher response changed that sequence after capture. Otherwise it is
+superseded even when its epoch equals the newly current epoch. A capture is a
+single-use work token: submission claims it before queue admission, and replay
+is discarded even when the first submission was overloaded.
+
+Epoch commands use one bounded, non-recursive FIFO drain. Its hard admission
+limit counts all work accepted during that drain, including commands already
+processed, so a one-at-a-time reentrant chain cannot evade the bound. For every
+accepted change, active membership is snapshotted and the epoch is immediately
+installed before revision preparation or any external listener runs. All
+affected session revisions then change before dispatch. Reentrant commands run
+only after the current change has reached every still-active member, preserving
+event order. The core does not coalesce revision events. The CodeMirror adapter
+may coalesce the resulting UI refresh, as described below. Admission fails
+before epoch mutation:
+an overflowing provider callback revokes automatic invalidation for that
+incarnation, while an overflowing response observation settles with closed
+overload evidence.
+Invalid, retired, replayed, disposed, and overflowing response submissions
+return closed settlement evidence without invoking a callback. Only an admitted
+FIFO command invokes its completion callback, so rejection cannot recursively
+reenter the coordinator's drain.
+
+A revision target prepares its state change and returns a listener-dispatch
+closure. Returning `null`, returning a non-function, or throwing retires that
+membership. Retirement detaches state immediately, but hostile provider cleanup
+is deferred until every remaining target has prepared. A higher response epoch
+installed before preparation remains observed; if its submitting membership is
+retired during preparation, its response settles as retired while other
+successfully prepared members still dispatch. Coordinator disposal takes
+precedence over that retired evidence. The outermost cleanup barrier admits and
+invokes at most 1,024 captured cleanups. If reentrant work attempts to admit a
+1,025th cleanup, the coordinator quarantines itself immediately: all cells and
+memberships become inert and all not-yet-invoked cleanup references are
+cleared without calling more provider code. Cleanup is never continued from a
+timer.
 
 The session exposes a disposable revision-change subscription for
 service-originated changes:
@@ -671,6 +761,12 @@ The initial checked limits are:
 | Components per search path | 4 |
 | Total catalog context | 16,384 UTF-16 units |
 | Configured relation catalog providers | 1 |
+| Live catalog scopes per service | 128 |
+| Catalog memberships per service | 1,024 |
+| Catalog memberships per scope | 256 |
+| Raw subscription callbacks per reset window | 256 |
+| Catalog epoch admissions per drain | 1,024 |
+| Provider cleanups per outer barrier | 1,024 |
 | Catalog results per search | 100 |
 | Completion results after composition | 100 |
 | Provider ID | 256 UTF-16 units |
@@ -815,19 +911,22 @@ Mixed cached assets fail the exact version check and retire the generation.
 2. Attach embedded regions to session open/update transactions atomically.
 3. Add the bounded partial-`SELECT` query-site recognizer.
 4. Add the bounded CTE frame and visibility recognizer.
-5. Add the service-owned catalog coordinator, subscriptions, cache,
-   in-flight sharing, cancellation, and provider contract suite.
-6. Add the session completion method and deterministic composition.
-7. Add the separate CodeMirror adapter and packed/browser fixtures.
-8. Add the pinned packed/browser/runtime marimo fixture and 1/10/50-editor
+5. Add the service-owned scoped epoch/subscription coordinator and its hostile
+   lifecycle contract suite. It does not invoke provider search or retain
+   result pages.
+6. Add catalog search scheduling, cache, in-flight sharing, cancellation,
+   retry gates, and availability observers over the proven epoch coordinator.
+7. Add the session completion method and deterministic composition.
+8. Add the separate CodeMirror adapter and packed/browser fixtures.
+9. Add the pinned packed/browser/runtime marimo fixture and 1/10/50-editor
    performance and leak evidence.
-9. Validate both the in-memory/notebook and hierarchical remote provider
+10. Validate both the in-memory/notebook and hierarchical remote provider
    shapes, then stabilize the declarations and public export surface.
-10. Design scoped parser semantics and protocol v2 against PostgreSQL and
+11. Design scoped parser semantics and protocol v2 against PostgreSQL and
    BigQuery corpora before any additional parser-derived scope feature
    consumes it.
 
-Breaking refinement remains allowed through step 8. The provider and
+Breaking refinement remains allowed through step 9. The provider and
 completion types become stable only after the working vertical slice, reusable
 provider contract suite, two materially different provider shapes, marimo
 packed/browser integration, hostile decoding, cancellation, epoch and
