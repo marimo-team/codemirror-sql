@@ -3916,6 +3916,94 @@ describe("session coverage hardening", () => {
     }
   });
 
+  it("does not let a stale intent callback erase a newer timer", async () => {
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    const callbacks: Array<() => void> = [];
+    const handles: object[] = [];
+    const cleared: number[] = [];
+    Object.defineProperty(globalThis, "setTimeout", {
+      configurable: true,
+      value: (
+        callback: TimerHandler,
+        delay?: number,
+        ...arguments_: unknown[]
+      ) => {
+        if (delay !== 1_000) {
+          return nativeSetTimeout(callback, delay, ...arguments_);
+        }
+        if (typeof callback !== "function") {
+          throw new Error("Intent timer callback must be a function");
+        }
+        callbacks.push(() => {
+          Reflect.apply(callback, undefined, arguments_);
+        });
+        const handle = Object.freeze({ id: handles.length });
+        handles.push(handle);
+        return handle;
+      },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "clearTimeout", {
+      configurable: true,
+      value: (handle: unknown) => {
+        const index = handles.findIndex(
+          (candidate) => candidate === handle,
+        );
+        if (index >= 0) {
+          cleared.push(index);
+        } else {
+          Reflect.apply(nativeClearTimeout, globalThis, [handle]);
+        }
+      },
+      writable: true,
+    });
+    try {
+      const service = catalogService({
+        id: "stale-intent-timer",
+        search: async () => ({
+          epoch: { generation: 0, token: "loading" },
+          status: "loading",
+        }),
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:stale-intent-timer" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      });
+      await session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      });
+      expect(callbacks).toHaveLength(2);
+      expect(cleared).toContain(0);
+
+      callbacks[0]?.();
+      session.dispose();
+
+      expect(cleared).toContain(1);
+      service.dispose();
+    } finally {
+      Object.defineProperty(globalThis, "setTimeout", {
+        configurable: true,
+        value: nativeSetTimeout,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "clearTimeout", {
+        configurable: true,
+        value: nativeClearTimeout,
+        writable: true,
+      });
+    }
+  });
+
   it("consumes settlement racing the soft response timer", async () => {
     let resolveSearch:
       | ((

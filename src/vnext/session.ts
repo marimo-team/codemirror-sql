@@ -101,6 +101,11 @@ interface SessionChangeSubscription {
   readonly listener: (event: SqlSessionChangeEvent) => void;
 }
 
+interface SessionTimerCell {
+  active: boolean;
+  handle: ReturnType<typeof setTimeout> | undefined;
+}
+
 interface CompletionConfiguration {
   readonly catalogResponseBudgetMs: number;
 }
@@ -757,10 +762,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #refreshIntent: CompletionRequestState | null = null;
   #snapshot: SessionSnapshot<Context>;
   #statementIndexCache: StatementIndexCache | null = null;
-  #terminalIntentTimer:
-    | ReturnType<typeof setTimeout>
-    | undefined;
-  #terminalIntentTimerScheduled = false;
+  #terminalIntentTimer: SessionTimerCell | null = null;
   #updating = false;
 
   constructor(
@@ -834,11 +836,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   }
 
   #clearTerminalIntent(): void {
-    if (!this.#terminalIntentTimerScheduled) return;
-    this.#terminalIntentTimerScheduled = false;
-    const timer = this.#terminalIntentTimer;
-    this.#terminalIntentTimer = undefined;
-    clearTimeout(timer);
+    const cell = this.#terminalIntentTimer;
+    if (!cell) return;
+    this.#terminalIntentTimer = null;
+    cell.active = false;
+    clearTimeout(cell.handle);
   }
 
   #dispatchChange(
@@ -1333,15 +1335,24 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               if (outcome.response.status === "loading") {
                 remainingIntentLeaseMs =
                   TERMINAL_LOADING_INTENT_LEASE_MS;
-                this.#terminalIntentTimerScheduled = true;
-                const timer = setTimeout(() => {
-                  this.#terminalIntentTimerScheduled = false;
-                  this.#terminalIntentTimer = undefined;
+                const cell: SessionTimerCell = {
+                  active: true,
+                  handle: undefined,
+                };
+                this.#terminalIntentTimer = cell;
+                const handle = setTimeout(() => {
+                  if (!cell.active) return;
+                  cell.active = false;
+                  if (this.#terminalIntentTimer === cell) {
+                    this.#terminalIntentTimer = null;
+                  }
                 }, remainingIntentLeaseMs);
-                if (this.#terminalIntentTimerScheduled) {
-                  this.#terminalIntentTimer = timer;
-                } else {
-                  clearTimeout(timer);
+                cell.handle = handle;
+                if (
+                  !cell.active ||
+                  this.#terminalIntentTimer !== cell
+                ) {
+                  clearTimeout(handle);
                 }
               }
             }
