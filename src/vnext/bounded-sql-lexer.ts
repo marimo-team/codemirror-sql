@@ -46,6 +46,7 @@ export class BoundedSqlLexer {
   #pushed: BoundedSqlLexeme | null = null;
   #regionIndex: number;
   resource: BoundedSqlLexerResource | null = null;
+  resourceAt: number | null = null;
 
   constructor(
     source: SqlSourceSnapshot,
@@ -143,6 +144,7 @@ export class BoundedSqlLexer {
           this.#cursor = result.to;
           if (result.delimiterTooLong) {
             this.resource = "dollar-quote-delimiter";
+            this.resourceAt = from;
             return null;
           }
           return this.#record({
@@ -262,6 +264,7 @@ export class BoundedSqlLexer {
     this.#lexemeCount += 1;
     if (this.#lexemeCount > MAX_BOUNDED_SQL_LEXEMES) {
       this.resource = "lexical-token";
+      this.resourceAt = lexeme.from;
       return null;
     }
     return lexeme;

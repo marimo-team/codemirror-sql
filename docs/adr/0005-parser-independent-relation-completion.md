@@ -171,8 +171,49 @@ WITH [RECURSIVE]
 main query
 ```
 
-It records only proven declaration names, body boundaries, declaration order,
-and visibility. It is not a miniature general SQL AST.
+The accepted grammar is dialect-owned and closed:
+
+| Dialect | Declarations per frame | `RECURSIVE` | Declared columns | Materialization modifier |
+| --- | ---: | --- | --- | --- |
+| PostgreSQL | up to the global bound | accepted | accepted | `MATERIALIZED` and `NOT MATERIALIZED` |
+| DuckDB | up to the global bound | accepted | accepted | `MATERIALIZED` and `NOT MATERIALIZED` |
+| BigQuery | up to the global bound | accepted | rejected | rejected |
+| Dremio | one | rejected | accepted | rejected |
+
+This matrix describes only syntax the bounded recognizer can prove. Rejection
+does not claim that a database engine rejects every extension or future
+version; it makes the current completion result explicitly incomplete or
+unavailable instead of borrowing another dialect's grammar.
+
+The recognizer records only:
+
+- flat query-block frames and their parent frame;
+- proven declaration names, exact source spelling and name ranges;
+- body ranges and declaration order;
+- authenticated main-query `SELECT` entrypoints; and
+- bounded candidate-name and uncertainty evidence for incomplete headers.
+
+It stores no AST, SQL substring, token tape, inferred output columns, or
+recursive dependency graph. A declaration is committed only after its `AS`
+body has a proven matching close parenthesis. Seeing `WITH name`, `name AS`, or
+an opening body alone never invents a visible relation. Once a body opening is
+proven, a separate bounded draft record retains its name, ordinal, body range,
+and comparison evidence. Drafts can establish the current body phase and
+fail-closed shadow uncertainty, but never become completion candidates.
+
+Candidate-name evidence, visible-candidate evidence, and shadow evidence are
+distinct. Before a body opens, an active incomplete header has no supported
+relation site; direct private projection still reports recovered unknown
+coverage rather than exact absence. Once a body opens, its draft name is not
+returned as a completion candidate, but it prevents the service from claiming
+exact scope or exact non-shadowing where recursive or uncertain equality could
+make it visible. Such a result is marked incomplete with
+`cte-scope-uncertainty`. A proven declaration shadows an equivalent outer CTE
+or unqualified catalog insertion only over its proven visibility range. A
+duplicate equivalence class produces no arbitrary first- or last-wins
+candidate and blocks an equivalent outer or catalog name wherever that class
+would be visible. Uncertainty in one nested frame does not erase independently
+proven candidates outside that frame.
 
 For non-recursive CTEs:
 
@@ -184,12 +225,68 @@ For non-recursive CTEs:
 - a nested declaration shadows an outer name only inside its query block; and
 - nested declarations never leak outward.
 
-Identifier equality follows the dialect. Duplicate names and structurally
-ambiguous headers make the affected frame partial. `WITH RECURSIVE` may expose
-proven names in the main query, but self and mutual-recursive body visibility
-remain explicitly incomplete until implemented.
+Identifier comparison follows the dialect and is tri-state: `equal`,
+`distinct`, or `unknown`. PostgreSQL non-ASCII folding can depend on server
+encoding and locale, while BigQuery and Dremio document case-insensitivity
+without giving this package an authoritative general Unicode folding
+algorithm. `unknown` therefore degrades namespace coverage and never means
+`distinct`. The private layout builder consumes the same pairwise
+`compareCteIdentifiers` operation exposed by the relation-completion dialect
+runtime; it does not define a second nullable comparison key. Within the
+256-name bound it snapshots symmetric pairwise results into frozen
+equivalence classes and scoped uncertainty evidence. Throws, invalid values,
+asymmetry, non-reflexivity, or inconsistent equivalence results fail closed.
+Duplicate detection uses those classes rather than generic case folding.
+
+A declaration retains both its decoded value and exact source token. The
+decoded value is the completion label; the exact token is the insertion text,
+so required quoting, case, and escapes are never reconstructed by the catalog
+renderer. CTEs are considered only for unqualified relation sites. Prefix
+eligibility is also a dialect-owned tri-state operation distinct from equality;
+generic locale-sensitive or Unicode case folding is never used.
+
+`WITH RECURSIVE` may expose proven names in the main query. The initial
+recognizer also retains independently proven earlier-sibling and outer
+visibility inside a recursive body, but self and forward or mutual-recursive
+body candidates remain incomplete and add `recursive-cte-uncertainty`. Every
+known frame-local recursive name still contributes shadow evidence inside a
+recursive body, so withholding a self candidate cannot incorrectly reveal an
+equivalent outer or catalog relation. The recognizer does not infer a recursive
+dependency graph or output columns. DuckDB `USING KEY`, PostgreSQL
+`SEARCH`/`CYCLE`, and any Dremio recursive extension remain unsupported.
+
+The index is cursor-independent and cached with the immutable source,
+statement, embedded-region, and dialect-runtime identities. Visibility is a
+pure projection over its flat frozen ranges. Building the index and recognizing
+the relation query site may initially make two independent linear streaming
+passes over the shared lexer; traversal fusion is allowed only after benchmark
+evidence. Neither cursor movement nor catalog invalidation rebuilds the index.
+
+Stored source ranges remain half-open. Visibility projection accepts cursor
+positions, so a cursor exactly before a proven closing delimiter remains in
+the body or nested frame, and a top-level cursor at statement EOF remains in
+the main query. A cursor after the delimiter is outside. At the first
+untrusted boundary the enclosing draft phase may still contribute proven
+positive evidence, but quality and shadow coverage are recovered rather than
+exact.
+
+An opaque region in a CTE header or body, an unterminated quoted token, an
+unsupported dialect modifier, a duplicate declaration, or a structurally
+plausible but unfinished declaration makes the affected frame partial. The
+first opaque region terminates exact structural coverage: visible punctuation
+after an untyped barrier never closes a body or frame that started before it.
+A resource limit records the same first-untrusted boundary. Partial artifacts
+may still contribute declarations, entrypoints, and visibility ranges proven
+entirely before that boundary, but they never produce exact absence or shadow
+claims across it.
 
 An empty positive-only local-relation list never proves that no CTE is visible.
+
+The first bounded grammar intentionally authenticates only `SELECT` query
+leaders. PostgreSQL `VALUES` and data-modifying CTE bodies, DuckDB `FROM`-first
+queries, and additionally parenthesized BigQuery recursive terms currently
+fail closed. Their query-leader sets will become dialect-owned in a follow-up
+before relation completion is declared feature-complete.
 
 ### Embedded regions
 
@@ -525,6 +622,7 @@ The initial checked limits are:
 | Active statement scanned | 65,536 UTF-16 units |
 | Lexical tokens | 16,384 |
 | Parenthesis/query depth | 128 |
+| CTE frames | 256 |
 | CTE declarations | 256 |
 | Identifier path segments | 32 global ceiling; dialect runtime sets the checked limit |
 | Identifier segment | 256 UTF-16 units |

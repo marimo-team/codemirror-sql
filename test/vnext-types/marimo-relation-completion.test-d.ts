@@ -146,8 +146,12 @@ const relation: SqlCatalogRelation = {
 void relation;
 
 const dialectRuntime: SqlRelationCompletionDialectRuntime = {
-  cteIdentifiersEqual: (left, right) =>
-    left.quoted === right.quoted && left.value === right.value,
+  compareCteIdentifiers: (left, right) =>
+    left.quoted === right.quoted && left.value === right.value
+      ? "equal"
+      : "distinct",
+  cteIdentifierMatchesPrefix: (candidate, prefix) =>
+    candidate.value.startsWith(prefix.value) ? "match" : "no-match",
   decodeIdentifier: (token) => ({
     component: { quoted: false, value: token },
     quality: "exact",
