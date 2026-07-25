@@ -744,6 +744,22 @@ refresh notification and leaves the already-returned incomplete result valid.
 No optional catalog promise can keep `complete()` pending indefinitely or
 block the local baseline past its product response budget.
 
+The first implementation increment of this section is intentionally
+package-private. It combines an authenticated provider with the epoch
+coordinator and owns the fixed 8-active/64-queued scheduler, exact-key
+in-flight sharing, one latest-wins consumer per owner, independent
+cancellation, absolute queue and execution deadlines, response decoding, and
+epoch publication. An owner captures its scope and dialect when prepared, so
+individual requests cannot substitute provider, scope, dialect, or epoch
+authority.
+
+Cache entries, loading/retry policy, refresh observers and their leases, the
+40 ms completion-response budget, pagination composition, ranking, session
+composition, and CodeMirror integration do not belong to that increment. They
+remain explicit follow-up increments; the coordinator must not expose a
+premature public surface that makes those deferred semantics difficult to add
+or test.
+
 The exact structural cache and shared-work key contains:
 
 - service-owned provider configuration identity and unique provider ID;
