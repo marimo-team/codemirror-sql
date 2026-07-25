@@ -116,9 +116,18 @@ describe("bounded SQL lexer", () => {
     });
     expect(lexer.next()).toBeNull();
     expect(lexer.resource).toBeNull();
+    expect(lexer.resourceAt).toBeNull();
   });
 
   it("fails closed immediately after the shared lexeme budget", () => {
+    const acceptedWords = Array.from(
+      { length: MAX_BOUNDED_SQL_LEXEMES },
+      () => "x",
+    ).join(" ");
+    const accepted = lex(createIdentitySqlSource(acceptedWords));
+    expect(accepted.lexemes).toHaveLength(MAX_BOUNDED_SQL_LEXEMES);
+    expect(accepted.resource).toBeNull();
+
     const words = Array.from(
       { length: MAX_BOUNDED_SQL_LEXEMES + 1 },
       () => "x",
@@ -126,6 +135,34 @@ describe("bounded SQL lexer", () => {
     const result = lex(createIdentitySqlSource(words));
     expect(result.lexemes).toHaveLength(MAX_BOUNDED_SQL_LEXEMES);
     expect(result.resource).toBe("lexical-token");
+    const source = createIdentitySqlSource(words);
+    const lexer = new BoundedSqlLexer(
+      source,
+      0,
+      source.analysisText.length,
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    while (lexer.next()) {
+      // Consume the bounded prefix.
+    }
+    expect(lexer.resourceAt).toBe(
+      words.lastIndexOf("x"),
+    );
+
+    const prefixed = `  ${words}`;
+    const prefixedSource = createIdentitySqlSource(prefixed);
+    const prefixedLexer = new BoundedSqlLexer(
+      prefixedSource,
+      2,
+      prefixed.length,
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    while (prefixedLexer.next()) {
+      // Consume the bounded prefix.
+    }
+    expect(prefixedLexer.resourceAt).toBe(
+      prefixed.lastIndexOf("x"),
+    );
   });
 
   it("reports oversized dollar-quote delimiters without emitting a token", () => {
@@ -136,5 +173,13 @@ describe("bounded SQL lexer", () => {
       lexemes: [],
       resource: "dollar-quote-delimiter",
     });
+    const lexer = new BoundedSqlLexer(
+      source,
+      0,
+      source.analysisText.length,
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    expect(lexer.next()).toBeNull();
+    expect(lexer.resourceAt).toBe(0);
   });
 });

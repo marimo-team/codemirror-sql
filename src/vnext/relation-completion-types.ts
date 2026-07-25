@@ -150,6 +150,16 @@ export type SqlRenderedRelationPath =
       readonly reason: "illegal-role-sequence";
     };
 
+export type SqlCteIdentifierComparison =
+  | "distinct"
+  | "equal"
+  | "unknown";
+
+export type SqlCteIdentifierPrefixMatch =
+  | "match"
+  | "no-match"
+  | "unknown";
+
 export interface SqlRelationCompletionDialectRuntime {
   readonly decodeIdentifier: (
     token: string,
@@ -158,10 +168,14 @@ export interface SqlRelationCompletionDialectRuntime {
   readonly renderRelationPath: (
     path: SqlCanonicalRelationPath,
   ) => SqlRenderedRelationPath;
-  readonly cteIdentifiersEqual: (
+  readonly compareCteIdentifiers: (
     left: SqlIdentifierComponent,
     right: SqlIdentifierComponent,
-  ) => boolean;
+  ) => SqlCteIdentifierComparison;
+  readonly cteIdentifierMatchesPrefix: (
+    candidate: SqlIdentifierComponent,
+    prefix: SqlIdentifierComponent,
+  ) => SqlCteIdentifierPrefixMatch;
 }
 
 export type SqlSessionChangeReason =
@@ -230,6 +244,7 @@ export type SqlCompletionIssue =
         | "catalog-overloaded"
         | "catalog-queue-timeout"
         | "catalog-timeout"
+        | "cte-scope-uncertainty"
         | "query-site-recovery"
         | "opaque-template-context"
         | "recursive-cte-uncertainty"
