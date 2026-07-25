@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   captureSqlRelationCatalogProvider,
   type CapturedSqlRelationCatalogProvider,
@@ -231,7 +231,6 @@ function owner(
 ): SqlCatalogSearchWorkOwner {
   const prepared = service.prepareOwner(
     scope,
-    "postgresql",
     dialect,
     {
       prepareCatalogChange: () => () => {},
@@ -348,7 +347,6 @@ describe("catalog search coordinator construction", () => {
     const service = coordinator(provider.captured);
     const result = service.prepareOwner(
       "scope",
-      "postgresql",
       { ...POSTGRESQL_SQL_RELATION_DIALECT },
       { prepareCatalogChange: () => () => {} },
     );
@@ -363,7 +361,6 @@ describe("catalog search coordinator construction", () => {
     const service = coordinator(provider.captured);
     const prepared = service.prepareOwner(
       "scope",
-      "postgresql",
       POSTGRESQL_SQL_RELATION_DIALECT,
       { prepareCatalogChange: () => () => {} },
     );
@@ -438,6 +435,9 @@ describe("catalog search structural sharing and admission", () => {
       DUCKDB_SQL_RELATION_DIALECT,
     ).request(input());
     expect(provider.calls).toHaveLength(2 + distinct.length);
+    expect(provider.calls.at(-1)?.request.dialectId).toBe(
+      "duckdb",
+    );
 
     provider.calls[0]?.settlement.resolve(readyResponse());
     await expect(firstTicket.result).resolves.toMatchObject({
@@ -549,6 +549,26 @@ describe("catalog search structural sharing and admission", () => {
 });
 
 describe("catalog search ownership and active-slot lifecycle", () => {
+  it("keeps cancellation idempotent before and after settlement", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const cancelled = owner(service).request(input("cancelled"));
+    cancelled.cancel();
+    cancelled.cancel();
+    await expect(cancelled.result).resolves.toEqual({
+      status: "cancelled",
+    });
+
+    const completed = owner(service).request(input("completed"));
+    provider.calls.at(-1)?.settlement.resolve(readyResponse());
+    await expect(completed.result).resolves.toMatchObject({
+      status: "usable",
+    });
+    completed.cancel();
+    completed.cancel();
+    service.dispose();
+  });
+
   it("transfers same-key latest-wins ownership before detaching the old consumer", async () => {
     const provider = providerHarness();
     const service = coordinator(provider.captured);
@@ -696,10 +716,6 @@ describe("catalog search absolute deadlines", () => {
   it("does not retain or invoke work when a deadline expires while it is armed", async () => {
     const cases = [
       {
-        expectedReason: "queue-timeout",
-        nowValues: [0, 0, 10],
-      },
-      {
         expectedReason: "execution-timeout",
         nowValues: [0, 0, 0, 0, 20],
       },
@@ -751,7 +767,7 @@ describe("catalog search absolute deadlines", () => {
         reason: testCase.expectedReason,
         status: "unavailable",
       });
-      expect(providerCalls).toBe(0);
+      expect(providerCalls).toBe(1);
       expect(activeHandles.size).toBe(0);
       service.dispose();
     }
@@ -955,7 +971,7 @@ describe("catalog search absolute deadlines", () => {
       providerCalls,
       synchronousFirings,
     }).toEqual({
-      delays: [10, 20, 20],
+      delays: [20, 20],
       providerCalls: 1,
       synchronousFirings: 1,
     });
@@ -1184,6 +1200,63 @@ describe("catalog search epoch authority and isolation", () => {
     });
   });
 
+  it("rekeys same-scope unobserved work after a baseline without crossing scope boundaries", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const baseline = owner(service, "scope-a").request(
+      input("baseline"),
+    );
+    const pendingInScope = owner(service, "scope-a").request(
+      input("pending"),
+    );
+    const pendingInOtherScope = owner(service, "scope-b").request(
+      input("pending"),
+    );
+
+    expect(provider.calls).toHaveLength(3);
+    expect(
+      provider.calls.map((call) => call.request.expectedEpoch),
+    ).toEqual([null, null, null]);
+
+    provider.calls[0]?.settlement.resolve(readyResponse(7));
+    await expect(baseline.result).resolves.toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+
+    const joinedInScope = owner(service, "scope-a").request(
+      input("pending"),
+    );
+    const joinedInOtherScope = owner(service, "scope-b").request(
+      input("pending"),
+    );
+    expect(provider.calls).toHaveLength(3);
+
+    provider.calls[1]?.settlement.resolve(readyResponse(7));
+    const [originalScopeResult, joinedScopeResult] =
+      await Promise.all([
+        pendingInScope.result,
+        joinedInScope.result,
+      ]);
+    expect(originalScopeResult).toMatchObject({
+      observation: "equal",
+      status: "usable",
+    });
+    expect(joinedScopeResult).toBe(originalScopeResult);
+
+    provider.calls[2]?.settlement.resolve(readyResponse(11));
+    const [originalOtherResult, joinedOtherResult] =
+      await Promise.all([
+        pendingInOtherScope.result,
+        joinedInOtherScope.result,
+      ]);
+    expect(originalOtherResult).toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+    expect(joinedOtherResult).toBe(originalOtherResult);
+  });
+
   it("retires same-scope work before abort and revision dispatch while isolating another scope", async () => {
     const listeners = new Map<
       string,
@@ -1218,7 +1291,6 @@ describe("catalog search epoch authority and isolation", () => {
     const prepareOwner = (scope: string) => {
       const prepared = service.prepareOwner(
         scope,
-        "postgresql",
         POSTGRESQL_SQL_RELATION_DIALECT,
         {
           prepareCatalogChange: () => {
@@ -1361,7 +1433,6 @@ describe("catalog search disposal and late settlement", () => {
       events.push("abort");
       reentrantStatus = service.prepareOwner(
         "reentrant",
-        "postgresql",
         POSTGRESQL_SQL_RELATION_DIALECT,
         {
           prepareCatalogChange: () => () => {},
@@ -1399,5 +1470,1527 @@ describe("catalog search disposal and late settlement", () => {
     }
     await flushMicrotasks();
     expect(events).toContain("abort");
+  });
+
+  it("propagates epoch cleanup quarantine across scopes into search disposal", async () => {
+    for (const cleanupFailure of [
+      "non-undefined",
+      "throw",
+    ] as const) {
+      const calls: ProviderCall[] = [];
+      const captured = accepted(
+        captureSqlRelationCatalogProvider({
+          id: `catalog-${cleanupFailure}`,
+          search(
+            request: SqlCatalogSearchRequest,
+            signal: AbortSignal,
+          ) {
+            const settlement = deferred<unknown>();
+            calls.push({ request, settlement, signal });
+            return settlement.promise;
+          },
+          subscribe(scope: string) {
+            if (scope !== "scope-a") {
+              return () => undefined;
+            }
+            if (cleanupFailure === "throw") {
+              return () => {
+                throw new Error("cleanup failed");
+              };
+            }
+            return () => 1;
+          },
+        }),
+      );
+      const service = coordinator(captured);
+      const scopeA = owner(service, "scope-a");
+      const scopeB = owner(service, "scope-b");
+      const active = scopeB.request(input("scope-b-active"));
+      expect(calls).toHaveLength(1);
+
+      scopeA.dispose();
+      await expect(active.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      expect(calls[0]?.signal.aborted).toBe(true);
+      await expect(
+        scopeB.request(input("after-quarantine")).result,
+      ).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      expect(calls).toHaveLength(1);
+      calls[0]?.settlement.reject(
+        new Error("late quarantined rejection"),
+      );
+      await flushMicrotasks();
+    }
+  });
+});
+
+describe("catalog search defensive lifecycle coverage", () => {
+  it("returns disposed when the request clock disposes its coordinator", async () => {
+    let disposeOnNow = false;
+    let service: SqlCatalogSearchWorkCoordinator | undefined;
+    const provider = providerHarness();
+    service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          if (disposeOnNow) service?.dispose();
+          return 0;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    const session = owner(service);
+    disposeOnNow = true;
+
+    await expect(session.request(input()).result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("contains disposal while installing a queued deadline", async () => {
+    let service: SqlCatalogSearchWorkCoordinator | undefined;
+    const provider = providerHarness();
+    service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now: () => 0,
+        setTimeout(_callback, delayMs) {
+          if (delayMs === 100) service?.dispose();
+          return 1;
+        },
+      },
+      executionDeadlineMs: 20,
+      queueDeadlineMs: 100,
+    });
+    const tickets = Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK + 1 },
+      (_, index) =>
+        owner(service).request(input(`work-${index}`)),
+    );
+
+    await Promise.all(
+      tickets.map((ticket) =>
+        expect(ticket.result).resolves.toEqual({
+          reason: "disposed",
+          status: "unavailable",
+        }),
+      ),
+    );
+    expect(provider.calls).toHaveLength(
+      MAX_CATALOG_ACTIVE_SEARCH_WORK,
+    );
+  });
+
+  it("rejects throwing, non-finite, negative, and malformed scheduler configuration", () => {
+    const provider = providerHarness();
+    const validMethods = {
+      clearTimeout() {},
+      now: () => 0,
+      setTimeout() {
+        return 1;
+      },
+    };
+    const candidates: unknown[] = [
+      {
+        get queueDeadlineMs() {
+          throw new Error("hostile options");
+        },
+      },
+      {
+        deadlineScheduler: {
+          ...validMethods,
+          now() {
+            throw new Error("hostile clock");
+          },
+        },
+      },
+      {
+        deadlineScheduler: {
+          ...validMethods,
+          now: () => Number.NaN,
+        },
+      },
+      {
+        deadlineScheduler: {
+          ...validMethods,
+          now: () => -1,
+        },
+      },
+      {
+        deadlineScheduler: {
+          ...validMethods,
+          now: () => "now",
+        },
+      },
+      {
+        synchronousBudgetMs: 0,
+      },
+      {
+        synchronousBudgetMs: 51,
+      },
+      {
+        deadlineScheduler: {
+          clearTimeout: 1,
+          now: () => 0,
+          setTimeout() {
+            return 1;
+          },
+        },
+      },
+      {
+        deadlineScheduler: {
+          clearTimeout() {},
+          now: () => 0,
+          setTimeout: 1,
+        },
+      },
+    ];
+
+    for (const candidate of candidates) {
+      expect(
+        Reflect.apply(
+          createSqlCatalogSearchWorkCoordinator,
+          undefined,
+          [provider.captured, candidate],
+        ),
+      ).toEqual({
+        reason: "invalid-options",
+        status: "unavailable",
+      });
+    }
+  });
+
+  it("fails closed when a live monotonic clock throws, becomes non-finite, or moves backward", async () => {
+    const provider = providerHarness();
+    const laterValues: Array<() => number> = [
+      () => {
+        throw new Error("clock failed");
+      },
+      () => Number.NaN,
+      () => -1,
+    ];
+
+    for (const later of laterValues) {
+      let reads = 0;
+      const service = coordinator(provider.captured, {
+        deadlineScheduler: {
+          clearTimeout() {},
+          now() {
+            reads += 1;
+            return reads === 1 ? 0 : later();
+          },
+          setTimeout() {
+            return 1;
+          },
+        },
+      });
+      await expect(
+        owner(service).request(input(`clock-${reads}`)).result,
+      ).resolves.toEqual({
+        reason: "execution-timeout",
+        status: "unavailable",
+      });
+      service.dispose();
+    }
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("contains throwing timer installation and cleanup", async () => {
+    const provider = providerHarness();
+    const installationFailure = coordinator(
+      provider.captured,
+      {
+        deadlineScheduler: {
+          clearTimeout() {},
+          now: () => 0,
+          setTimeout() {
+            throw new Error("timer install failed");
+          },
+        },
+      },
+    );
+    await expect(
+      owner(installationFailure).request(
+        input("install-failure"),
+      ).result,
+    ).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+
+    const cleanupProvider = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "cleanup",
+        search() {
+          return readyResponse();
+        },
+      }),
+    );
+    const cleanupFailure = coordinator(cleanupProvider, {
+      deadlineScheduler: {
+        clearTimeout() {
+          throw new Error("timer cleanup failed");
+        },
+        now: () => 0,
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    await expect(
+      owner(cleanupFailure).request(input("cleanup-failure"))
+        .result,
+    ).resolves.toMatchObject({ status: "usable" });
+    expect(() => cleanupFailure.dispose()).not.toThrow();
+  });
+
+  it("bounds a scheduler that fires every deadline synchronously without advancing time", async () => {
+    let timerCalls = 0;
+    let providerCalls = 0;
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          providerCalls += 1;
+          return readyResponse();
+        },
+      }),
+    );
+    const service = coordinator(captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now: () => 0,
+        setTimeout(callback) {
+          timerCalls += 1;
+          callback();
+          return timerCalls;
+        },
+      },
+    });
+    const ticket = owner(service).request(input());
+
+    await expect(ticket.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(timerCalls).toBe(257);
+    expect(providerCalls).toBe(0);
+  });
+
+  it("rearms an early asynchronous deadline and ignores its obsolete generation", async () => {
+    const callbacks: Array<() => void> = [];
+    const scheduler: SqlCatalogSearchDeadlineScheduler = {
+      clearTimeout() {},
+      now: () => 0,
+      setTimeout(callback) {
+        callbacks.push(callback);
+        if (callbacks.length === 1) callback();
+        return callbacks.length;
+      },
+    };
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+    });
+    const ticket = owner(service).request(input());
+
+    expect(callbacks.length).toBeGreaterThanOrEqual(2);
+    expect(() => callbacks[0]?.()).not.toThrow();
+    expect(() => callbacks[1]?.()).not.toThrow();
+    ticket.cancel();
+    await expect(ticket.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    provider.calls[0]?.settlement.reject(
+      new Error("late rejection"),
+    );
+    await flushMicrotasks();
+  });
+
+  it("expires safely when execution scheduling fires synchronously before provider invocation", async () => {
+    let providerCalls = 0;
+    let timerCalls = 0;
+    let nowValue = 0;
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          providerCalls += 1;
+          return readyResponse();
+        },
+      }),
+    );
+    const service = coordinator(captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now: () => nowValue,
+        setTimeout(callback, delayMs) {
+          timerCalls += 1;
+          if (delayMs === 250) {
+            nowValue = 250;
+            callback();
+          }
+          return timerCalls;
+        },
+      },
+    });
+    const ticket = owner(service).request(input());
+
+    await expect(ticket.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(providerCalls).toBe(0);
+    expect(timerCalls).toBe(1);
+  });
+
+  it("stays inert when clearing the execution timer reentrantly disposes the coordinator", async () => {
+    let service: SqlCatalogSearchWorkCoordinator | undefined;
+    let providerCalls = 0;
+    let clearCalls = 0;
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          providerCalls += 1;
+          return readyResponse();
+        },
+      }),
+    );
+    service = coordinator(captured, {
+      deadlineScheduler: {
+        clearTimeout() {
+          clearCalls += 1;
+          if (clearCalls === 1) service?.dispose();
+        },
+        now: () => 0,
+        setTimeout() {
+          return clearCalls + 1;
+        },
+      },
+    });
+    const ticket = owner(service).request(input());
+
+    await expect(ticket.result).resolves.toMatchObject({
+      status: "usable",
+    });
+    expect(providerCalls).toBe(1);
+    expect(clearCalls).toBeGreaterThan(0);
+  });
+
+  it("validates scope and dialect runtime without leaking malformed UTF-16 into memberships", () => {
+    const service = coordinator(providerHarness().captured);
+    const invalidTexts: unknown[] = [
+      null,
+      "",
+      "a".repeat(513),
+      "nul\u0000value",
+      "\ud800",
+      "\ud800x",
+      "\udc00",
+    ];
+    const target = { prepareCatalogChange: () => () => {} };
+
+    for (const scope of invalidTexts) {
+      expect(
+        Reflect.apply(service.prepareOwner, undefined, [
+          scope,
+          POSTGRESQL_SQL_RELATION_DIALECT,
+          target,
+        ]),
+      ).toEqual({
+        reason: "invalid-scope",
+        status: "unavailable",
+      });
+    }
+    for (const dialect of invalidTexts) {
+      expect(
+        Reflect.apply(service.prepareOwner, undefined, [
+          "scope",
+          dialect,
+          target,
+        ]),
+      ).toEqual({
+        reason: "invalid-dialect",
+        status: "unavailable",
+      });
+    }
+    const validAstral = service.prepareOwner(
+      "scope-\ud83d\ude80",
+      POSTGRESQL_SQL_RELATION_DIALECT,
+      target,
+    );
+    expect(validAstral.status).toBe("prepared");
+    if (validAstral.status === "prepared") {
+      validAstral.owner.dispose();
+      validAstral.owner.dispose();
+    }
+    service.dispose();
+    service.dispose();
+  });
+
+  it("maps hostile and capacity-rejected revision targets to closed owner failures", () => {
+    const service = coordinator(providerHarness().captured);
+    const throwingTarget = Object.defineProperty(
+      {},
+      "prepareCatalogChange",
+      {
+        get() {
+          throw new Error("hostile target");
+        },
+      },
+    );
+    expect(
+      Reflect.apply(service.prepareOwner, undefined, [
+        "scope",
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        throwingTarget,
+      ]),
+    ).toEqual({
+      reason: "invalid-target",
+      status: "unavailable",
+    });
+
+    const owners = Array.from({ length: 1_024 }, (_, index) =>
+      service.prepareOwner(
+        `bounded-scope-${index}`,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        { prepareCatalogChange: () => () => {} },
+      ),
+    );
+    expect(owners.every((result) => result.status === "prepared"))
+      .toBe(true);
+    expect(
+      service.prepareOwner(
+        "bounded-scope-overflow",
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        { prepareCatalogChange: () => () => {} },
+      ),
+    ).toEqual({
+      reason: "membership-capacity",
+      status: "unavailable",
+    });
+    service.dispose();
+  });
+
+  it("maps a throwing request getter to invalid-request after superseding current work", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const previous = session.request(input("previous"));
+    const hostile = Object.defineProperty(
+      {},
+      "continuationToken",
+      {
+        enumerable: true,
+        get() {
+          throw new Error("hostile request");
+        },
+      },
+    );
+
+    const rejected = Reflect.apply(
+      session.request,
+      undefined,
+      [hostile],
+    );
+    await expect(rejected.result).resolves.toEqual({
+      reason: "invalid-request",
+      status: "unavailable",
+    });
+    await expect(previous.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
+  });
+
+  it("lets a request getter reenter with a newer request without the older frame overwriting it", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    let nested: SqlCatalogSearchWorkTicket | undefined;
+    const outerInput = {
+      get continuationToken() {
+        nested ??= session.request(input("nested"));
+        return null;
+      },
+      limit: 20,
+      prefix: component("outer"),
+      qualifier: [component("public")],
+      searchPaths: [[component("public")]],
+    };
+
+    const outer = session.request(outerInput);
+    await expect(outer.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.request.prefix.value).toBe("nested");
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(nested?.result).resolves.toMatchObject({
+      status: "usable",
+    });
+  });
+
+  it("fails closed when request decoding reentrantly disposes the coordinator", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const hostile = Object.defineProperty(
+      input("disposing-request"),
+      "continuationToken",
+      {
+        enumerable: true,
+        get() {
+          service.dispose();
+          return null;
+        },
+      },
+    );
+
+    await expect(
+      session.request(hostile).result,
+    ).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("revalidates active response work after the clock reenters with a replacement", async () => {
+    const provider = providerHarness();
+    let onNow: (() => void) | undefined;
+    let reading = false;
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          if (!reading && onNow) {
+            reading = true;
+            const callback = onNow;
+            onNow = undefined;
+            callback();
+            reading = false;
+          }
+          return 0;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    const session = owner(service);
+    const stale = session.request(input("clock-stale"));
+    let replacement: SqlCatalogSearchWorkTicket | undefined;
+    onNow = () => {
+      replacement = session.request(input("clock-current"));
+    };
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(stale.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(provider.calls).toHaveLength(2);
+    provider.calls[1]?.settlement.resolve(readyResponse());
+    await expect(replacement?.result).resolves.toMatchObject({
+      status: "usable",
+    });
+  });
+
+  it("stops provider-result handling when the clock reentrantly disposes the service", async () => {
+    const provider = providerHarness();
+    let onNow: (() => void) | undefined;
+    let reading = false;
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          if (!reading && onNow) {
+            reading = true;
+            const callback = onNow;
+            onNow = undefined;
+            callback();
+            reading = false;
+          }
+          return 0;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    const ticket = owner(service).request(input("clock-dispose"));
+    onNow = () => service.dispose();
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(ticket.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    await flushMicrotasks();
+  });
+
+  it("revalidates queued promotion after the clock reenters with newer work", async () => {
+    const provider = providerHarness();
+    let onNow: (() => void) | undefined;
+    let reading = false;
+    let skippedNowCallbacks = 0;
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          if (!reading && onNow) {
+            if (skippedNowCallbacks > 0) {
+              skippedNowCallbacks -= 1;
+              return 0;
+            }
+            reading = true;
+            const callback = onNow;
+            onNow = undefined;
+            callback();
+            reading = false;
+          }
+          return 0;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    const active = Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
+      (_, index) =>
+        owner(service).request(input(`active-${index}`)),
+    );
+    const queuedOwner = owner(service);
+    const staleQueued = queuedOwner.request(
+      input("queued-stale"),
+    );
+    let replacement: SqlCatalogSearchWorkTicket | undefined;
+    onNow = () => {
+      replacement = queuedOwner.request(
+        input("queued-current"),
+      );
+    };
+    skippedNowCallbacks = 1;
+
+    provider.calls[0]?.settlement.reject(
+      new Error("release active slot"),
+    );
+    await expect(staleQueued.result).resolves.toEqual({
+      status: "superseded",
+    });
+    await flushMicrotasks();
+    expect(
+      provider.calls.some(
+        (call) =>
+          call.request.prefix.value === "queued-current",
+      ),
+    ).toBe(true);
+    const replacementCall = provider.calls.find(
+      (call) =>
+        call.request.prefix.value === "queued-current",
+    );
+    replacementCall?.settlement.resolve(readyResponse());
+    await expect(replacement?.result).resolves.toMatchObject({
+      status: "usable",
+    });
+    for (const ticket of active.slice(1)) ticket.cancel();
+    service.dispose();
+  });
+
+  it("does not let a clock-reentrant request overwrite the newer request", async () => {
+    const provider = providerHarness();
+    let onNow: (() => void) | undefined;
+    let reading = false;
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          if (!reading && onNow) {
+            reading = true;
+            const callback = onNow;
+            onNow = undefined;
+            callback();
+            reading = false;
+          }
+          return 0;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+    });
+    const session = owner(service);
+    let current: SqlCatalogSearchWorkTicket | undefined;
+    onNow = () => {
+      current = session.request(input("clock-newer"));
+    };
+
+    const obsolete = session.request(input("clock-older"));
+    await expect(obsolete.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.request.prefix.value).toBe(
+      "clock-newer",
+    );
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(current?.result).resolves.toMatchObject({
+      status: "usable",
+    });
+  });
+
+  it("ignores stale queue and execution callbacks after successful settlement", async () => {
+    const callbacks: Array<() => void> = [];
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          return readyResponse();
+        },
+      }),
+    );
+    const service = coordinator(captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now: () => 0,
+        setTimeout(callback) {
+          callbacks.push(callback);
+          return callbacks.length;
+        },
+      },
+    });
+    const ticket = owner(service).request(input("stale-timers"));
+    await expect(ticket.result).resolves.toMatchObject({
+      status: "usable",
+    });
+
+    expect(callbacks).toHaveLength(1);
+    expect(() => {
+      callbacks[0]?.();
+      callbacks[0]?.();
+    }).not.toThrow();
+  });
+
+  it("fails closed when the execution deadline cannot advance a large monotonic clock", async () => {
+    const base = 2 ** 57;
+    let reads = 0;
+    let providerCalls = 0;
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          providerCalls += 1;
+          return readyResponse();
+        },
+      }),
+    );
+    const service = coordinator(captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now() {
+          reads += 1;
+          return reads < 4 ? base : base + 1_952;
+        },
+        setTimeout() {
+          return 1;
+        },
+      },
+      executionDeadlineMs: 10,
+      queueDeadlineMs: 2_000,
+    });
+    const ticket = owner(service).request(input("large-clock"));
+
+    await expect(ticket.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(providerCalls).toBe(0);
+  });
+
+  it("fails closed when a promoted queued search cannot allocate an execution deadline", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 10,
+      queueDeadlineMs: 2_000,
+    });
+    Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
+      (_, index) => owner(service).request(input(`active-${index}`)),
+    );
+    scheduler.nowValue = 2 ** 57 - 1_024;
+    const queued = owner(service).request(input("large-promoted"));
+    scheduler.nowValue = 2 ** 57;
+    provider.calls[0]?.settlement.reject(
+      new Error("release active slot"),
+    );
+
+    await expect(queued.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(
+      provider.calls.some(
+        (call) =>
+          call.request.prefix.value === "large-promoted",
+      ),
+    ).toBe(false);
+    service.dispose();
+  });
+
+  it("clears a queued deadline when execution expiry fires synchronously during promotion", async () => {
+    let nowValue = 0;
+    let fireExecution = false;
+    const callbacks = new Map<number, () => void>();
+    let nextHandle = 0;
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout(handle) {
+          if (typeof handle === "number") {
+            callbacks.delete(handle);
+          }
+        },
+        now: () => nowValue,
+        setTimeout(callback, delayMs) {
+          nextHandle += 1;
+          callbacks.set(nextHandle, callback);
+          if (fireExecution && delayMs === 20) {
+            nowValue += 20;
+            callback();
+          }
+          return nextHandle;
+        },
+      },
+      executionDeadlineMs: 20,
+      queueDeadlineMs: 100,
+    });
+    Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
+      (_, index) => owner(service).request(input(`active-${index}`)),
+    );
+    const queued = owner(service).request(
+      input("synchronous-promotion-expiry"),
+    );
+    fireExecution = true;
+    provider.calls[0]?.settlement.reject(
+      new Error("release active slot"),
+    );
+
+    await expect(queued.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(
+      provider.calls.some(
+        (call) =>
+          call.request.prefix.value ===
+          "synchronous-promotion-expiry",
+      ),
+    ).toBe(false);
+    service.dispose();
+  });
+
+  it("contains disposal reentrancy while a promoted search clears its queue deadline", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout(handle) {
+          scheduler.clearTimeout(handle);
+          if (skipClears > 0) {
+            skipClears -= 1;
+          } else {
+            service.dispose();
+          }
+        },
+        now: scheduler.now,
+        setTimeout: scheduler.setTimeout,
+      },
+      executionDeadlineMs: 20,
+      queueDeadlineMs: 100,
+    });
+    let skipClears = Number.MAX_SAFE_INTEGER;
+    Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
+      (_, index) => owner(service).request(input(`active-${index}`)),
+    );
+    const queued = owner(service).request(
+      input("dispose-during-promotion"),
+    );
+    skipClears = 1;
+    provider.calls[0]?.settlement.reject(
+      new Error("release active slot"),
+    );
+
+    await expect(queued.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(
+      provider.calls.some(
+        (call) =>
+          call.request.prefix.value ===
+          "dispose-during-promotion",
+      ),
+    ).toBe(false);
+  });
+
+  it("cancels reentrantly during response decoding and ignores the now-obsolete result", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const ticket = session.request(input("decode-cancel"));
+    const response = new Proxy(readyResponse(), {
+      ownKeys(target) {
+        ticket.cancel();
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    provider.calls[0]?.settlement.resolve(response);
+    await expect(ticket.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    await flushMicrotasks();
+    expect(provider.calls[0]?.signal.aborted).toBe(false);
+  });
+
+  it("keeps a response that reenters with a replacement from publishing stale epoch evidence", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const stale = session.request(input("stale"));
+    let replacement: SqlCatalogSearchWorkTicket | undefined;
+    const response = new Proxy(readyResponse(), {
+      ownKeys(target) {
+        replacement ??= session.request(input("replacement"));
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    provider.calls[0]?.settlement.resolve(response);
+    await expect(stale.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(replacement).toBeDefined();
+    expect(provider.calls).toHaveLength(2);
+    provider.calls[1]?.settlement.resolve(readyResponse());
+    await expect(replacement?.result).resolves.toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+  });
+
+  it("does not conflate paths with different component counts", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const tickets = [
+      owner(service).request(
+        input("path-length", {
+          qualifier: [component("public")],
+        }),
+      ),
+      owner(service).request(
+        input("path-length", {
+          qualifier: [
+            component("catalog"),
+            component("public"),
+          ],
+        }),
+      ),
+      owner(service).request(
+        input("path-length", {
+          searchPaths: [[component("public")]],
+        }),
+      ),
+      owner(service).request(
+        input("path-length", {
+          searchPaths: [
+            [
+              component("catalog"),
+              component("public"),
+            ],
+          ],
+        }),
+      ),
+    ];
+
+    expect(provider.calls).toHaveLength(3);
+    service.dispose();
+    await Promise.all(
+      tickets.map((ticket) =>
+        expect(ticket.result).resolves.toEqual({
+          reason: "disposed",
+          status: "unavailable",
+        }),
+      ),
+    );
+  });
+
+  it("applies the absolute execution deadline when response decoding advances the clock", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 20,
+      queueDeadlineMs: 10,
+      synchronousBudgetMs: 5,
+    });
+    const ticket = owner(service).request(input("decode-timeout"));
+    const response = new Proxy(readyResponse(), {
+      ownKeys(target) {
+        scheduler.nowValue = 20;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    provider.calls[0]?.settlement.resolve(response);
+    await expect(ticket.result).resolves.toEqual({
+      reason: "execution-timeout",
+      status: "unavailable",
+    });
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
+  });
+
+  it("does not publish a decoded response that disposes the coordinator through a getter", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const ticket = owner(service).request(input("decode-dispose"));
+    const response = new Proxy(readyResponse(), {
+      ownKeys(target) {
+        service.dispose();
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    provider.calls[0]?.settlement.resolve(response);
+    await expect(ticket.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    await flushMicrotasks();
+  });
+
+  it("drains provider results returned after synchronous service disposal", async () => {
+    for (const kind of ["pending", "rejected"] as const) {
+      let service:
+        | SqlCatalogSearchWorkCoordinator
+        | undefined;
+      const pending = deferred<unknown>();
+      const captured = accepted(
+        captureSqlRelationCatalogProvider({
+          id: `dispose-${kind}`,
+          search() {
+            service?.dispose();
+            if (kind === "rejected") {
+              return Promise.reject(
+                new Error("rejected after disposal"),
+              );
+            }
+            return pending.promise;
+          },
+        }),
+      );
+      service = coordinator(captured);
+      const ticket = owner(service).request(input(kind));
+
+      await expect(ticket.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      if (kind === "pending") {
+        pending.reject(new Error("late pending rejection"));
+      }
+      await flushMicrotasks();
+    }
+  });
+
+  it("accepts an epoch transition with no search work and keeps disposal idempotent", () => {
+    let invalidation: ((event: unknown) => void) | undefined;
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          return readyResponse();
+        },
+        subscribe(
+          _scope: string,
+          listener: (event: unknown) => void,
+        ) {
+          invalidation = listener;
+          return () => undefined;
+        },
+      }),
+    );
+    const service = coordinator(captured);
+    const session = owner(service, "idle-scope");
+
+    expect(() => invalidation?.({ epoch: epoch() })).not.toThrow();
+    const immediate = service.prepareOwner(
+      "inactive",
+      POSTGRESQL_SQL_RELATION_DIALECT,
+      { prepareCatalogChange: () => () => {} },
+    );
+    expect(immediate.status).toBe("prepared");
+    if (immediate.status === "prepared") {
+      const ticket = immediate.owner.request(input());
+      expect(() => {
+        ticket.cancel();
+        ticket.cancel();
+      }).not.toThrow();
+    }
+    session.dispose();
+    session.dispose();
+    service.dispose();
+    service.dispose();
+    expect(
+      service.prepareOwner(
+        "late",
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        { prepareCatalogChange: () => () => {} },
+      ),
+    ).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+});
+
+describe("catalog search epoch dependency failures", () => {
+  it("maps every closed epoch decision and rotates retired captures", async () => {
+    type Decision =
+      | "disposed"
+      | "malformed"
+      | "overloaded"
+      | "retired-exhausted"
+      | "retired-then-usable"
+      | "superseded";
+    let decision: Decision = "disposed";
+    let captureFailure = false;
+    let captureHook: (() => void) | undefined;
+    let disposeCandidate: (() => void) | undefined;
+    let factoryFailure = false;
+    let membershipFailure = false;
+    let submissions = 0;
+    vi.resetModules();
+    vi.doMock(
+      "../relation-catalog-epoch-coordinator.js",
+      async (importOriginal) => {
+        const actual =
+          await importOriginal<
+            typeof import("../relation-catalog-epoch-coordinator.js")
+          >();
+        return {
+          ...actual,
+          createSqlCatalogEpochCoordinator() {
+            if (factoryFailure) {
+              return {
+                reason: "invalid-provider",
+                status: "unavailable",
+              };
+            }
+            return {
+              coordinator: {
+                dispose() {},
+                prepareScopeMembership() {
+                  if (membershipFailure) {
+                    return {
+                      reason: "disposed",
+                      status: "unavailable",
+                    };
+                  }
+                  return {
+                    membership: {
+                      activate() {
+                        return { status: "active" };
+                      },
+                      captureEpoch() {
+                        const hook = captureHook;
+                        captureHook = undefined;
+                        hook?.();
+                        if (captureFailure) {
+                          return {
+                            reason: "disposed",
+                            status: "unavailable",
+                          };
+                        }
+                        return {
+                          capture: { expectedEpoch: null },
+                          status: "captured",
+                        };
+                      },
+                      dispose() {},
+                    },
+                    status: "prepared",
+                  };
+                },
+                providerId: "catalog",
+                submitResponseEpoch(
+                  _capture: unknown,
+                  responseEpoch: ReturnType<typeof epoch>,
+                  onDecision: (value: unknown) => void,
+                ) {
+                  submissions += 1;
+                  if (
+                    (decision === "retired-then-usable" ||
+                      decision === "retired-exhausted") &&
+                    submissions === 1
+                  ) {
+                    disposeCandidate?.();
+                    return {
+                      decision: {
+                        reason: "retired",
+                        status: "discarded",
+                      },
+                      status: "settled",
+                    };
+                  }
+                  if (decision === "superseded") {
+                    onDecision({
+                      epoch: responseEpoch,
+                      status: "superseded",
+                    });
+                  } else if (
+                    decision === "retired-then-usable"
+                  ) {
+                    onDecision({
+                      epoch: responseEpoch,
+                      observation: "baseline",
+                      status: "usable",
+                    });
+                  } else {
+                    onDecision({
+                      reason: decision,
+                      status: "discarded",
+                    });
+                  }
+                  return { status: "submitted" };
+                },
+              },
+              status: "created",
+            };
+          },
+        };
+      },
+    );
+    const isolated = await import(
+      "../relation-catalog-search-work.js"
+    );
+    const isolatedBoundary = await import(
+      "../relation-catalog-boundary.js"
+    );
+    const isolatedDialect = await import(
+      "../relation-dialect.js"
+    );
+    const captured = accepted(
+      isolatedBoundary.captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search() {
+          return readyResponse();
+        },
+      }),
+    );
+
+    const expected = new Map<
+      Exclude<Decision, "retired-then-usable">,
+      SqlCatalogSearchWorkOutcome
+    >([
+      [
+        "disposed",
+        { reason: "disposed", status: "unavailable" },
+      ],
+      [
+        "malformed",
+        {
+          reason: "malformed-response",
+          status: "unavailable",
+        },
+      ],
+      [
+        "overloaded",
+        { reason: "overloaded", status: "unavailable" },
+      ],
+      ["superseded", { status: "superseded" }],
+    ]);
+    for (const [nextDecision, outcome] of expected) {
+      decision = nextDecision;
+      submissions = 0;
+      const created =
+        isolated.createSqlCatalogSearchWorkCoordinator(captured);
+      expect(created.status).toBe("created");
+      if (created.status !== "created") continue;
+      const session = owner(
+        created.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      await expect(
+        session.request(input(nextDecision)).result,
+      ).resolves.toEqual(outcome);
+      created.coordinator.dispose();
+    }
+
+    decision = "retired-then-usable";
+    submissions = 0;
+    const created =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(created.status).toBe("created");
+    if (created.status === "created") {
+      const first = owner(
+        created.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      const second = owner(
+        created.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      const firstTicket = first.request(input("rotation"));
+      const secondTicket = second.request(input("rotation"));
+      await expect(firstTicket.result).resolves.toMatchObject({
+        status: "usable",
+      });
+      await expect(secondTicket.result).resolves.toMatchObject({
+        status: "usable",
+      });
+      expect(submissions).toBe(2);
+      created.coordinator.dispose();
+    }
+
+    decision = "retired-exhausted";
+    submissions = 0;
+    const exhausted =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(exhausted.status).toBe("created");
+    if (exhausted.status === "created") {
+      const first = owner(
+        exhausted.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      const second = owner(
+        exhausted.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      const firstTicket = first.request(input("exhausted"));
+      const secondTicket = second.request(input("exhausted"));
+      disposeCandidate = () => second.dispose();
+      await expect(secondTicket.result).resolves.toEqual({
+        status: "cancelled",
+      });
+      await expect(firstTicket.result).resolves.toEqual({
+        status: "superseded",
+      });
+      expect(submissions).toBe(1);
+      exhausted.coordinator.dispose();
+    }
+
+    decision = "retired-then-usable";
+    captureFailure = true;
+    const captureRejected =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(captureRejected.status).toBe("created");
+    if (captureRejected.status === "created") {
+      const session = owner(
+        captureRejected.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      await expect(
+        session.request(input("capture-disposed")).result,
+      ).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      captureRejected.coordinator.dispose();
+    }
+    captureFailure = false;
+
+    const captureReentrant =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(captureReentrant.status).toBe("created");
+    if (captureReentrant.status === "created") {
+      const session = owner(
+        captureReentrant.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      let current: SqlCatalogSearchWorkTicket | undefined;
+      captureHook = () => {
+        current = session.request(input("capture-current"));
+      };
+      const obsolete = session.request(input("capture-obsolete"));
+      await expect(obsolete.result).resolves.toEqual({
+        status: "superseded",
+      });
+      await expect(current?.result).resolves.toMatchObject({
+        status: "usable",
+      });
+      captureReentrant.coordinator.dispose();
+    }
+
+    const captureDisposal =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(captureDisposal.status).toBe("created");
+    if (captureDisposal.status === "created") {
+      const session = owner(
+        captureDisposal.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      );
+      captureHook = () => {
+        captureDisposal.coordinator.dispose();
+      };
+      await expect(
+        session.request(input("capture-disposal")).result,
+      ).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+    }
+
+    membershipFailure = true;
+    const membershipRejected =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(membershipRejected.status).toBe("created");
+    if (membershipRejected.status === "created") {
+      expect(
+        membershipRejected.coordinator.prepareOwner(
+          "scope",
+          isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+          { prepareCatalogChange: () => () => {} },
+        ),
+      ).toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      membershipRejected.coordinator.dispose();
+    }
+    membershipFailure = false;
+
+    factoryFailure = true;
+    expect(
+      isolated.createSqlCatalogSearchWorkCoordinator(captured),
+    ).toEqual({
+      reason: "invalid-provider",
+      status: "unavailable",
+    });
+    vi.doUnmock("../relation-catalog-epoch-coordinator.js");
+    vi.resetModules();
   });
 });

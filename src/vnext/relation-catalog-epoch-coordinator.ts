@@ -143,6 +143,7 @@ export type SqlCatalogEpochCoordinatorResult =
   | {
       readonly status: "unavailable";
       readonly reason:
+        | "invalid-disposal-target"
         | "invalid-provider"
         | "invalid-transition-target";
     };
@@ -157,6 +158,7 @@ interface CoordinatorState {
   readonly commands: EpochCommand[];
   readonly deferredCleanup: Set<SubscriptionState>;
   readonly memberships: Set<MembershipState>;
+  onDispose: ((this: void) => void) | null;
   prepareEpochTransition: Function | null;
   readonly providerId: string;
   readonly scopes: Map<string, ScopeEntry>;
@@ -1248,6 +1250,8 @@ function submitResponse(
 function disposeCoordinator(state: CoordinatorState): void {
   if (state.disposed) return;
   state.disposed = true;
+  const onDispose = state.onDispose;
+  state.onDispose = null;
   state.prepareEpochTransition = null;
   state.subscribe = null;
   const subscriptions: SubscriptionState[] = [];
@@ -1270,6 +1274,13 @@ function disposeCoordinator(state: CoordinatorState): void {
   state.memberships.clear();
   for (const subscription of subscriptions) {
     retireCallbackCell(subscription.cell);
+  }
+  if (onDispose) {
+    try {
+      Reflect.apply(onDispose, undefined, []);
+    } catch {
+      // Disposal remains authoritative if its package owner fails.
+    }
   }
   for (const subscription of subscriptions) {
     scheduleSubscriptionCleanup(state, subscription);
@@ -1305,6 +1316,7 @@ function createCoordinatorHandle(
 export function createSqlCatalogEpochCoordinator(
   capturedProvider: unknown,
   prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
+  onDispose?: (this: void) => void,
 ): SqlCatalogEpochCoordinatorResult {
   const provider = resolveSqlRelationCatalogProvider(
     capturedProvider,
@@ -1324,6 +1336,15 @@ export function createSqlCatalogEpochCoordinator(
       status: "unavailable",
     });
   }
+  if (
+    onDispose !== undefined &&
+    typeof onDispose !== "function"
+  ) {
+    return Object.freeze({
+      reason: "invalid-disposal-target",
+      status: "unavailable",
+    });
+  }
   const providerId = provider.id;
   const subscribe = provider.subscribe;
   const state: CoordinatorState = {
@@ -1336,6 +1357,7 @@ export function createSqlCatalogEpochCoordinator(
     disposed: false,
     draining: false,
     memberships: new Set(),
+    onDispose: onDispose ?? null,
     prepareEpochTransition:
       prepareEpochTransition ?? null,
     providerId,

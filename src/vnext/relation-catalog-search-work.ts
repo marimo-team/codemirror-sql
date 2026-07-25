@@ -1,7 +1,6 @@
 import {
   createSqlCatalogSearchRequest,
   decodeSqlCatalogSearchResponse,
-  MAX_CATALOG_DIALECT_ID_LENGTH,
   MAX_CATALOG_SCOPE_LENGTH,
   resolveSqlRelationCatalogProvider,
 } from "./relation-catalog-boundary.js";
@@ -131,7 +130,6 @@ export interface SqlCatalogSearchWorkCoordinator {
   readonly prepareOwner: (
     this: void,
     scope: unknown,
-    dialectId: unknown,
     dialect: SqlRelationDialectRuntime,
     target: SqlCatalogRevisionTarget,
   ) => SqlCatalogSearchWorkOwnerResult;
@@ -159,10 +157,10 @@ interface NormalizedOptions {
 interface OwnerState {
   current: ConsumerState | null;
   readonly dialect: SqlRelationDialectRuntime;
-  readonly dialectId: string;
   disposed: boolean;
   readonly membership: SqlCatalogScopeMembership;
   owner: CoordinatorState | null;
+  requestToken: object | null;
   readonly scope: string;
 }
 
@@ -170,9 +168,7 @@ interface ConsumerState {
   readonly capture: SqlCatalogEpochCapture;
   cancelled: boolean;
   owner: OwnerState | null;
-  resolve:
-    | ((outcome: SqlCatalogSearchWorkOutcome) => void)
-    | null;
+  resolve: (outcome: SqlCatalogSearchWorkOutcome) => void;
   settled: boolean;
   work: WorkState | null;
 }
@@ -269,6 +265,7 @@ const HOST_NOW = HOST_PERFORMANCE.now;
 const INTRINSIC_PROMISE = Promise;
 const INTRINSIC_PROMISE_RESOLVE = Promise.resolve;
 const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
+const IGNORE_DETACHED_REJECTION = (): void => {};
 const MAX_SYNCHRONOUS_DEADLINE_REARMS = 256;
 
 const DEFAULT_DEADLINE_SCHEDULER: SqlCatalogSearchDeadlineScheduler =
@@ -476,7 +473,6 @@ function scheduleDeadline(
     tick: null,
   };
   let arming = false;
-  let rearmRequested = false;
   let synchronousRearms = 0;
   const expireNow = (): void => {
     if (!cell.active) return;
@@ -486,15 +482,9 @@ function scheduleDeadline(
     expire();
   };
   const arm = (): void => {
-    if (!cell.active) return;
-    if (arming) {
-      rearmRequested = true;
-      return;
-    }
     arming = true;
     try {
       for (;;) {
-        rearmRequested = false;
         const now = readNow(state);
         if (now === null || now >= deadline) {
           expireNow();
@@ -534,7 +524,6 @@ function scheduleDeadline(
         if (!cell.active) return;
         synchronousRearms += 1;
         if (
-          !rearmRequested ||
           synchronousRearms >
             MAX_SYNCHRONOUS_DEADLINE_REARMS
         ) {
@@ -558,21 +547,9 @@ function scheduleDeadline(
       expireNow();
       return;
     }
-    rearmRequested = true;
     if (!arming) arm();
   };
   arm();
-  if (!cell.active && cell.handle !== undefined) {
-    try {
-      Reflect.apply(
-        state.options.deadlineScheduler.clearTimeout,
-        undefined,
-        [cell.handle],
-      );
-    } catch {
-      // Deadline retirement is already authoritative.
-    }
-  }
   return cell;
 }
 
@@ -581,15 +558,14 @@ function settleDetached(
   consumer: ConsumerState,
   outcome: SqlCatalogSearchWorkOutcome,
 ): void {
-  if (consumer.settled) return;
   consumer.settled = true;
   const resolve = consumer.resolve;
-  consumer.resolve = null;
+  consumer.resolve = IGNORE_DETACHED_REJECTION;
   consumer.work = null;
   const owner = consumer.owner;
   consumer.owner = null;
   if (owner?.current === consumer) owner.current = null;
-  if (resolve) list.push({ outcome, resolve });
+  list.push({ outcome, resolve });
 }
 
 function runEffects(
@@ -808,7 +784,6 @@ function detachConsumerInto(
   outcome: SqlCatalogSearchWorkOutcome,
   pending: Effects,
 ): void {
-  if (consumer.settled) return;
   const work = consumer.work;
   if (work) {
     work.owners.delete(consumer);
@@ -895,6 +870,10 @@ function handleExecutionTimeout(
   runEffects(state, pending);
 }
 
+function workPhase(work: WorkState): WorkState["phase"] {
+  return work.phase;
+}
+
 function deliverProviderResult(
   cell: ProviderResultCell,
   fulfilled: boolean,
@@ -928,7 +907,7 @@ function attachProviderResult(
   try {
     const promise = Reflect.apply(
       INTRINSIC_PROMISE_RESOLVE,
-      Promise,
+      INTRINSIC_PROMISE,
       [value],
     );
     Reflect.apply(INTRINSIC_PROMISE_THEN, promise, [
@@ -939,6 +918,22 @@ function attachProviderResult(
   } catch {
     revokeProviderCell(work);
     return false;
+  }
+}
+
+function drainDetachedSettlement(value: unknown): void {
+  try {
+    const promise = Reflect.apply(
+      INTRINSIC_PROMISE_RESOLVE,
+      INTRINSIC_PROMISE,
+      [value],
+    );
+    Reflect.apply(INTRINSIC_PROMISE_THEN, promise, [
+      undefined,
+      IGNORE_DETACHED_REJECTION,
+    ]);
+  } catch {
+    // The detached result has no authority over coordinator state.
   }
 }
 
@@ -953,11 +948,10 @@ function settleDecision(
 
 function finishDecision(
   cell: ResponseDecisionCell,
+  state: CoordinatorState,
+  work: WorkState,
   outcome: SqlCatalogSearchWorkOutcome,
 ): void {
-  const state = cell.state;
-  const work = cell.work;
-  if (!cell.active || !state || !work) return;
   cell.active = false;
   const pending = effects();
   finishWork(state, work, outcome, pending, false);
@@ -987,6 +981,27 @@ function decisionOutcome(
   }
 }
 
+function rekeyUnobservedWork(
+  state: CoordinatorState,
+  producingWork: WorkState,
+  response: SqlValidatedCatalogSearchResponse,
+): void {
+  const scope = producingWork.scope;
+  for (const work of state.joinable) {
+    if (work === producingWork || work.scope !== scope) {
+      continue;
+    }
+    const request = work.request;
+    if (!request || request.expectedEpoch !== null) {
+      continue;
+    }
+    work.request = Object.freeze({
+      ...request,
+      expectedEpoch: response.epoch,
+    });
+  }
+}
+
 function advanceDecision(cell: ResponseDecisionCell): void {
   if (!cell.active || cell.advancing) return;
   cell.advancing = true;
@@ -1006,8 +1021,13 @@ function advanceDecision(cell: ResponseDecisionCell): void {
         ) {
           // Try a capture belonging to another live shared owner.
         } else if (pendingDecision.status === "usable") {
+          if (pendingDecision.observation === "baseline") {
+            rekeyUnobservedWork(state, work, response);
+          }
           finishDecision(
             cell,
+            state,
+            work,
             Object.freeze({
               observation: pendingDecision.observation,
               response,
@@ -1018,6 +1038,8 @@ function advanceDecision(cell: ResponseDecisionCell): void {
         } else {
           finishDecision(
             cell,
+            state,
+            work,
             decisionOutcome(pendingDecision),
           );
           return;
@@ -1037,7 +1059,12 @@ function advanceDecision(cell: ResponseDecisionCell): void {
         }
       }
       if (!capture) {
-        finishDecision(cell, SUPERSEDED_OUTCOME);
+        finishDecision(
+          cell,
+          state,
+          work,
+          SUPERSEDED_OUTCOME,
+        );
         return;
       }
       const submitted = state.epochs.submitResponseEpoch(
@@ -1087,6 +1114,26 @@ function handleProviderResult(
     return;
   }
   const now = readNow(state);
+  const phaseAfterClock = workPhase(work);
+  if (
+    state.disposed ||
+    (phaseAfterClock !== "active" &&
+      phaseAfterClock !== "retired")
+  ) {
+    return;
+  }
+  if (phaseAfterClock === "retired") {
+    const pending = effects();
+    finishWork(
+      state,
+      work,
+      CANCELLED_OUTCOME,
+      pending,
+      false,
+    );
+    runEffects(state, pending);
+    return;
+  }
   if (
     now === null ||
     work.executionDeadline === null ||
@@ -1128,8 +1175,18 @@ function handleProviderResult(
     request.limit,
     dialect,
   );
+  if (
+    state.disposed ||
+    work.phase !== "deciding" ||
+    work.owners.size === 0
+  ) {
+    return;
+  }
   const afterDecode = readNow(state);
   if (
+    state.disposed ||
+    work.phase !== "deciding" ||
+    work.owners.size === 0 ||
     afterDecode === null ||
     work.executionDeadline === null ||
     afterDecode >= work.executionDeadline
@@ -1167,6 +1224,7 @@ function startWork(
   state: CoordinatorState,
   work: WorkState,
 ): void {
+  const startedAt = readNow(state);
   if (
     state.disposed ||
     work.phase !== "queued" ||
@@ -1174,7 +1232,6 @@ function startWork(
   ) {
     return;
   }
-  const startedAt = readNow(state);
   if (
     startedAt === null ||
     startedAt >= work.queueDeadline
@@ -1225,13 +1282,11 @@ function startWork(
     return;
   }
   let returned: unknown;
-  let invoked = false;
   try {
     returned = Reflect.apply(search, undefined, [
       request,
       controller.signal,
     ]);
-    invoked = true;
   } catch {
     const pending = effects();
     finishWork(
@@ -1244,8 +1299,15 @@ function startWork(
     runEffects(state, pending);
     return;
   }
-  const attached =
-    invoked && attachProviderResult(state, work, returned);
+  const phaseAfterSearch = workPhase(work);
+  if (
+    state.disposed ||
+    phaseAfterSearch === "terminal"
+  ) {
+    drainDetachedSettlement(returned);
+    return;
+  }
+  const attached = attachProviderResult(state, work, returned);
   const observedAt = readNow(state);
   if (
     !attached ||
@@ -1282,7 +1344,7 @@ function pump(state: CoordinatorState): void {
         state.queue.length > 0
       ) {
         const work = state.queue.shift();
-        if (!work || work.phase !== "queued") continue;
+        if (!work) break;
         startWork(state, work);
       }
     }
@@ -1311,18 +1373,14 @@ function makeConsumer(
   readonly consumer: ConsumerState;
   readonly ticket: SqlCatalogSearchWorkTicket;
 } {
-  let resolve:
-    | ((outcome: SqlCatalogSearchWorkOutcome) => void)
-    | undefined;
+  let resolve: (outcome: SqlCatalogSearchWorkOutcome) => void =
+    IGNORE_DETACHED_REJECTION;
   const result =
     new INTRINSIC_PROMISE<SqlCatalogSearchWorkOutcome>(
-    (settle) => {
-      resolve = settle;
-    },
-  );
-  if (!resolve) {
-    throw new Error("catalog work promise was not initialized");
-  }
+      (settle) => {
+        resolve = settle;
+      },
+    );
   const consumer: ConsumerState = {
     cancelled: false,
     capture,
@@ -1389,6 +1447,9 @@ function requestWork(
   owner: OwnerState,
   input: SqlCatalogSearchWorkInput,
 ): SqlCatalogSearchWorkTicket {
+  const requestToken = {};
+  owner.requestToken = requestToken;
+  const captured = owner.membership.captureEpoch();
   if (
     state.disposed ||
     owner.disposed ||
@@ -1398,7 +1459,9 @@ function requestWork(
       unavailableOutcome("disposed"),
     );
   }
-  const captured = owner.membership.captureEpoch();
+  if (owner.requestToken !== requestToken) {
+    return makeImmediateTicket(SUPERSEDED_OUTCOME);
+  }
   if (captured.status !== "captured") {
     return makeImmediateTicket(
       unavailableOutcome(
@@ -1408,17 +1471,37 @@ function requestWork(
       ),
     );
   }
-  const requestResult = createSqlCatalogSearchRequest({
-    continuationToken: input.continuationToken,
-    dialectId: owner.dialectId,
-    expectedEpoch: captured.capture.expectedEpoch,
-    limit: input.limit,
-    prefix: input.prefix,
-    qualifier: input.qualifier,
-    scope: owner.scope,
-    searchPaths: input.searchPaths,
-  });
-  if (requestResult.status !== "accepted") {
+  let request: SqlCatalogSearchRequest | null = null;
+  try {
+    const requestResult = createSqlCatalogSearchRequest({
+      continuationToken: input.continuationToken,
+      dialectId: owner.dialect.id,
+      expectedEpoch: captured.capture.expectedEpoch,
+      limit: input.limit,
+      prefix: input.prefix,
+      qualifier: input.qualifier,
+      scope: owner.scope,
+      searchPaths: input.searchPaths,
+    });
+    if (requestResult.status === "accepted") {
+      request = requestResult.value;
+    }
+  } catch {
+    // Hostile runtime input is an invalid request.
+  }
+  if (
+    state.disposed ||
+    owner.disposed ||
+    owner.owner !== state
+  ) {
+    return makeImmediateTicket(
+      unavailableOutcome("disposed"),
+    );
+  }
+  if (owner.requestToken !== requestToken) {
+    return makeImmediateTicket(SUPERSEDED_OUTCOME);
+  }
+  if (!request) {
     const pending = effects();
     const previous = owner.current;
     if (previous) {
@@ -1437,7 +1520,7 @@ function requestWork(
   const created = makeConsumer(captured.capture, owner);
   const existing = findWork(
     state,
-    requestResult.value,
+    request,
     owner.dialect,
   );
   if (existing) {
@@ -1469,6 +1552,21 @@ function requestWork(
     );
   }
   const now = readNow(state);
+  const disposedDuringClock =
+    state.disposed ||
+    owner.disposed ||
+    owner.owner !== state;
+  if (
+    owner.requestToken !== requestToken ||
+    disposedDuringClock
+  ) {
+    runEffects(state, pending);
+    return makeImmediateTicket(
+      disposedDuringClock
+        ? unavailableOutcome("disposed")
+        : SUPERSEDED_OUTCOME,
+    );
+  }
   if (now === null) {
     runEffects(state, pending);
     return makeImmediateTicket(
@@ -1498,7 +1596,7 @@ function requestWork(
     providerCell: null,
     queueDeadline,
     queueTimer: null,
-    request: requestResult.value,
+    request,
     scope: owner.scope,
   };
   created.consumer.work = work;
@@ -1506,6 +1604,11 @@ function requestWork(
   state.joinable.add(work);
   state.works.add(work);
   state.queue.push(work);
+  runEffects(state, pending);
+  pump(state);
+  if (work.phase !== "queued") {
+    return created.ticket;
+  }
   const queueTimer = scheduleDeadline(
     state,
     queueDeadline,
@@ -1516,8 +1619,6 @@ function requestWork(
   } else {
     clearDeadline(state, queueTimer);
   }
-  runEffects(state, pending);
-  pump(state);
   return created.ticket;
 }
 
@@ -1607,6 +1708,7 @@ function disposeOwner(owner: OwnerState): void {
   const state = owner.owner;
   owner.disposed = true;
   owner.owner = null;
+  owner.requestToken = null;
   state?.owners.delete(owner);
   const current = owner.current;
   owner.current = null;
@@ -1643,7 +1745,6 @@ function createOwnerHandle(
 function prepareOwner(
   state: CoordinatorState,
   scope: unknown,
-  dialectId: unknown,
   dialect: SqlRelationDialectRuntime,
   target: SqlCatalogRevisionTarget,
 ): SqlCatalogSearchWorkOwnerResult {
@@ -1653,13 +1754,7 @@ function prepareOwner(
   ) {
     return unavailableOwner("invalid-scope");
   }
-  if (
-    !isValidText(
-      dialectId,
-      MAX_CATALOG_DIALECT_ID_LENGTH,
-    ) ||
-    !isSqlRelationDialectRuntime(dialect)
-  ) {
+  if (!isSqlRelationDialectRuntime(dialect)) {
     return unavailableOwner("invalid-dialect");
   }
   const prepared = state.epochs.prepareScopeMembership(
@@ -1676,10 +1771,10 @@ function prepareOwner(
   const owner: OwnerState = {
     current: null,
     dialect,
-    dialectId,
     disposed: false,
     membership: prepared.membership,
     owner: state,
+    requestToken: null,
     scope,
   };
   state.owners.add(owner);
@@ -1710,6 +1805,7 @@ function disposeCoordinatorState(
     owner.disposed = true;
     owner.current = null;
     owner.owner = null;
+    owner.requestToken = null;
   }
   state.owners.clear();
   state.epochs.dispose();
@@ -1721,13 +1817,13 @@ export function createSqlCatalogSearchWorkCoordinator(
   options?: SqlCatalogSearchWorkOptions,
 ): SqlCatalogSearchWorkCoordinatorResult {
   const context = resolveSqlRelationCatalogProvider(provider);
-  const normalized = normalizeOptions(options);
   if (!context) {
     return Object.freeze({
       reason: "invalid-provider",
       status: "unavailable",
     });
   }
+  const normalized = normalizeOptions(options);
   if (!normalized) {
     return Object.freeze({
       reason: "invalid-options",
@@ -1739,6 +1835,9 @@ export function createSqlCatalogSearchWorkCoordinator(
     provider,
     (scope): (() => undefined) | null =>
       state ? prepareTransition(state, scope) : null,
+    (): void => {
+      if (state) disposeCoordinatorState(state);
+    },
   );
   if (epochResult.status !== "created") {
     return Object.freeze({
@@ -1768,14 +1867,12 @@ export function createSqlCatalogSearchWorkCoordinator(
       },
       prepareOwner: (
         scope: unknown,
-        dialectId: unknown,
         dialect: SqlRelationDialectRuntime,
         target: SqlCatalogRevisionTarget,
       ): SqlCatalogSearchWorkOwnerResult =>
         prepareOwner(
           capturedState,
           scope,
-          dialectId,
           dialect,
           target,
         ),

@@ -236,6 +236,38 @@ describe("catalog epoch coordinator construction and membership", () => {
     expect(reads).toBe(0);
   });
 
+  it("validates and invokes the package disposal target exactly once", () => {
+    expect(
+      Reflect.apply(createSqlCatalogEpochCoordinator, undefined, [
+        capturedProvider(),
+        undefined,
+        1,
+      ]),
+    ).toEqual({
+      reason: "invalid-disposal-target",
+      status: "unavailable",
+    });
+
+    let disposalCalls = 0;
+    const created = createSqlCatalogEpochCoordinator(
+      capturedProvider(),
+      undefined,
+      () => {
+        disposalCalls += 1;
+        throw new Error("package disposal target failed");
+      },
+    );
+    expect(created.status).toBe("created");
+    if (created.status !== "created") {
+      throw new Error("Expected a coordinator fixture");
+    }
+    expect(() => {
+      created.coordinator.dispose();
+      created.coordinator.dispose();
+    }).not.toThrow();
+    expect(disposalCalls).toBe(1);
+  });
+
   it("validates exact bounded well-formed scopes without raw errors", () => {
     const owner = coordinator();
     expect(

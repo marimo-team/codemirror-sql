@@ -484,6 +484,11 @@ state preparation and suppresses later revision listeners; an accidental
 Promise result receives best-effort detached rejection draining. Coordinator
 disposal revokes the preparation closure before external cleanup. The hook
 remains package-private and is not a provider or session extension point.
+The combined search coordinator also installs one package-owned disposal
+target. Epoch self-quarantine makes the outer coordinator inert before
+subscription cleanup continues, so search work cannot outlive its epoch
+authority. The target is receiver-free, invoked at most once, and its failure
+cannot reopen disposal.
 
 A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different
@@ -751,7 +756,10 @@ in-flight sharing, one latest-wins consumer per owner, independent
 cancellation, absolute queue and execution deadlines, response decoding, and
 epoch publication. An owner captures its scope and dialect when prepared, so
 individual requests cannot substitute provider, scope, dialect, or epoch
-authority.
+authority. The authenticated dialect runtime owns its canonical provider ID;
+callers cannot pair an unrelated ID and runtime. Establishing the first
+baseline re-keys other joinable unobserved work in that scope, allowing
+newly-observed consumers to join it without duplicating a provider call.
 
 Cache entries, loading/retry policy, refresh observers and their leases, the
 40 ms completion-response budget, pagination composition, ranking, session

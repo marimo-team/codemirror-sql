@@ -185,7 +185,6 @@ function owner(
 ): SqlCatalogSearchWorkOwner {
   const prepared = service.prepareOwner(
     "benchmark-scope",
-    "postgresql",
     POSTGRESQL_SQL_RELATION_DIALECT,
     {
       prepareCatalogChange: () => () => undefined,

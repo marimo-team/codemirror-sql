@@ -47,7 +47,6 @@ const created = createSqlCatalogSearchWorkCoordinator(
 if (created.status === "created") {
   const prepared = created.coordinator.prepareOwner(
     "notebook:demo",
-    "duckdb",
     dialect,
     target,
   );
