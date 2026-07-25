@@ -46,7 +46,7 @@ import {
 import type {
   SqlCompletionRequest,
   SqlDisposable,
-  SqlRelationCompletionResult,
+  SqlCompletionResult,
   SqlSessionChangeEvent,
   SqlSessionChangeReason,
 } from "./relation-completion-types.js";
@@ -94,6 +94,11 @@ interface CompletionRequestState {
   readonly revision: SqlRevision;
   ticket: SqlCatalogSearchWorkTicket | null;
   readonly token: object;
+}
+
+interface SessionChangeSubscription {
+  active: boolean;
+  readonly listener: (event: SqlSessionChangeEvent) => void;
 }
 
 interface CompletionConfiguration {
@@ -485,7 +490,7 @@ function unavailableCompletionReason(
 function completionCancellation(
   revision: SqlRevision,
   reason: "caller" | "disposed" | "superseded",
-): SqlRelationCompletionResult {
+): SqlCompletionResult {
   return Object.freeze({ reason, revision, status: "cancelled" });
 }
 
@@ -740,9 +745,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   readonly #catalogResponseBudgetMs: number;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #onDispose: () => void;
-  readonly #listeners = new Set<
-    (event: SqlSessionChangeEvent) => void
-  >();
+  readonly #listeners = new Set<SessionChangeSubscription>();
   #activeCompletion: CompletionRequestState | null = null;
   #catalogOwner: SqlCatalogSearchWorkOwner | null = null;
   #catalogOwnerDialect: SqlRelationDialectRuntime | null = null;
@@ -842,12 +845,21 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       return;
     }
     const event = Object.freeze({ reason, revision });
-    for (const listener of Array.from(this.#listeners)) {
-      if (!this.#listeners.has(listener) || this.#disposed) {
+    for (const subscription of Array.from(this.#listeners)) {
+      if (
+        this.#disposed ||
+        revision !== this.#snapshot.revision
+      ) {
+        return;
+      }
+      if (
+        !subscription.active ||
+        !this.#listeners.has(subscription)
+      ) {
         continue;
       }
       try {
-        Reflect.apply(listener, undefined, [event]);
+        Reflect.apply(subscription.listener, undefined, [event]);
       } catch {
         // Listener failures do not interrupt coordinator state changes.
       }
@@ -952,20 +964,23 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         "SQL session change listener must be a function",
       );
     }
-    this.#listeners.add(listener);
-    let active = true;
+    const subscription: SessionChangeSubscription = {
+      active: true,
+      listener,
+    };
+    this.#listeners.add(subscription);
     return Object.freeze({
       dispose: (): void => {
-        if (!active) return;
-        active = false;
-        this.#listeners.delete(listener);
+        if (!subscription.active) return;
+        subscription.active = false;
+        this.#listeners.delete(subscription);
       },
     });
   };
 
   readonly complete = async (
     request: SqlCompletionRequest,
-  ): Promise<SqlRelationCompletionResult> => {
+  ): Promise<SqlCompletionResult> => {
     const completionStartedAt = performance.now();
     if (this.#disposed) {
       throw new SqlSessionError(
@@ -1027,6 +1042,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         ) {
           throw new Error();
         }
+      } else {
+        rejectOwnProperty(
+          trigger,
+          "character",
+          "invalid-completion-request",
+          "SQL completion trigger",
+        );
       }
       const signalProperty = readOwnDataProperty(
         request,
@@ -1557,7 +1579,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextContext,
       this.#dialects,
     );
-    resolveCatalogContext(nextContext);
+    const nextCatalog = resolveCatalogContext(nextContext);
+    if (nextCatalog && !this.#catalogCoordinator) {
+      throw new SqlSessionError(
+        "invalid-context",
+        "SQL catalog context requires a configured catalog provider",
+      );
+    }
     const nextLexicalProfile = nextDialect.lexicalProfile;
     if (this.#disposed) {
       throw new SqlSessionError(
@@ -1885,6 +1913,13 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
       }
       const context = cloneContext<Context>(candidateContext);
       resolveDialectRuntime(context, this.#dialects);
+      const catalogContext = resolveCatalogContext(context);
+      if (catalogContext && !this.#catalogCoordinator) {
+        throw new SqlSessionError(
+          "invalid-context",
+          "SQL catalog context requires a configured catalog provider",
+        );
+      }
 
       let session: DefaultSqlDocumentSession<Context>;
       session = new DefaultSqlDocumentSession(

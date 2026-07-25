@@ -1,8 +1,8 @@
 import type {
   SqlCatalogProviderReport,
   SqlCompletionIssue,
-  SqlRelationCompletionItem,
-  SqlRelationCompletionList,
+  SqlCompletionItem,
+  SqlCompletionList,
 } from "./relation-completion-types.js";
 import type {
   SqlCatalogSearchWorkOutcome,
@@ -58,12 +58,12 @@ export interface SqlRelationCompletionCompositionInput {
 
 export interface SqlRelationCompletionComposition {
   readonly sources: readonly SqlCatalogProviderReport[];
-  readonly value: SqlRelationCompletionList;
+  readonly value: SqlCompletionList;
 }
 
 interface RankedCteItem {
   readonly item: Extract<
-    SqlRelationCompletionItem,
+    SqlCompletionItem,
     { readonly relationKind: "cte" }
   >;
   readonly path: string;
@@ -72,7 +72,7 @@ interface RankedCteItem {
 interface RankedCatalogItem {
   readonly completionPathLength: number;
   readonly item: Exclude<
-    SqlRelationCompletionItem,
+    SqlCompletionItem,
     { readonly relationKind: "cte" }
   >;
   readonly label: string;
@@ -216,6 +216,7 @@ function createCteItems(
         to: input.replacementRange.to,
       }),
       label: cte.name.value,
+      kind: "relation" as const,
       provenance: Object.freeze({
         declarationPosition,
         kind: "cte" as const,
@@ -300,6 +301,7 @@ function createCatalogItems(
         to: input.replacementRange.to,
       }),
       label: relationName.value,
+      kind: "relation" as const,
       provenance: Object.freeze({
         entityId: relation.entityId,
         kind: "catalog" as const,
@@ -454,9 +456,9 @@ function freezeIssues(
 }
 
 function completeList(
-  items: readonly SqlRelationCompletionItem[],
+  items: readonly SqlCompletionItem[],
 ): Extract<
-  SqlRelationCompletionList,
+  SqlCompletionList,
   { readonly isIncomplete: false }
 > {
   const noIssues: readonly [] = Object.freeze([]);
@@ -468,11 +470,11 @@ function completeList(
 }
 
 function incompleteList(
-  items: readonly SqlRelationCompletionItem[],
+  items: readonly SqlCompletionItem[],
   firstIssue: SqlCompletionIssue,
   remainingIssues: readonly SqlCompletionIssue[],
 ): Extract<
-  SqlRelationCompletionList,
+  SqlCompletionList,
   { readonly isIncomplete: true }
 > {
   const issues: readonly [

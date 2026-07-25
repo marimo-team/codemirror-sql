@@ -27,7 +27,7 @@ import type {
   SqlCanonicalRelationPath,
   SqlCatalogRelationKind,
   SqlCatalogReadyCoverage,
-  SqlRelationCompletionList,
+  SqlCompletionList,
 } from "../relation-completion-types.js";
 import type {
   SqlTextRange,
@@ -176,7 +176,7 @@ function usable(
 function compose(
   marked: string,
   catalogOutcome: SqlComposableCatalogOutcome,
-): SqlRelationCompletionList {
+): SqlCompletionList {
   const local = markedLocalSite(marked);
   return composeSqlRelationCompletion({
     catalogOutcome,

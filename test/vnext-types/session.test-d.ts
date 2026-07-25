@@ -73,6 +73,16 @@ void session.complete({
   position: 0,
   trigger: { kind: "invoked" },
 });
+void session.complete({
+  position: 0,
+  signal: undefined,
+  trigger: { kind: "invoked" },
+});
+void session.complete({
+  position: 0,
+  // @ts-expect-error invoked triggers cannot also carry a character
+  trigger: { character: ".", kind: "invoked" },
+});
 const changeSubscription = session.onDidChange((event) => {
   const changedRevision: SqlRevision = event.revision;
   void changedRevision;

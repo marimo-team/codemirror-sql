@@ -45,10 +45,9 @@ export type {
   SqlCompletionTrigger,
   SqlDisposable,
   SqlRelationCatalogProvider,
-  SqlRelationCompletionItem,
-  SqlRelationCompletionList,
-  SqlRelationCompletionResult,
-  SqlRelationCompletionSession,
+  SqlCompletionItem,
+  SqlCompletionList,
+  SqlCompletionResult,
   SqlSessionChangeEvent,
   SqlSessionChangeReason,
 } from "./relation-completion-types.js";

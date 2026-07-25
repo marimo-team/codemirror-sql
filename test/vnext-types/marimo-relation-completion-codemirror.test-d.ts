@@ -4,7 +4,7 @@ import type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
 } from "../../src/vnext/codemirror/relation-completion-types.js";
-import type { SqlRelationCompletionItem } from "../../src/vnext/relation-completion-types.js";
+import type { SqlCompletionItem } from "../../src/vnext/relation-completion-types.js";
 
 interface ReactRootLike {
   readonly render: (value: unknown) => void;
@@ -28,7 +28,7 @@ const resolveInfo: SqlCompletionInfoResolver = async (item, { signal }) => {
   };
 };
 
-declare const item: SqlRelationCompletionItem;
+declare const item: SqlCompletionItem;
 const resolved = resolveInfo(item, {
   signal: new AbortController().signal,
 });
@@ -42,7 +42,7 @@ if (item.provenance.kind === "catalog") {
 
 // @ts-expect-error live editor state is not a resolver parameter
 const resolverWithView: SqlCompletionInfoResolver = (
-  _item: SqlRelationCompletionItem,
+  _item: SqlCompletionItem,
   _context: SqlCompletionInfoResolverContext,
   _view: EditorView,
 ) => null;

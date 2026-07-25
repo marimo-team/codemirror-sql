@@ -27,10 +27,12 @@ import {
 import type {
   SqlDocumentContext,
   SqlDocumentReplacement,
+  SqlRevision,
 } from "../types.js";
 import type {
   SqlCatalogInvalidation,
   SqlRelationCatalogProvider,
+  SqlSessionChangeEvent,
 } from "../relation-completion-types.js";
 
 interface TestContext extends SqlDocumentContext {
@@ -258,6 +260,123 @@ describe("relation completion session integration", () => {
     service.dispose();
   });
 
+  it("keeps completion edits in absolute UTF-16 document coordinates", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "initial" },
+        relations: [
+          {
+            canonicalPath: [
+              {
+                quoted: false,
+                role: "relation",
+                value: "users",
+              },
+            ],
+            completionPathStart: 0,
+            entityId: "users",
+            matchQuality: "exact",
+            relationKind: "table",
+          },
+        ],
+        status: "ready",
+      })),
+      dialects: [duckdb],
+    });
+    const text = "SELECT '😀'; SELECT * FROM us";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+    const result = await session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    });
+    expect(result).toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          {
+            edit: {
+              from: text.length - 2,
+              insert: "users",
+              to: text.length,
+            },
+            kind: "relation",
+          },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
+  it("uses absolute coordinates after a masked embedded region", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "initial" },
+        relations: [
+          {
+            canonicalPath: [
+              {
+                quoted: false,
+                role: "relation",
+                value: "users",
+              },
+            ],
+            completionPathStart: 0,
+            entityId: "users",
+            matchQuality: "exact",
+            relationKind: "table",
+          },
+        ],
+        status: "ready",
+      })),
+      dialects: [duckdb],
+    });
+    const text = "SELECT * FROM {df}; SELECT * FROM us";
+    const embeddedFrom = text.indexOf("{df}");
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      embeddedRegions: [
+        {
+          from: embeddedFrom,
+          language: "python",
+          to: embeddedFrom + 4,
+        },
+      ],
+      text,
+    });
+    const result = await session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    });
+    expect(result).toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          {
+            edit: {
+              from: text.length - 2,
+              insert: "users",
+              to: text.length,
+            },
+          },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
   it("reports terminal loading with a bounded completion intent", async () => {
     const service = createSqlLanguageService<TestContext>({
       catalog: catalogProvider(async () => ({
@@ -400,6 +519,212 @@ describe("relation completion session integration", () => {
     service.dispose();
   });
 
+  it("does not supersede valid work for a malformed request", async () => {
+    let resolveSearch:
+      | ((
+          response: Awaited<
+            ReturnType<SqlRelationCatalogProvider["search"]>
+          >,
+        ) => void)
+      | undefined;
+    const searchResult = new Promise<
+      Awaited<ReturnType<SqlRelationCatalogProvider["search"]>>
+    >((resolve) => {
+      resolveSearch = resolve;
+    });
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(() => searchResult),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const valid = session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: {
+          character: ".",
+          kind: "invoked",
+        },
+      } as never),
+    ).rejects.toMatchObject({
+      code: "invalid-completion-request",
+    });
+    resolveSearch?.({
+      coverage: { kind: "complete" },
+      epoch: { generation: 0, token: "initial" },
+      relations: [],
+      status: "ready",
+    });
+    await expect(valid).resolves.toMatchObject({
+      status: "ready",
+    });
+    service.dispose();
+  });
+
+  it("supersedes pending work when a higher catalog epoch arrives", async () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(
+        () =>
+          new Promise(() => {
+            // Intentionally unsettled; invalidation owns cancellation.
+          }),
+        (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      ),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const events: string[] = [];
+    session.onDidChange((event) => {
+      events.push(event.reason);
+    });
+    const result = session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    invalidate?.({
+      epoch: { generation: 1, token: "changed" },
+    });
+    await expect(result).resolves.toMatchObject({
+      reason: "superseded",
+      status: "cancelled",
+    });
+    expect(events).toEqual(["catalog"]);
+    service.dispose();
+  });
+
+  it("settles pending completion on caller abort, update, and disposal", async () => {
+    const createPendingSession = () => {
+      const service = createSqlLanguageService<TestContext>({
+        catalog: catalogProvider(
+          () =>
+            new Promise(() => {
+              // Intentionally unsettled; session cancellation owns completion.
+            }),
+        ),
+        dialects: [duckdb],
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      return { service, session };
+    };
+
+    const caller = createPendingSession();
+    const controller = new AbortController();
+    const callerResult = caller.session.complete({
+      position: 14,
+      signal: controller.signal,
+      trigger: { kind: "invoked" },
+    });
+    controller.abort();
+    await expect(callerResult).resolves.toMatchObject({
+      reason: "caller",
+      status: "cancelled",
+    });
+    caller.service.dispose();
+
+    const updated = createPendingSession();
+    const updatedResult = updated.session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    updated.session.update({
+      baseRevision: updated.session.revision,
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "remote",
+      },
+    });
+    await expect(updatedResult).resolves.toMatchObject({
+      reason: "superseded",
+      status: "cancelled",
+    });
+    updated.service.dispose();
+
+    const disposed = createPendingSession();
+    const disposedResult = disposed.session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    disposed.session.dispose();
+    await expect(disposedResult).resolves.toMatchObject({
+      reason: "disposed",
+      status: "cancelled",
+    });
+    disposed.service.dispose();
+  });
+
+  it("replaces catalog ownership when the scope changes", async () => {
+    const scopes: string[] = [];
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(async (request) => {
+        scopes.push(request.scope);
+        return {
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: request.scope },
+          relations: [],
+          status: "ready",
+        };
+      }),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    session.update({
+      baseRevision: session.revision,
+      context: {
+        catalog: { scope: "connection:2" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+    });
+    await session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    expect(scopes).toEqual(["connection:1", "connection:2"]);
+    service.dispose();
+  });
+
   it("advances revision and isolates listeners on catalog invalidation", () => {
     let invalidate:
       | ((event: SqlCatalogInvalidation) => void)
@@ -444,6 +769,160 @@ describe("relation completion session integration", () => {
     service.dispose();
   });
 
+  it("stops a stale catalog event after a listener updates the session", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(
+        async () => ({
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "initial" },
+          relations: [],
+          status: "ready",
+        }),
+        (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      ),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const events: SqlRevision[] = [];
+    session.onDidChange((event) => {
+      events.push(event.revision);
+      session.update({
+        baseRevision: event.revision,
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "remote",
+        },
+      });
+    });
+    session.onDidChange((event) => {
+      events.push(event.revision);
+    });
+
+    invalidate?.({
+      epoch: { generation: 1, token: "changed" },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(session.revision).not.toBe(events[0]);
+    service.dispose();
+  });
+
+  it("does not deliver an outer catalog event after nested invalidation", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(
+        async () => ({
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "initial" },
+          relations: [],
+          status: "ready",
+        }),
+        (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      ),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const events: SqlRevision[] = [];
+    let nested = false;
+    session.onDidChange((event) => {
+      events.push(event.revision);
+      if (!nested) {
+        nested = true;
+        invalidate?.({
+          epoch: { generation: 2, token: "nested" },
+        });
+      }
+    });
+    session.onDidChange((event) => {
+      events.push(event.revision);
+    });
+
+    invalidate?.({
+      epoch: { generation: 1, token: "outer" },
+    });
+
+    expect(events).toHaveLength(4);
+    expect(events[0]).toBe(events[1]);
+    expect(events[1]).not.toBe(events[2]);
+    expect(events[2]).toBe(events[3]);
+    expect(session.revision).toBe(events[2]);
+    service.dispose();
+  });
+
+  it("keeps duplicate listener subscriptions independent", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(
+        async () => ({
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "initial" },
+          relations: [],
+          status: "ready",
+        }),
+        (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      ),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const events: string[] = [];
+    const listener = (event: SqlSessionChangeEvent): void => {
+      events.push(event.reason);
+    };
+    const first = session.onDidChange(listener);
+    const second = session.onDidChange(listener);
+
+    first.dispose();
+    invalidate?.({
+      epoch: { generation: 1, token: "first" },
+    });
+    expect(events).toEqual(["catalog"]);
+
+    second.dispose();
+    invalidate?.({
+      epoch: { generation: 2, token: "second" },
+    });
+    expect(events).toEqual(["catalog"]);
+    service.dispose();
+  });
+
   it("validates completion configuration and request input", async () => {
     expectSessionError("invalid-service-options", () => {
       createSqlLanguageService({
@@ -457,6 +936,42 @@ describe("relation completion session integration", () => {
     ).rejects.toMatchObject({
       code: "invalid-completion-request",
     });
+    service.dispose();
+  });
+
+  it("rejects catalog context without a configured provider atomically", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    expectSessionError("invalid-context", () => {
+      service.openDocument({
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+    });
+    const session = service.openDocument({
+      context: {
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const revision = session.revision;
+    expectSessionError("invalid-context", () => {
+      session.update({
+        baseRevision: revision,
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+      });
+    });
+    expect(session.revision).toBe(revision);
     service.dispose();
   });
 });
