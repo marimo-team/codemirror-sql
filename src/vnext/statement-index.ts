@@ -20,6 +20,12 @@ export {
 export type { SqlLexicalProfile } from "./lexical.js";
 
 const analysisRangeBrand: unique symbol = Symbol("SqlAnalysisRange");
+const exactSqlStatementSlots = new WeakSet<object>();
+const sqlStatementIndexProvenance = new WeakMap<
+  object,
+  SqlStatementProvenance
+>();
+const sqlStatementSlots = new WeakSet<object>();
 
 export const MAX_SQL_STATEMENT_SLOTS = 10_000;
 const MAX_PREFIX_TOKENS = 6;
@@ -87,6 +93,82 @@ export interface SqlStatementIndex {
   readonly slots: readonly SqlStatementSlot[];
 }
 
+interface SqlStatementProvenance {
+  readonly analysisText: string;
+  readonly profile: SqlLexicalProfile;
+  readonly slots: WeakSet<object>;
+}
+
+function snapshotLexicalProfile(
+  profile: SqlLexicalProfile,
+): SqlLexicalProfile {
+  return Object.freeze({
+    backtickQuotedIdentifiers: profile.backtickQuotedIdentifiers,
+    bigQueryStrings: profile.bigQueryStrings,
+    dollarQuotedStrings: profile.dollarQuotedStrings,
+    hashLineComments: profile.hashLineComments,
+    nestedBlockComments: profile.nestedBlockComments,
+    proceduralGuards: profile.proceduralGuards,
+    singleQuoteBackslash: profile.singleQuoteBackslash,
+  });
+}
+
+function hasSameLexicalProfile(
+  left: SqlLexicalProfile,
+  right: SqlLexicalProfile,
+): boolean {
+  return (
+    left.backtickQuotedIdentifiers === right.backtickQuotedIdentifiers &&
+    left.bigQueryStrings === right.bigQueryStrings &&
+    left.dollarQuotedStrings === right.dollarQuotedStrings &&
+    left.hashLineComments === right.hashLineComments &&
+    left.nestedBlockComments === right.nestedBlockComments &&
+    left.proceduralGuards === right.proceduralGuards &&
+    left.singleQuoteBackslash === right.singleQuoteBackslash
+  );
+}
+
+export function isExactSqlStatementSlotSnapshot(
+  candidate: unknown,
+): candidate is ExactSqlStatementSlot {
+  return (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    exactSqlStatementSlots.has(candidate)
+  );
+}
+
+export function isExactSqlStatementSlotSnapshotFor(
+  index: unknown,
+  candidate: unknown,
+  analysisText: string,
+  profile: SqlLexicalProfile,
+): candidate is ExactSqlStatementSlot {
+  if (
+    index === null ||
+    typeof index !== "object" ||
+    !isExactSqlStatementSlotSnapshot(candidate)
+  ) {
+    return false;
+  }
+  const provenance = sqlStatementIndexProvenance.get(index);
+  return (
+    provenance?.analysisText === analysisText &&
+    hasSameLexicalProfile(provenance.profile, profile) &&
+    provenance.slots.has(candidate)
+  );
+}
+
+export function isSqlStatementSlotSnapshot(
+  candidate: unknown,
+): candidate is SqlStatementSlot {
+  return (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    sqlStatementSlots.has(candidate)
+  );
+}
+
 const NORMAL_END_STATE: Extract<
   SqlLexicalEndState,
   { readonly kind: "normal" }
@@ -122,7 +204,7 @@ function createExactSlot(
   hasCode: boolean,
   endState: ExactSqlStatementSlot["endState"],
 ): ExactSqlStatementSlot {
-  return Object.freeze({
+  const slot = Object.freeze({
     boundaryQuality: "exact",
     endState,
     extent: createAnalysisRange(from, extentTo),
@@ -131,6 +213,9 @@ function createExactSlot(
     terminator:
       sourceTo === extentTo ? null : createAnalysisRange(sourceTo, extentTo),
   });
+  exactSqlStatementSlots.add(slot);
+  sqlStatementSlots.add(slot);
+  return slot;
 }
 
 function createOpaqueSlot(
@@ -139,11 +224,13 @@ function createOpaqueSlot(
   reason: SqlOpaqueBoundaryReason,
   detectedAt: number,
 ): OpaqueSqlStatementSlot {
-  return Object.freeze({
+  const slot = Object.freeze({
     boundaryQuality: "opaque",
     endState: createOpaqueEndState(reason, detectedAt),
     extent: createAnalysisRange(from, to),
   });
+  sqlStatementSlots.add(slot);
+  return slot;
 }
 
 class SqlPrefixGuard {
@@ -360,14 +447,27 @@ interface SqlStatementScanOptions {
 
 function createStatementIndex(
   slots: SqlStatementSlot[],
+  analysisText: string,
+  profile: SqlLexicalProfile,
 ): SqlStatementIndex {
   const finalSlot = getStatementSlot(slots, slots.length - 1);
-  return Object.freeze({
+  const membership = new WeakSet<object>();
+  for (const slot of slots) {
+    membership.add(slot);
+  }
+  const provenance = Object.freeze({
+    analysisText,
+    profile,
+    slots: membership,
+  });
+  const index = Object.freeze({
     endState: finalSlot.endState,
     quality:
       finalSlot.boundaryQuality === "opaque" ? "opaque" : "exact",
     slots: Object.freeze(slots),
   });
+  sqlStatementIndexProvenance.set(index, provenance);
+  return index;
 }
 
 function scanSqlStatementIndex(
@@ -393,7 +493,7 @@ function scanSqlStatementIndex(
       detectedAt,
     );
     slots.push(slot);
-    return createStatementIndex(slots);
+    return createStatementIndex(slots, analysisText, profile);
   };
 
   while (cursor < analysisText.length) {
@@ -611,7 +711,7 @@ function scanSqlStatementIndex(
       finalEndState,
     ),
   );
-  return createStatementIndex(slots);
+  return createStatementIndex(slots, analysisText, profile);
 }
 
 /** Builds the bounded, parser-free statement partition for one analysis text. */
@@ -619,10 +719,14 @@ export function buildSqlStatementIndex(
   analysisText: string,
   profile: SqlLexicalProfile,
 ): SqlStatementIndex {
-  return scanSqlStatementIndex(analysisText, profile, {
-    from: 0,
-    prefixSlots: [],
-  });
+  return scanSqlStatementIndex(
+    analysisText,
+    snapshotLexicalProfile(profile),
+    {
+      from: 0,
+      prefixSlots: [],
+    },
+  );
 }
 
 function statementSlotIndexAt(
@@ -697,7 +801,7 @@ function shiftStatementSlot(
   delta: number,
 ): SqlStatementSlot {
   if (slot.boundaryQuality === "opaque") {
-    return Object.freeze({
+    const shifted = Object.freeze({
       boundaryQuality: "opaque",
       endState: shiftEndState(slot.endState, delta),
       extent: createAnalysisRange(
@@ -705,8 +809,10 @@ function shiftStatementSlot(
         slot.extent.to + delta,
       ),
     });
+    sqlStatementSlots.add(shifted);
+    return shifted;
   }
-  return Object.freeze({
+  const shifted = Object.freeze({
     boundaryQuality: "exact",
     endState: shiftEndState(slot.endState, delta),
     extent: createAnalysisRange(
@@ -725,6 +831,9 @@ function shiftStatementSlot(
         )
       : null,
   });
+  exactSqlStatementSlots.add(shifted);
+  sqlStatementSlots.add(shifted);
+  return shifted;
 }
 
 function normalizeTrustedChanges(
@@ -774,15 +883,37 @@ export function updateSqlStatementIndex(
   changes: readonly SqlTextChange[],
   profile: SqlLexicalProfile,
 ): SqlStatementIndex {
+  const previousProvenance =
+    sqlStatementIndexProvenance.get(previousIndex);
+  if (
+    !previousProvenance ||
+    !hasSameLexicalProfile(previousProvenance.profile, profile)
+  ) {
+    return scanSqlStatementIndex(
+      nextAnalysisText,
+      snapshotLexicalProfile(profile),
+      {
+        from: 0,
+        prefixSlots: [],
+      },
+    );
+  }
+  const nextProfile = previousProvenance.profile;
   const previousSlots = previousIndex.slots;
   const previousLength = getStatementSlot(
     previousSlots,
     previousSlots.length - 1,
   ).extent.to;
   if (changes.length === 0) {
-    return previousLength === nextAnalysisText.length
+    const unchanged =
+      previousLength === nextAnalysisText.length &&
+      previousProvenance.analysisText === nextAnalysisText;
+    return unchanged
       ? previousIndex
-      : buildSqlStatementIndex(nextAnalysisText, profile);
+      : scanSqlStatementIndex(nextAnalysisText, nextProfile, {
+          from: 0,
+          prefixSlots: [],
+        });
   }
   const normalized = normalizeTrustedChanges(
     changes,
@@ -790,7 +921,10 @@ export function updateSqlStatementIndex(
     nextAnalysisText.length,
   );
   if (!normalized) {
-    return buildSqlStatementIndex(nextAnalysisText, profile);
+    return scanSqlStatementIndex(nextAnalysisText, nextProfile, {
+      from: 0,
+      prefixSlots: [],
+    });
   }
 
   const restartIndex = statementSlotIndexAt(
@@ -816,7 +950,7 @@ export function updateSqlStatementIndex(
     previousFinalSlot.boundaryQuality === "opaque" &&
     previousFinalSlot.endState.reason === "resource-limit";
 
-  return scanSqlStatementIndex(nextAnalysisText, profile, {
+  return scanSqlStatementIndex(nextAnalysisText, nextProfile, {
     from: restartFrom,
     prefixSlots,
     tryReuseSuffix: (newBoundary, scannedSlots) => {
@@ -862,7 +996,11 @@ export function updateSqlStatementIndex(
           : oldSuffix.map((slot) =>
               shiftStatementSlot(slot, normalized.delta),
             );
-      return createStatementIndex([...scannedSlots, ...suffix]);
+      return createStatementIndex(
+        [...scannedSlots, ...suffix],
+        nextAnalysisText,
+        nextProfile,
+      );
     },
   });
 }

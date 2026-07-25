@@ -7,6 +7,7 @@ import {
   MAX_CTE_IDENTIFIER_LENGTH,
   MAX_CTE_QUOTED_IDENTIFIER_LENGTH,
   MAX_CTE_STATEMENT_LENGTH,
+  resolveAuthenticatedSqlCteEntrypoints,
   type SqlCteLayout,
   type SqlCteLayoutDialect,
   type SqlCteLayoutIssue,
@@ -55,6 +56,7 @@ function analyze(
   expect(slot?.boundaryQuality).toBe("exact");
   const result = analyzeSqlCteLayout(
     source,
+    index,
     slot as ExactSqlStatementSlot,
     dialect,
   );
@@ -68,15 +70,18 @@ function analyze(
 function analyzeRaw(
   text: string,
   dialect: SqlCteLayoutDialect = postgres,
+  indexDialect: SqlCteLayoutDialect = dialect,
 ): SqlCteLayout {
   const source = createIdentitySqlSource(text);
-  const slot = buildSqlStatementIndex(
+  const index = buildSqlStatementIndex(
     source.analysisText,
-    dialect.lexicalProfile,
-  ).slots[0];
+    indexDialect.lexicalProfile,
+  );
+  const slot = index.slots[0];
   expect(slot?.boundaryQuality).toBe("exact");
   return analyzeSqlCteLayout(
     source,
+    index,
     slot as ExactSqlStatementSlot,
     dialect,
   );
@@ -400,6 +405,7 @@ describe("bounded CTE layout", () => {
     }
     const layout = analyzeSqlCteLayout(
       source,
+      index,
       slot,
       postgres,
     );
@@ -1022,11 +1028,58 @@ describe("bounded CTE layout", () => {
         },
       },
     };
-    expect(analyzeRaw("SELECT 1", getterLexicalProfile)).toEqual({
+    expect(
+      analyzeRaw("SELECT 1", getterLexicalProfile, postgres),
+    ).toEqual({
       reason: "resource-limit",
       status: "unavailable",
     });
     expect(getterInvoked).toBe(false);
+  });
+
+  it("never reads a raw dialect after validating its data descriptors", () => {
+    const text = "WITH local AS (SELECT 1) SELECT * FROM local";
+    const source = createIdentitySqlSource(text);
+    const index = buildSqlStatementIndex(
+      source.analysisText,
+      postgres.lexicalProfile,
+    );
+    const slot = index.slots[0];
+    expect(slot?.boundaryQuality).toBe("exact");
+    if (!slot || slot.boundaryQuality !== "exact") {
+      throw new Error("Expected one exact statement slot");
+    }
+
+    let rawRead = false;
+    const descriptorOnlyDialect = new Proxy(postgres, {
+      get(target, property, receiver) {
+        if (property === "lexicalProfile") {
+          rawRead = true;
+          throw new Error("hostile");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const layout = analyzeSqlCteLayout(
+      source,
+      index,
+      slot,
+      descriptorOnlyDialect,
+    );
+
+    expect(layout.status).toBe("ready");
+    if (layout.status === "unavailable") {
+      throw new Error("Expected an authenticated CTE layout");
+    }
+    expect(
+      resolveAuthenticatedSqlCteEntrypoints(
+        layout,
+        source,
+        slot,
+        descriptorOnlyDialect,
+      ),
+    ).toEqual(layout.mainQueryEntrypoints);
+    expect(rawRead).toBe(false);
   });
 
   it("projects only proven frame phases and validates positions", () => {

@@ -17,17 +17,19 @@ const dialect = DUCKDB_SQL_RELATION_DIALECT.cteLayout;
 
 function fixture(text: string): {
   readonly source: ReturnType<typeof createIdentitySqlSource>;
+  readonly index: ReturnType<typeof buildSqlStatementIndex>;
   readonly slot: ExactSqlStatementSlot;
 } {
   const source = createIdentitySqlSource(text);
-  const slot = buildSqlStatementIndex(
+  const index = buildSqlStatementIndex(
     source.analysisText,
     dialect.lexicalProfile,
-  ).slots[0];
+  );
+  const slot = index.slots[0];
   if (!slot || slot.boundaryQuality !== "exact") {
     throw new Error("CTE benchmark fixture requires an exact statement");
   }
-  return { slot, source };
+  return { index, slot, source };
 }
 
 const tenKibibytes = 10 * 1_024;
@@ -62,6 +64,7 @@ const bareFrameHeavyText = `SELECT ${Array.from(
 const bareFrameHeavyFixture = fixture(bareFrameHeavyText);
 const depthLayout = analyzeSqlCteLayout(
   depthHeavyFixture.source,
+  depthHeavyFixture.index,
   depthHeavyFixture.slot,
   dialect,
 );
@@ -70,6 +73,7 @@ if (depthLayout.status !== "ready") {
 }
 const projectedLayout = analyzeSqlCteLayout(
   declarationHeavyFixture.source,
+  declarationHeavyFixture.index,
   declarationHeavyFixture.slot,
   dialect,
 );
@@ -81,6 +85,7 @@ describe("CTE layout", () => {
   bench("ordinary 10 KiB statement", () => {
     analyzeSqlCteLayout(
       ordinaryFixture.source,
+      ordinaryFixture.index,
       ordinaryFixture.slot,
       dialect,
     );
@@ -89,6 +94,7 @@ describe("CTE layout", () => {
   bench("256 declarations", () => {
     analyzeSqlCteLayout(
       declarationHeavyFixture.source,
+      declarationHeavyFixture.index,
       declarationHeavyFixture.slot,
       dialect,
     );
@@ -97,6 +103,7 @@ describe("CTE layout", () => {
   bench("128-depth nested CTE", () => {
     analyzeSqlCteLayout(
       depthHeavyFixture.source,
+      depthHeavyFixture.index,
       depthHeavyFixture.slot,
       dialect,
     );
@@ -105,6 +112,7 @@ describe("CTE layout", () => {
   bench("256 sequential incomplete frames", () => {
     analyzeSqlCteLayout(
       bareFrameHeavyFixture.source,
+      bareFrameHeavyFixture.index,
       bareFrameHeavyFixture.slot,
       dialect,
     );

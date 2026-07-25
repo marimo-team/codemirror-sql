@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeSqlCteLayout,
+  type SqlCteLayout,
+} from "../cte-layout.js";
+import {
   MAX_QUERY_SITE_DEPTH,
   MAX_QUERY_SITE_IDENTIFIER_LENGTH,
   MAX_QUERY_SITE_LEXEMES,
@@ -11,9 +15,14 @@ import {
   type SqlQuerySiteResult,
 } from "../query-site.js";
 import {
+  recognizeSqlRelationQuerySiteWithCteLayout,
+} from "../relation-query-site.js";
+import {
   BIGQUERY_SQL_RELATION_DIALECT,
+  DREMIO_SQL_RELATION_DIALECT,
   DUCKDB_SQL_RELATION_DIALECT,
   POSTGRESQL_SQL_RELATION_DIALECT,
+  type SqlRelationDialectRuntime,
 } from "../relation-dialect.js";
 import {
   createIdentitySqlSource,
@@ -24,6 +33,8 @@ import {
   buildSqlStatementIndex,
   findSqlStatementSlot,
   POSTGRESQL_SQL_LEXICAL_PROFILE,
+  type ExactSqlStatementSlot,
+  updateSqlStatementIndex,
 } from "../statement-index.js";
 
 const postgresDialect = POSTGRESQL_SQL_RELATION_DIALECT.querySite;
@@ -82,6 +93,54 @@ function expectReady(
     throw new Error(`Expected ready, received ${result.status}`);
   }
   return result;
+}
+
+function cteFixture(
+  marked: string,
+  dialect: SqlRelationDialectRuntime =
+    POSTGRESQL_SQL_RELATION_DIALECT,
+): {
+  readonly layout: Exclude<
+    SqlCteLayout,
+    { readonly status: "unavailable" }
+  >;
+  readonly position: number;
+  readonly result: SqlQuerySiteResult;
+  readonly slot: ExactSqlStatementSlot;
+  readonly source: SqlSourceSnapshot;
+} {
+  const { position, text } = markedSource(marked);
+  const source = createIdentitySqlSource(text);
+  const index = buildSqlStatementIndex(
+    source.analysisText,
+    dialect.querySite.lexicalProfile,
+  );
+  const slot = findSqlStatementSlot(index, position, "left");
+  if (slot.boundaryQuality === "opaque") {
+    throw new Error("CTE query fixture requires an exact statement");
+  }
+  const layout = analyzeSqlCteLayout(
+    source,
+    index,
+    slot,
+    dialect.cteLayout,
+  );
+  if (layout.status === "unavailable") {
+    throw new Error("CTE query fixture requires an available layout");
+  }
+  return {
+    layout,
+    position,
+    result: recognizeSqlRelationQuerySiteWithCteLayout(
+      source,
+      slot,
+      position,
+      dialect,
+      layout,
+    ),
+    slot,
+    source,
+  };
 }
 
 describe("partial SELECT relation query sites", () => {
@@ -303,6 +362,573 @@ describe("partial SELECT relation query sites", () => {
         dialect: malformedDialect,
       }).status,
     ).toBe("unavailable");
+  });
+});
+
+describe("authenticated CTE main-query entrypoints", () => {
+  it.each([
+    [
+      "WITH cte_name AS (SELECT 1) SELECT * FROM |",
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    ],
+    [
+      "WITH cte_name AS (SELECT 1) SELECT * FROM |",
+      DUCKDB_SQL_RELATION_DIALECT,
+    ],
+    [
+      "WITH cte_name AS (SELECT 1) SELECT * FROM |",
+      BIGQUERY_SQL_RELATION_DIALECT,
+    ],
+    [
+      "WITH cte_name(id) AS (SELECT 1) SELECT * FROM |",
+      DREMIO_SQL_RELATION_DIALECT,
+    ],
+  ] as const)("recognizes a built-in main query in %s", (marked, dialect) => {
+    const result = expectReady(cteFixture(marked, dialect).result);
+    expect(result.anchor).toBe("from");
+    expect(result.recognition).toEqual({
+      issues: [],
+      quality: "exact",
+    });
+  });
+
+  it("recognizes nested CTE main queries by exact offset and depth", () => {
+    const result = expectReady(
+      cteFixture(
+        "WITH outer_cte AS (WITH inner_cte AS (SELECT 1) SELECT * FROM |) SELECT 1",
+      ).result,
+    );
+    expect(result.anchor).toBe("from");
+  });
+
+  it("returns to the enclosing entrypoint after a nested CTE closes", () => {
+    const result = expectReady(
+      cteFixture(
+        "WITH outer_cte AS (WITH inner_cte AS (SELECT 1) SELECT * FROM inner_cte) SELECT * FROM |",
+      ).result,
+    );
+    expect(result.anchor).toBe("from");
+    expect(result.recognition.quality).toBe("exact");
+  });
+
+  it("keeps ordinary CTE body recognition independent of entrypoints", () => {
+    const marked =
+      "WITH local AS (SELECT * FROM |) SELECT * FROM local";
+    expect(recognize(marked).status).toBe("ready");
+    expect(cteFixture(marked).result.status).toBe("ready");
+  });
+
+  it("translates statement-relative entrypoints for later statements", () => {
+    const result = expectReady(
+      cteFixture(
+        "SELECT 1; WITH local AS (SELECT 1) SELECT * FROM schema.ta|",
+      ).result,
+    );
+    expect(result.prefix).toEqual({ quoted: false, value: "ta" });
+    expect(result.typedPathRange).toMatchObject({
+      from: 40,
+      to: 49,
+    });
+  });
+
+  it("rejects copied, proxied, raw, cross-source, and cross-dialect evidence", () => {
+    const fixture = cteFixture(
+      "WITH local AS (SELECT 1) SELECT * FROM |",
+    );
+    const copied = { ...fixture.layout } as SqlCteLayout;
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        copied,
+      ),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+
+    let invoked = false;
+    const proxied = new Proxy(fixture.layout, {
+      get() {
+        invoked = true;
+        throw new Error("hostile");
+      },
+      getOwnPropertyDescriptor() {
+        invoked = true;
+        throw new Error("hostile");
+      },
+      ownKeys() {
+        invoked = true;
+        throw new Error("hostile");
+      },
+    });
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        proxied,
+      ).status,
+    ).toBe("unavailable");
+    expect(invoked).toBe(false);
+
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        fixture.layout.mainQueryEntrypoints as never,
+      ).status,
+    ).toBe("unavailable");
+
+    const secondSource = createIdentitySqlSource(
+      fixture.source.originalText,
+    );
+    const secondIndex = buildSqlStatementIndex(
+      secondSource.analysisText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const secondSlot = findSqlStatementSlot(
+      secondIndex,
+      fixture.position,
+      "left",
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        secondSource,
+        secondSlot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+
+    const mixedRuntime: SqlRelationDialectRuntime = {
+      ...POSTGRESQL_SQL_RELATION_DIALECT,
+      querySite: DUCKDB_SQL_RELATION_DIALECT.querySite,
+    };
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        mixedRuntime,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+
+    let runtimeInvoked = false;
+    const proxiedRuntime = new Proxy(
+      POSTGRESQL_SQL_RELATION_DIALECT,
+      {
+        get() {
+          runtimeInvoked = true;
+          throw new Error("hostile");
+        },
+        getOwnPropertyDescriptor() {
+          runtimeInvoked = true;
+          throw new Error("hostile");
+        },
+        ownKeys() {
+          runtimeInvoked = true;
+          throw new Error("hostile");
+        },
+      },
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        proxiedRuntime,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+    expect(runtimeInvoked).toBe(false);
+
+    let slotInvoked = false;
+    const proxiedSlot = new Proxy(fixture.slot, {
+      get() {
+        slotInvoked = true;
+        throw new Error("hostile");
+      },
+      getOwnPropertyDescriptor() {
+        slotInvoked = true;
+        throw new Error("hostile");
+      },
+      ownKeys() {
+        slotInvoked = true;
+        throw new Error("hostile");
+      },
+    });
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        proxiedSlot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+    expect(slotInvoked).toBe(false);
+
+    const rebuiltIndex = buildSqlStatementIndex(
+      fixture.source.analysisText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const rebuiltSlot = findSqlStatementSlot(
+      rebuiltIndex,
+      fixture.position,
+      "left",
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        rebuiltSlot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+    const mismatchedLayout = analyzeSqlCteLayout(
+      fixture.source,
+      rebuiltIndex,
+      fixture.slot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        mismatchedLayout,
+      ).status,
+    ).toBe("unavailable");
+
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        null as never,
+      ).status,
+    ).toBe("unavailable");
+
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        fixture.source,
+        fixture.slot,
+        fixture.position,
+        DUCKDB_SQL_RELATION_DIALECT,
+        fixture.layout,
+      ).status,
+    ).toBe("unavailable");
+  });
+
+  it("does not authenticate mutable statement slots", () => {
+    const first =
+      "WITH cte_name AS (SELECT 1) SELECT * FROM target";
+    const second =
+      "XXXX cte_name AS (SELECT 1) SELECT * FROM target";
+    const source = createIdentitySqlSource(`${first};${second}`);
+    const index = buildSqlStatementIndex(
+      source.analysisText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const firstSlot = findSqlStatementSlot(index, first.length, "left");
+    const secondSlot = findSqlStatementSlot(
+      index,
+      source.analysisText.length,
+      "left",
+    );
+    if (
+      firstSlot.boundaryQuality === "opaque" ||
+      secondSlot.boundaryQuality === "opaque"
+    ) {
+      throw new Error("Mutable slot fixture requires exact statements");
+    }
+    const mutableSlot: ExactSqlStatementSlot = {
+      ...firstSlot,
+      extent: { ...firstSlot.extent },
+      source: { ...firstSlot.source },
+      terminator: firstSlot.terminator
+        ? { ...firstSlot.terminator }
+        : null,
+    };
+    const layout = analyzeSqlCteLayout(
+      source,
+      index,
+      mutableSlot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    Object.assign(mutableSlot, {
+      endState: secondSlot.endState,
+      extent: { ...secondSlot.extent },
+      hasCode: secondSlot.hasCode,
+      source: { ...secondSlot.source },
+      terminator: secondSlot.terminator,
+    });
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        source,
+        mutableSlot,
+        source.analysisText.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        layout,
+      ),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  });
+
+  it("binds authentic slots to their analysis text", () => {
+    const source = createIdentitySqlSource(
+      "DELIMITER $$;SELECT * FROM ",
+    );
+    const foreignText = "xxxxxxxxxxxx;SELECT * FROM ";
+    expect(foreignText.length).toBe(source.analysisText.length);
+    const foreignIndex = buildSqlStatementIndex(
+      foreignText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const foreignSlot = findSqlStatementSlot(
+      foreignIndex,
+      foreignText.length,
+      "left",
+    );
+    if (foreignSlot.boundaryQuality === "opaque") {
+      throw new Error("Foreign slot fixture requires an exact statement");
+    }
+    const layout = analyzeSqlCteLayout(
+      source,
+      foreignIndex,
+      foreignSlot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        source,
+        foreignSlot,
+        source.analysisText.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        layout,
+      ),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  });
+
+  it("binds authentic slots to their lexical profile", () => {
+    const source = createIdentitySqlSource("SELECT * FROM ");
+    const index = buildSqlStatementIndex(
+      source.analysisText,
+      DUCKDB_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const slot = findSqlStatementSlot(
+      index,
+      source.analysisText.length,
+      "left",
+    );
+    if (slot.boundaryQuality === "opaque") {
+      throw new Error("Wrong-profile fixture requires an exact statement");
+    }
+    const layout = analyzeSqlCteLayout(
+      source,
+      index,
+      slot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        source,
+        slot,
+        source.analysisText.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        layout,
+      ),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  });
+
+  it("keeps old and new incremental statement contexts valid", () => {
+    const first =
+      "WITH cte_name AS (SELECT 1) SELECT * FROM target";
+    const oldText = `${first}; SELECT 2; SELECT 3`;
+    const oldSource = createIdentitySqlSource(oldText);
+    const profile =
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile;
+    const oldIndex = buildSqlStatementIndex(oldText, profile);
+    const oldSlot = findSqlStatementSlot(
+      oldIndex,
+      first.length,
+      "left",
+    );
+    if (oldSlot.boundaryQuality === "opaque") {
+      throw new Error("Incremental fixture requires exact statements");
+    }
+    const oldLayout = analyzeSqlCteLayout(
+      oldSource,
+      oldIndex,
+      oldSlot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    const editFrom = oldText.indexOf("SELECT 2") + "SELECT ".length;
+    const newText = `${oldText.slice(0, editFrom)}4${oldText.slice(
+      editFrom + 1,
+    )}`;
+    const newIndex = updateSqlStatementIndex(
+      oldIndex,
+      newText,
+      [{ from: editFrom, insert: "4", to: editFrom + 1 }],
+      profile,
+    );
+    const newSource = createIdentitySqlSource(newText);
+    const newSlot = findSqlStatementSlot(
+      newIndex,
+      first.length,
+      "left",
+    );
+    if (newSlot.boundaryQuality === "opaque") {
+      throw new Error("Incremental fixture requires exact statements");
+    }
+    expect(newSlot).toBe(oldSlot);
+    const newLayout = analyzeSqlCteLayout(
+      newSource,
+      newIndex,
+      newSlot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        oldSource,
+        oldSlot,
+        first.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        oldLayout,
+      ).status,
+    ).toBe("ready");
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        newSource,
+        newSlot,
+        first.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        newLayout,
+      ).status,
+    ).toBe("ready");
+  });
+
+  it("preserves opaque statement failures for authentic slots", () => {
+    const source = createIdentitySqlSource("DELIMITER $$");
+    const index = buildSqlStatementIndex(
+      source.analysisText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const slot = findSqlStatementSlot(
+      index,
+      source.analysisText.length,
+      "left",
+    );
+    const fixture = cteFixture(
+      "WITH local AS (SELECT 1) SELECT * FROM |",
+    );
+    expect(slot.boundaryQuality).toBe("opaque");
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        source,
+        slot,
+        source.analysisText.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        fixture.layout,
+      ),
+    ).toEqual({
+      reason: "opaque-statement",
+      status: "unavailable",
+    });
+  });
+
+  it.each([
+    ["invalid-header", "header"],
+    ["skipped", "skipped"],
+    ["wrong-depth", "depth"],
+    ["wrong-token", "token"],
+  ] as const)(
+    "fails closed when authenticated source evidence becomes %s",
+    (_, mutation) => {
+      const text =
+        "WITH cte_name AS (SELECT 1) SELECT * FROM target";
+      const mutableSource: SqlSourceSnapshot = {
+        ...createIdentitySqlSource(text),
+      };
+      const position = text.length;
+      const index = buildSqlStatementIndex(
+        mutableSource.analysisText,
+        POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+      );
+      const slot = findSqlStatementSlot(index, position, "left");
+      if (slot.boundaryQuality === "opaque") {
+        throw new Error("Mutable fixture requires an exact statement");
+      }
+      const layout = analyzeSqlCteLayout(
+        mutableSource,
+        index,
+        slot,
+        POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+      );
+      const mainQueryStart = text.lastIndexOf("SELECT");
+      const nextAnalysisText =
+        mutation === "header"
+          ? `XXXX${text.slice(4)}`
+          : mutation === "depth"
+          ? `${text.slice(0, mainQueryStart - 2)} ${text.slice(
+              mainQueryStart - 1,
+            )}`
+          : `${text.slice(0, mainQueryStart)}${
+              mutation === "skipped" ? "/*x*/ " : "DELETE"
+            }${text.slice(mainQueryStart + 6)}`;
+      (mutableSource as { analysisText: string }).analysisText =
+        nextAnalysisText;
+      expect(
+        recognizeSqlRelationQuerySiteWithCteLayout(
+          mutableSource,
+          slot,
+          position,
+          POSTGRESQL_SQL_RELATION_DIALECT,
+          layout,
+        ),
+      ).toEqual({
+        reason: "ambiguous-query-site",
+        status: "unavailable",
+      });
+    },
+  );
+
+  it("does not make raw WITH statements query candidates", () => {
+    const marked =
+      "WITH local AS (SELECT 1) SELECT * FROM |";
+    expect(recognize(marked)).toEqual({
+      reason: "not-relation-position",
+      status: "inactive",
+    });
+  });
+
+  it("does not invent entrypoints for incomplete CTE headers", () => {
+    const fixture = cteFixture(
+      "WITH cte_name AS (SELECT 1), SELECT * FROM |",
+    );
+    expect(fixture.layout.status).toBe("partial");
+    expect(fixture.layout.mainQueryEntrypoints).toEqual([]);
+    expect(fixture.result.status).not.toBe("ready");
   });
 });
 

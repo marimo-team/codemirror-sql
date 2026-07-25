@@ -32,6 +32,11 @@ export interface SqlQuerySiteRange {
   readonly to: number;
 }
 
+export interface SqlQuerySiteEntrypoint {
+  readonly depth: number;
+  readonly from: number;
+}
+
 export type SqlQuerySiteResource =
   | "active-statement"
   | "identifier-path"
@@ -1068,11 +1073,14 @@ function resultAtGap(
   return inactive("not-relation-position");
 }
 
-export function recognizeSqlRelationQuerySite(
+function recognizeSqlRelationQuerySiteInternal(
   source: SqlSourceSnapshot,
   slot: SqlStatementSlot,
   position: number,
   dialect: SqlQuerySiteDialect,
+  authenticatedEntrypoints:
+    | readonly SqlQuerySiteEntrypoint[]
+    | null,
 ): SqlQuerySiteResult {
   if (slot.boundaryQuality === "opaque") {
     return unavailable("opaque-statement");
@@ -1120,6 +1128,7 @@ export function recognizeSqlRelationQuerySite(
   );
   const frames: QueryFrame[] = [];
   const queryCandidates = new Set<number>([0]);
+  let entrypointIndex = 0;
   let depth = 0;
   let sawSelect = false;
   let statementTainted = false;
@@ -1422,7 +1431,20 @@ export function recognizeSqlRelationQuerySite(
 
     if (token.kind === "word") {
       const isSelect = wordEquals(source.analysisText, token, "select");
-      if (queryCandidates.has(depth)) {
+      const entrypoint =
+        authenticatedEntrypoints?.[entrypointIndex];
+      const relativeTokenFrom = token.from - slot.source.from;
+      const isAuthenticatedEntrypoint =
+        entrypoint?.from === relativeTokenFrom &&
+        entrypoint.depth === depth &&
+        isSelect;
+      if (isAuthenticatedEntrypoint) {
+        entrypointIndex += 1;
+      }
+      if (
+        queryCandidates.has(depth) ||
+        isAuthenticatedEntrypoint
+      ) {
         queryCandidates.delete(depth);
         if (
           isSelect &&
@@ -1524,4 +1546,35 @@ export function recognizeSqlRelationQuerySite(
       return resultAtGap(slot, topFrame(frames), position, sawSelect);
     }
   }
+}
+
+export function recognizeSqlRelationQuerySite(
+  source: SqlSourceSnapshot,
+  slot: SqlStatementSlot,
+  position: number,
+  dialect: SqlQuerySiteDialect,
+): SqlQuerySiteResult {
+  return recognizeSqlRelationQuerySiteInternal(
+    source,
+    slot,
+    position,
+    dialect,
+    null,
+  );
+}
+
+export function recognizeSqlRelationQuerySiteWithEntrypoints(
+  source: SqlSourceSnapshot,
+  slot: ExactSqlStatementSlot,
+  position: number,
+  dialect: SqlQuerySiteDialect,
+  entrypoints: readonly SqlQuerySiteEntrypoint[],
+): SqlQuerySiteResult {
+  return recognizeSqlRelationQuerySiteInternal(
+    source,
+    slot,
+    position,
+    dialect,
+    entrypoints,
+  );
 }
