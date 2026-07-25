@@ -570,6 +570,29 @@ Prefer reviewers with different prompts or models; two identical agents are
 correlated evidence. Independent downstream work may target an accepted
 interface contract, but cannot merge until its dependency is accepted.
 
+### Delivery cadence
+
+Keep the rigor at candidate boundaries without paying the full cost after every
+small edit:
+
+- Combine naturally coupled package-private work into one coherent vertical
+  slice when separate PRs would only create temporary APIs and duplicate
+  review cycles.
+- Run focused unit, type, lint, and benchmark checks while developing. Run the
+  complete local gate once at a clean candidate commit and again only after a
+  material fix.
+- Start the two independent reviews in parallel against that coherent
+  candidate. A reviewer may recheck a narrow non-architectural amendment
+  without repeating unrelated probes; public-contract, concurrency, or
+  lifecycle changes still require two full exact-head approvals.
+- Treat hosted CI as the authoritative cross-platform and package-matrix rerun.
+  Do not duplicate the same unchanged full matrix between every local commit.
+- Parallelize independent design, implementation, consumer research, and
+  review work. Time-box exploratory research and record nonblocking ideas as
+  follow-ups instead of expanding the active slice.
+- Request Copilot once when the PR first has a coherent reviewable head. Never
+  delay a later exact-head fix solely to obtain another Copilot pass.
+
 ### Review automation
 
 Generate one review packet containing:
