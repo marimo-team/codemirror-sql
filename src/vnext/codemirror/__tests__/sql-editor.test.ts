@@ -161,6 +161,10 @@ function fakeService(
           disposed = true;
           sessionDisposalCount += 1;
         },
+        invalidateCatalog: () => {
+          revision = createSqlRevisionToken();
+          return revision;
+        },
         isCurrent: (candidate) => !disposed && candidate === revision,
         onDidChange: (nextListener) => {
           listener = nextListener;

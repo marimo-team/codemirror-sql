@@ -135,6 +135,8 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 /** Owns all mutable state for one open SQL document. */
 export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
+  /** Invalidates relation, column, and namespace catalog observations. */
+  readonly invalidateCatalog: () => SqlRevision;
   readonly statementBoundaryAt: (
     request: SqlStatementBoundaryAtRequest,
   ) => SqlStatementBoundaryAtResult;

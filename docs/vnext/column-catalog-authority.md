@@ -5,8 +5,8 @@ Status: internal vertical-slice contract
 Column discovery is lazy, provider-owned, and batched. A completion request
 sends every unresolved relation reference in one provider invocation. Each
 reference carries a caller-local `requestKey`, a decoded identifier path, and
-an optional previously authenticated relation entity ID. The provider resolves
-paths against the supplied catalog scope, search paths, and dialect.
+no unauthenticated entity identity. The provider resolves paths against the
+supplied catalog scope, search paths, and dialect.
 
 The provider returns stable relation and column entity IDs. Every accepted
 column contains:
@@ -37,11 +37,11 @@ entries from another epoch. The cache is LRU-bounded by relation entries.
 Only complete ready results are cached. Partial, loading, and failed results
 remain visible to the caller but are eligible for another provider request.
 
-The initial coordinator does not subscribe to catalog invalidations. Until it
-is connected to the relation catalog's private epoch coordinator, a host must
-supersede or dispose the column owner when catalog authority changes. Session
-integration must not treat a cached complete result as current across a known
-catalog revision.
+Relation-catalog subscription events invalidate the session's relation, column,
+and namespace observations together. Hosts without a subscribed relation
+provider call `session.invalidateCatalog()` when schema authority changes. The
+method advances the session revision, cancels retained completion work, rebuilds
+all catalog owners, and emits one `catalog` change event.
 
 ## Lifecycle
 
@@ -55,3 +55,8 @@ cannot publish or populate the cache.
 The coordinator batches a request once, never once per relation. Cache hits and
 misses are composed deterministically while only misses are sent to the
 provider.
+
+Provider-declared loading receives at most one automatic retry for the same
+document, context, and completion position. A persistent loading response is
+then returned without a refresh token; hosts resume it through catalog
+invalidation instead of an unbounded polling loop.

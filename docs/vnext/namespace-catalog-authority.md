@@ -36,3 +36,10 @@ disposes it when catalog authority changes. Query-site integration calls
 passes the outcome plus the site's replacement range and dialect prefix matcher
 to `composeSqlNamespaceCompletion`. Namespace items are merged with local and
 relation-catalog items under the same bounded completion response budget.
+Relation-catalog subscription events invalidate namespace observations.
+Namespace-only hosts, and hosts whose relation provider has no subscription,
+call `session.invalidateCatalog()` after a schema-authority change.
+
+Provider-declared loading receives at most one automatic retry for a stable
+document, context, and completion position. Further loading responses do not
+schedule polling; a host-provided catalog invalidation resumes discovery.

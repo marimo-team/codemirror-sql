@@ -166,6 +166,12 @@ interface TerminalRefreshIntent {
   readonly token: SqlCompletionRefreshToken;
 }
 
+interface AuxiliaryLoadingRetry<Context extends SqlDocumentContext> {
+  readonly context: Context;
+  readonly position: number;
+  readonly source: SqlSourceSnapshot;
+}
+
 interface CompletionConfiguration {
   readonly catalogResponseBudgetMs: number;
 }
@@ -1071,6 +1077,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   readonly #onDispose: () => void;
   readonly #listeners = new Set<SessionChangeSubscription>();
   #activeCompletion: CompletionRequestState | null = null;
+  #columnLoadingRetry: AuxiliaryLoadingRetry<Context> | null = null;
   #catalogOwner: SqlCatalogSearchWorkOwner | null = null;
   #catalogOwnerDialect: SqlRelationDialectRuntime | null = null;
   #catalogOwnerScope: string | null = null;
@@ -1080,6 +1087,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #namespaceOwner: SqlNamespaceCatalogOwner | null = null;
   #namespaceOwnerDialect: SqlRelationDialectRuntime | null = null;
   #namespaceOwnerScope: string | null = null;
+  #namespaceLoadingRetry: AuxiliaryLoadingRetry<Context> | null = null;
   #disposed = false;
   #localRelationStatementCache:
     | LocalRelationStatementCache
@@ -1285,6 +1293,34 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return TERMINAL_LOADING_INTENT_LEASE_MS;
   }
 
+  #claimAuxiliaryLoadingRetry(
+    feature: "column" | "namespace",
+    snapshot: SessionSnapshot<Context>,
+    position: number,
+  ): boolean {
+    const previous = feature === "column"
+      ? this.#columnLoadingRetry
+      : this.#namespaceLoadingRetry;
+    if (
+      previous?.context === snapshot.context &&
+      previous.source === snapshot.source &&
+      previous.position === position
+    ) {
+      return false;
+    }
+    const next = Object.freeze({
+      context: snapshot.context,
+      position,
+      source: snapshot.source,
+    });
+    if (feature === "column") {
+      this.#columnLoadingRetry = next;
+    } else {
+      this.#namespaceLoadingRetry = next;
+    }
+    return true;
+  }
+
   #dispatchChange(event: SqlSessionChangeEvent): void {
     if (
       this.#disposed ||
@@ -1380,6 +1416,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       cancelCompletionTickets(active);
       if (intent !== active) cancelCompletionTickets(intent);
       if (change.reason === "catalog") {
+        this.#columnLoadingRetry = null;
+        this.#namespaceLoadingRetry = null;
         this.#columnOwner?.dispose();
         this.#columnOwner = null;
         this.#columnOwnerDialect = null;
@@ -1520,6 +1558,25 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         this.#listeners.delete(subscription);
       },
     });
+  };
+
+  readonly invalidateCatalog = (): SqlRevision => {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const commit = this.#prepareServiceChange({ reason: "catalog" });
+    if (!commit) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const revision = this.#snapshot.revision;
+    commit();
+    return revision;
   };
 
   readonly complete = (
@@ -1908,7 +1965,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           }
           const columnLoading =
             composition.sources[0]?.outcome === "loading";
-          const remainingIntentLeaseMs = columnLoading
+          const retryLoading =
+            columnLoading &&
+            this.#claimAuxiliaryLoadingRetry(
+              "column",
+              snapshot,
+              request.position,
+            );
+          const remainingIntentLeaseMs = retryLoading
             ? this.#retainAuxiliaryRefresh(
                 active,
                 new Promise((resolve) => {
@@ -1920,11 +1984,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               )
             : 0;
           return Object.freeze({
-            refreshToken: columnLoading ? active.token : null,
+            refreshToken: retryLoading ? active.token : null,
             revision: snapshot.revision,
             sources: composition.sources,
             status: "ready",
-            value: columnLoading
+            value: retryLoading
               ? completionListWithLoadingLease(
                   composition.value,
                   "column-catalog-loading",
@@ -2261,15 +2325,21 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           }
           if (namespaceComposition.source.outcome === "loading") {
             namespaceLoadingLeaseMs =
-              this.#retainAuxiliaryRefresh(
-                active,
-                new Promise((resolve) => {
-                  setTimeout(
-                    resolve,
-                    AUXILIARY_LOADING_RETRY_DELAY_MS,
-                  );
-                }),
-              );
+              this.#claimAuxiliaryLoadingRetry(
+                "namespace",
+                snapshot,
+                request.position,
+              )
+                ? this.#retainAuxiliaryRefresh(
+                  active,
+                  new Promise((resolve) => {
+                    setTimeout(
+                      resolve,
+                      AUXILIARY_LOADING_RETRY_DELAY_MS,
+                    );
+                  }),
+                )
+                : 0;
           }
         }
       }
@@ -2624,6 +2694,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       this.#localRelationStatementCache = null;
     }
     this.#activeCompletion = null;
+    this.#columnLoadingRetry = null;
     this.#refreshIntent = null;
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
@@ -2667,8 +2738,10 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     this.#activeCompletion = null;
     this.#refreshIntent = null;
     this.#catalogOwner = null;
+    this.#columnLoadingRetry = null;
     this.#columnOwner = null;
     this.#namespaceOwner = null;
+    this.#namespaceLoadingRetry = null;
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     this.#listeners.clear();
