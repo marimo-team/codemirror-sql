@@ -12,6 +12,8 @@ export interface SqlDisposable {
   readonly dispose: (this: void) => void;
 }
 
+export type SqlCatalogSubscriptionCleanup = (this: void) => void;
+
 export type SqlCatalogContainerRole =
   | "catalog"
   | "schema"
@@ -125,7 +127,7 @@ export interface SqlRelationCatalogProvider {
     this: void,
     scope: string,
     onInvalidation: (event: SqlCatalogInvalidation) => void,
-  ) => SqlDisposable;
+  ) => SqlCatalogSubscriptionCleanup;
 }
 
 export type SqlIdentifierDecodeResult =

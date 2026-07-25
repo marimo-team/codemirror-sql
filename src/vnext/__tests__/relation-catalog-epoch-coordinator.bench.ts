@@ -131,10 +131,8 @@ function createFixture(memberCount: number): CoordinatorFixture {
     ) => {
       subscriptionCounts.installed += 1;
       invalidationListener = listener;
-      return {
-        dispose: (): void => {
-          subscriptionCounts.disposed += 1;
-        },
+      return (): void => {
+        subscriptionCounts.disposed += 1;
       };
     },
   });

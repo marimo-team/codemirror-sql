@@ -196,7 +196,7 @@ interface CallbackCell {
 interface SubscriptionState {
   readonly cell: CallbackCell;
   cleanupCalled: boolean;
-  disposer: Function | null;
+  cleanup: Function | null;
   failed: boolean;
   installing: boolean;
   readonly pending: SqlCatalogEpoch[];
@@ -361,47 +361,21 @@ function retireCallbackCell(cell: CallbackCell): void {
   }
 }
 
-function captureDisposer(candidate: unknown): Function | null {
-  try {
-    if (candidate === null || typeof candidate !== "object") {
-      return null;
-    }
-    const prototype = Object.getPrototypeOf(candidate);
-    if (
-      prototype !== Object.prototype &&
-      prototype !== null
-    ) {
-      return null;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(
-      candidate,
-      "dispose",
-    );
-    if (
-      !descriptor ||
-      !descriptor.enumerable ||
-      !("value" in descriptor) ||
-      typeof descriptor.value !== "function"
-    ) {
-      return null;
-    }
-    return descriptor.value;
-  } catch {
-    return null;
-  }
+function captureCleanup(candidate: unknown): Function | null {
+  return typeof candidate === "function" ? candidate : null;
 }
 
 function cleanupSubscription(subscription: SubscriptionState): void {
   if (subscription.cleanupCalled) {
-    subscription.disposer = null;
+    subscription.cleanup = null;
     return;
   }
-  const disposer = subscription.disposer;
-  if (!disposer) return;
+  const cleanup = subscription.cleanup;
+  if (!cleanup) return;
   subscription.cleanupCalled = true;
-  subscription.disposer = null;
+  subscription.cleanup = null;
   try {
-    Reflect.apply(disposer, undefined, []);
+    Reflect.apply(cleanup, undefined, []);
   } catch {
     // Provider cleanup is isolated after state is inert.
   }
@@ -411,7 +385,7 @@ function abandonSubscriptionCleanup(
   subscription: SubscriptionState,
 ): void {
   subscription.cleanupCalled = true;
-  subscription.disposer = null;
+  subscription.cleanup = null;
 }
 
 function quarantineCleanupOverflow(
@@ -432,7 +406,7 @@ function scheduleSubscriptionCleanup(
   subscription: SubscriptionState,
 ): void {
   if (subscription.cleanupCalled) {
-    subscription.disposer = null;
+    subscription.cleanup = null;
     return;
   }
   if (state.cleanupOverloaded) {
@@ -608,7 +582,7 @@ function installSubscription(
   const subscription: SubscriptionState = {
     cell,
     cleanupCalled: false,
-    disposer: null,
+    cleanup: null,
     failed: false,
     installing: true,
     pending: [],
@@ -634,9 +608,9 @@ function installSubscription(
   cell.overload = (): void => {
     disableSubscription(state, entry, subscription);
   };
-  let rawDisposable: unknown;
+  let rawCleanup: unknown;
   try {
-    rawDisposable = subscribe(
+    rawCleanup = subscribe(
       entry.scope,
       (value: unknown): void => {
         receiveSubscriptionCallback(cell, value);
@@ -646,12 +620,12 @@ function installSubscription(
     disableSubscription(state, entry, subscription);
     return;
   }
-  const disposer = captureDisposer(rawDisposable);
-  if (!disposer) {
+  const cleanup = captureCleanup(rawCleanup);
+  if (!cleanup) {
     disableSubscription(state, entry, subscription);
     return;
   }
-  subscription.disposer = disposer;
+  subscription.cleanup = cleanup;
   subscription.installing = false;
   if (
     subscription.failed ||

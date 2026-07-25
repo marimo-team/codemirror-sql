@@ -14,6 +14,7 @@ import type {
   SqlCatalogRelation,
   SqlCatalogSearchRequest,
   SqlCatalogSearchResponse,
+  SqlCatalogSubscriptionCleanup,
   SqlCompletionCancellationReason,
   SqlCompletionIssue,
   SqlDisposable,
@@ -126,7 +127,7 @@ const provider: SqlRelationCatalogProvider = {
   },
   subscribe: (_scope, onInvalidation) => {
     onInvalidation({ epoch: { generation: 1, token: "tables-updated" } });
-    return { dispose: () => undefined };
+    return () => undefined;
   },
 };
 void provider;
@@ -158,6 +159,11 @@ const receiverDependentDisposable: SqlDisposable = {
   // @ts-expect-error disposable callbacks are this-free closures
   dispose: receiverDependentDispose,
 };
+
+// @ts-expect-error catalog cleanup callbacks are this-free closures
+const receiverDependentCatalogCleanup: SqlCatalogSubscriptionCleanup =
+  receiverDependentDispose;
+void receiverDependentCatalogCleanup;
 
 const relationPath = [
   { quoted: false, role: "catalog", value: "memory" },

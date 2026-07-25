@@ -514,17 +514,19 @@ or sessions. Retirement clears the cell before external cleanup, so a provider
 that retains an old callback retains only an inert bounded object. Synchronous
 callbacks are decoded into frozen epochs while `subscribe` is running; raw
 payloads and premature audience snapshots are not buffered. After the returned
-disposable is validated, the buffered epochs are staged together in FIFO
+cleanup closure is validated, the buffered epochs are staged together in FIFO
 order. Each accepted baseline or advance snapshots active membership and
 installs the epoch as one serialized step with no external call between those
 operations. A member joined during one event's dispatch therefore
 participates in a later pending event, but not the event already committed.
-A thrown subscription or malformed returned disposable discards that buffer
+A thrown subscription or malformed returned cleanup value discards that buffer
 and disables automatic invalidation for the live scope; explicit search
 remains available.
-The returned disposable is itself untrusted: the service captures one own
-enumerable data `dispose` closure, calls it with `this === undefined` at most
-once, and isolates malformed values and thrown cleanup. Dropping the last owner
+The returned cleanup closure is itself untrusted: the service captures only a
+function, calls it with `this === undefined` at most once, and isolates
+malformed values and thrown cleanup. A closure avoids a structural TypeScript
+contract that would accept class instances or inherited methods which the
+hostile runtime boundary could not safely validate. Dropping the last owner
 removes the complete scope incarnation before cleanup. A later join creates a
 new unobserved incarnation and may attempt a fresh subscription.
 
@@ -574,9 +576,9 @@ installed before preparation remains observed; if its submitting membership is
 retired during preparation, its response settles as retired while other
 successfully prepared members still dispatch. Coordinator disposal takes
 precedence over that retired evidence. The outermost cleanup barrier admits and
-invokes at most 1,024 captured disposers. If reentrant work attempts to admit a
+invokes at most 1,024 captured cleanups. If reentrant work attempts to admit a
 1,025th cleanup, the coordinator quarantines itself immediately: all cells and
-memberships become inert and all not-yet-invoked disposer references are
+memberships become inert and all not-yet-invoked cleanup references are
 cleared without calling more provider code. Cleanup is never continued from a
 timer.
 

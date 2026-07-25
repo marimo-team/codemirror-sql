@@ -143,10 +143,8 @@ function listenerProvider(): {
     ) => {
       harness.scopes.push(scope);
       harness.listeners.push(listener);
-      return {
-        dispose: () => {
-          harness.cleanupCalls += 1;
-        },
+      return () => {
+        harness.cleanupCalls += 1;
       };
     },
   };
@@ -1093,11 +1091,11 @@ describe("subscription invalidation ordering and isolation", () => {
     const events: string[] = [];
     let disposeDuringPrepare = false;
     let membership: SqlCatalogScopeMembership;
-    const owner = coordinator(() => ({
-      dispose: () => {
+    const owner = coordinator(
+      () => () => {
         events.push("cleanup");
       },
-    }));
+    );
     membership = active(owner, "scope", {
       prepareCatalogChange: () => {
         if (disposeDuringPrepare) {
@@ -1156,7 +1154,7 @@ describe("hostile subscription lifecycle", () => {
     let listenerCalls = 0;
     const owner = coordinator((_scope, notify) => {
       notify(invalidation(1));
-      return { dispose: () => {} };
+      return () => {};
     });
     const membership = prepared(owner, "scope", {
       prepareCatalogChange: () => () => {
@@ -1175,7 +1173,7 @@ describe("hostile subscription lifecycle", () => {
     const owner = coordinator((_scope, notify) => {
       notify(invalidation(1));
       expect(second.activate()).toEqual({ status: "active" });
-      return { dispose: () => {} };
+      return () => {};
     });
     const first = prepared(owner, "scope", firstCounter.target);
     second = prepared(owner, "scope", secondCounter.target);
@@ -1200,7 +1198,7 @@ describe("hostile subscription lifecycle", () => {
     const owner = coordinator((_scope, notify) => {
       notify(invalidation(1));
       notify(invalidation(2));
-      return { dispose: () => {} };
+      return () => {};
     });
     const first = prepared(owner, "scope", {
       prepareCatalogChange: () => {
@@ -1231,7 +1229,7 @@ describe("hostile subscription lifecycle", () => {
     for (const subscribe of [
       (_scope: string, notify: RawInvalidationListener) => {
         notify({ epoch: { generation: -1, token: "bad" } });
-        return { dispose: () => {} };
+        return () => {};
       },
       (_scope: string, notify: RawInvalidationListener) => {
         notify(invalidation(1));
@@ -1253,14 +1251,15 @@ describe("hostile subscription lifecycle", () => {
     expect(listenerCalls).toBe(0);
   });
 
-  it("captures one own-data disposer, invokes it this-free once, and rejects hostile forms without getters", () => {
+  it("captures one cleanup closure, invokes it this-free once, and rejects non-functions without getters", () => {
     const receivers: unknown[] = [];
     let getterCalls = 0;
-    const validOwner = coordinator(() => ({
-      dispose(this: unknown) {
-        receivers.push(this);
-      },
-    }));
+    const validOwner = coordinator(
+      () =>
+        function (this: unknown) {
+          receivers.push(this);
+        },
+    );
     const membership = active(validOwner, "scope");
     membership.dispose();
     membership.dispose();
@@ -1280,7 +1279,7 @@ describe("hostile subscription lifecycle", () => {
       enumerable: false,
       value: () => {},
     });
-    const invalidDisposers: unknown[] = [
+    const invalidCleanupValues: unknown[] = [
       {},
       Object.create({ dispose() {} }),
       nonEnumerable,
@@ -1299,8 +1298,8 @@ describe("hostile subscription lifecycle", () => {
         },
       },
     ];
-    for (const disposable of invalidDisposers) {
-      const owner = coordinator(() => disposable);
+    for (const cleanupValue of invalidCleanupValues) {
+      const owner = coordinator(() => cleanupValue);
       expect(active(owner, "scope").captureEpoch().status).toBe(
         "captured",
       );
@@ -1312,10 +1311,8 @@ describe("hostile subscription lifecycle", () => {
     let retained: RawInvalidationListener | undefined;
     const owner = coordinator((_scope, notify) => {
       retained = notify;
-      return {
-        dispose: () => {
-          throw new Error("cleanup failed");
-        },
+      return () => {
+        throw new Error("cleanup failed");
       };
     });
     const target = counterTarget();
@@ -1342,7 +1339,7 @@ describe("hostile subscription lifecycle", () => {
       attempts += 1;
       listeners.push(notify);
       if (attempts === 1) return null;
-      return { dispose: () => {} };
+      return () => {};
     });
     const first = active(owner, "scope");
     const second = active(owner, "scope");
@@ -1364,12 +1361,10 @@ describe("hostile subscription lifecycle", () => {
     let owner: SqlCatalogEpochCoordinator;
     const provider = (_scope: string, notify: RawInvalidationListener) => {
       listeners.push(notify);
-      return {
-        dispose: () => {
-          if (memberships.length === 1) {
-            memberships.push(active(owner, "scope"));
-          }
-        },
+      return () => {
+        if (memberships.length === 1) {
+          memberships.push(active(owner, "scope"));
+        }
       };
     };
     owner = coordinator(provider);
@@ -1390,7 +1385,7 @@ describe("hostile subscription lifecycle", () => {
     let membership: SqlCatalogScopeMembership;
     const memberOwner = coordinator((_scope, notify) => {
       notify(invalidation(1));
-      return { dispose: () => {} };
+      return () => {};
     });
     membership = prepared(memberOwner, "scope", {
       prepareCatalogChange: () => () => membership.dispose(),
@@ -1403,7 +1398,7 @@ describe("hostile subscription lifecycle", () => {
     let service: SqlCatalogEpochCoordinator;
     service = coordinator((_scope, notify) => {
       notify(invalidation(1));
-      return { dispose: () => {} };
+      return () => {};
     });
     const serviceMembership = prepared(service, "scope", {
       prepareCatalogChange: () => () => service.dispose(),
@@ -1419,10 +1414,8 @@ describe("hostile subscription lifecycle", () => {
     let cleanupCalls = 0;
     const owner = coordinator((_scope, listener) => {
       notify = listener;
-      return {
-        dispose: () => {
-          cleanupCalls += 1;
-        },
+      return () => {
+        cleanupCalls += 1;
       };
     });
     const membership = active(owner, "scope");
@@ -1448,10 +1441,8 @@ describe("hostile subscription lifecycle", () => {
       ) {
         listener({ malformed: index });
       }
-      return {
-        dispose: () => {
-          installCleanup += 1;
-        },
+      return () => {
+        installCleanup += 1;
       };
     });
     active(installOwner, "scope");
@@ -1462,7 +1453,7 @@ describe("hostile subscription lifecycle", () => {
     let notify: RawInvalidationListener | undefined;
     const owner = coordinator((_scope, listener) => {
       notify = listener;
-      return { dispose: () => {} };
+      return () => {};
     });
     const membership = active(owner, "scope");
     for (
@@ -1484,10 +1475,8 @@ describe("hostile subscription lifecycle", () => {
     let cleanupCalls = 0;
     const owner = coordinator((_scope, listener) => {
       notify = listener;
-      return {
-        dispose: () => {
-          cleanupCalls += 1;
-        },
+      return () => {
+        cleanupCalls += 1;
       };
     });
     const membership = active(owner, "scope");
@@ -1534,14 +1523,12 @@ describe("service disposal and bounded command draining", () => {
           notify({ malformed: index });
         }
       }
-      return {
-        dispose: () => {
-          if (scope === "driver") {
-            driverCleanupCalls += 1;
-          } else {
-            overloadedCleanupCalls += 1;
-          }
-        },
+      return () => {
+        if (scope === "driver") {
+          driverCleanupCalls += 1;
+        } else {
+          overloadedCleanupCalls += 1;
+        }
       };
     });
     const driver = active(owner, "driver", {
@@ -1581,7 +1568,7 @@ describe("service disposal and bounded command draining", () => {
     const listeners = new Map<string, RawInvalidationListener>();
     let cleanupCalls = 0;
     let cleanupDepth = 0;
-    let lateDisposerCalls = 0;
+    let lateCleanupCalls = 0;
     let maximumCleanupDepth = 0;
     let sentinelCleanupCalls = 0;
     let subscriptionCalls = 0;
@@ -1601,29 +1588,27 @@ describe("service disposal and bounded command draining", () => {
           notify({ malformed: index });
         }
       }
-      return {
-        dispose: () => {
-          if (installsAfterCleanupLimit) {
-            lateDisposerCalls += 1;
-            return;
-          }
-          cleanupDepth += 1;
-          maximumCleanupDepth = Math.max(
-            maximumCleanupDepth,
-            cleanupDepth,
+      return () => {
+        if (installsAfterCleanupLimit) {
+          lateCleanupCalls += 1;
+          return;
+        }
+        cleanupDepth += 1;
+        maximumCleanupDepth = Math.max(
+          maximumCleanupDepth,
+          cleanupDepth,
+        );
+        cleanupCalls += 1;
+        if (scope === "sentinel") {
+          sentinelCleanupCalls += 1;
+        } else {
+          const next = active(
+            owner,
+            `cleanup-chain-${subscriptionCalls}`,
           );
-          cleanupCalls += 1;
-          if (scope === "sentinel") {
-            sentinelCleanupCalls += 1;
-          } else {
-            const next = active(
-              owner,
-              `cleanup-chain-${subscriptionCalls}`,
-            );
-            next.dispose();
-          }
-          cleanupDepth -= 1;
-        },
+          next.dispose();
+        }
+        cleanupDepth -= 1;
       };
     });
     const sentinelTarget = counterTarget();
@@ -1644,7 +1629,7 @@ describe("service disposal and bounded command draining", () => {
       MAX_CATALOG_CLEANUPS_PER_BARRIER,
     );
     expect(maximumCleanupDepth).toBe(1);
-    expect(lateDisposerCalls).toBe(0);
+    expect(lateCleanupCalls).toBe(0);
     expect(sentinelCleanupCalls).toBe(0);
     expect(sentinel.captureEpoch()).toEqual({
       reason: "disposed",
@@ -1667,7 +1652,7 @@ describe("service disposal and bounded command draining", () => {
     expect(cleanupCalls).toBe(
       MAX_CATALOG_CLEANUPS_PER_BARRIER,
     );
-    expect(lateDisposerCalls).toBe(0);
+    expect(lateCleanupCalls).toBe(0);
     expect(sentinelCleanupCalls).toBe(0);
   });
 
@@ -1734,11 +1719,9 @@ describe("service disposal and bounded command draining", () => {
     );
     const owner = coordinator((_scope, listener) => {
       retained = listener;
-      return {
-        dispose: () => {
-          cleanupCalls += 1;
-          retained?.(hostilePayload);
-        },
+      return () => {
+        cleanupCalls += 1;
+        retained?.(hostilePayload);
       };
     });
     const target = counterTarget();
@@ -1940,9 +1923,7 @@ describe("service disposal and bounded command draining", () => {
     const cleanupScopes: string[] = [];
     const owner = coordinator((scope, notify) => {
       listeners.set(scope, notify);
-      return {
-        dispose: () => cleanupScopes.push(scope),
-      };
+      return () => cleanupScopes.push(scope);
     });
     const stormMemberships = Array.from({ length: 5 }, (_, index) =>
       active(owner, `storm-${index}`),
