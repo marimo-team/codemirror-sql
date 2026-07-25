@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createIdentitySqlSource,
   createMaskedSqlSource,
+  findSqlEmbeddedRegionAtOrAfter,
   mapAnalysisRangeToOriginal,
   mapOriginalRangeToAnalysis,
   MAX_SQL_EMBEDDED_REGIONS,
@@ -186,6 +187,20 @@ describe("SQL source snapshots", () => {
       { from: 2, language: "jinja", to: 3 },
     ]);
     expect(source.analysisText).toBe(" b ");
+  });
+
+  it("finds the first embedded region ending after a position", () => {
+    const source = createMaskedSqlSource("abcdef", [
+      { from: 1, language: "python", to: 2 },
+      { from: 3, language: "jinja", to: 5 },
+    ]);
+
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 0)).toBe(0);
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 1)).toBe(0);
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 2)).toBe(1);
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 4)).toBe(1);
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 5)).toBe(2);
+    expect(findSqlEmbeddedRegionAtOrAfter(source, 6)).toBe(2);
   });
 
   it.each([

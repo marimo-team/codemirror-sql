@@ -9,7 +9,10 @@ import {
   sqlIdentifierStartLengthAt,
   type SqlLexicalProfile,
 } from "./lexical.js";
-import type { SqlSourceSnapshot } from "./source.js";
+import {
+  findSqlEmbeddedRegionAtOrAfter,
+  type SqlSourceSnapshot,
+} from "./source.js";
 
 export const MAX_BOUNDED_SQL_LEXEMES = 16_384;
 
@@ -34,24 +37,6 @@ export type BoundedSqlLexerResource =
   | "dollar-quote-delimiter"
   | "lexical-token";
 
-function findSqlRegionAtOrAfter(
-  source: SqlSourceSnapshot,
-  position: number,
-): number {
-  let low = 0;
-  let high = source.embeddedRegions.length;
-  while (low < high) {
-    const middle = low + Math.floor((high - low) / 2);
-    const region = source.embeddedRegions[middle];
-    if (!region || region.to <= position) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
-}
-
 export class BoundedSqlLexer {
   readonly #profile: SqlLexicalProfile;
   readonly #source: SqlSourceSnapshot;
@@ -72,7 +57,7 @@ export class BoundedSqlLexer {
     this.#cursor = from;
     this.#to = to;
     this.#profile = profile;
-    this.#regionIndex = findSqlRegionAtOrAfter(source, from);
+    this.#regionIndex = findSqlEmbeddedRegionAtOrAfter(source, from);
   }
 
   next(): BoundedSqlLexeme | null {

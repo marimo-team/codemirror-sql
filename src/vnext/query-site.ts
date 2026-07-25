@@ -5,7 +5,10 @@ import {
   type BoundedSqlLexerResource,
 } from "./bounded-sql-lexer.js";
 import type { SqlLexicalProfile } from "./lexical.js";
-import type { SqlSourceSnapshot } from "./source.js";
+import {
+  findSqlEmbeddedRegionAtOrAfter,
+  type SqlSourceSnapshot,
+} from "./source.js";
 import type {
   ExactSqlStatementSlot,
   SqlStatementSlot,
@@ -200,30 +203,14 @@ function createRange(from: number, to: number): SqlQuerySiteRange {
   return Object.freeze(range);
 }
 
-function findRegionAtOrAfter(
-  source: SqlSourceSnapshot,
-  position: number,
-): number {
-  let low = 0;
-  let high = source.embeddedRegions.length;
-  while (low < high) {
-    const middle = low + Math.floor((high - low) / 2);
-    const region = source.embeddedRegions[middle];
-    if (!region || region.to <= position) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
-}
-
 function regionContains(
   source: SqlSourceSnapshot,
   position: number,
 ): boolean {
   const region =
-    source.embeddedRegions[findRegionAtOrAfter(source, position)];
+    source.embeddedRegions[
+      findSqlEmbeddedRegionAtOrAfter(source, position)
+    ];
   return Boolean(
     region && region.from <= position && position < region.to,
   );
@@ -672,7 +659,10 @@ function intersectsRegion(
   from: number,
   to: number,
 ): boolean {
-  const region = source.embeddedRegions[findRegionAtOrAfter(source, from)];
+  const region =
+    source.embeddedRegions[
+      findSqlEmbeddedRegionAtOrAfter(source, from)
+    ];
   return Boolean(region && region.from < to && from < region.to);
 }
 
