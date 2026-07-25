@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   bigQueryDialect,
   createSqlLanguageService,
@@ -2762,6 +2762,1149 @@ describe("lifecycle", () => {
           },
         ) as never,
       );
+    });
+  });
+});
+
+describe("session coverage hardening", () => {
+  const readyCatalog: SqlRelationCatalogProvider = {
+    id: "coverage-catalog",
+    search: async () => ({
+      coverage: { kind: "complete" },
+      epoch: { generation: 0, token: "initial" },
+      relations: [],
+      status: "ready",
+    }),
+  };
+
+  function catalogService(
+    provider: SqlRelationCatalogProvider = readyCatalog,
+  ) {
+    return createSqlLanguageService<TestContext>({
+      catalog: provider,
+      dialects: [duckdb, postgres],
+    });
+  }
+
+  it.each([
+    { scope: "" },
+    { scope: "x".repeat(513) },
+    { scope: 1 },
+    { scope: "valid", searchPath: "main" },
+    {
+      scope: "valid",
+      searchPath: Array.from({ length: 33 }, () => [
+        { quoted: false, value: "main" },
+      ]),
+    },
+    { scope: "valid", searchPath: ["main"] },
+    { scope: "valid", searchPath: [[]] },
+    {
+      scope: "valid",
+      searchPath: [
+        Array.from({ length: 5 }, () => ({
+          quoted: false,
+          value: "main",
+        })),
+      ],
+    },
+    { scope: "valid", searchPath: [[null]] },
+    {
+      scope: "valid",
+      searchPath: [[{ quoted: false, value: 1 }]],
+    },
+    {
+      scope: "valid",
+      searchPath: [[{ quoted: false, value: "" }]],
+    },
+    {
+      scope: "valid",
+      searchPath: [
+        [{ quoted: false, value: "x".repeat(257) }],
+      ],
+    },
+    {
+      scope: "valid",
+      searchPath: [[{ quoted: "no", value: "main" }]],
+    },
+  ])("rejects invalid catalog context %# atomically", (catalog) => {
+    const service = catalogService();
+    expectSessionError("invalid-context", () => {
+      service.openDocument({
+        context: {
+          catalog,
+          dialect: "duckdb",
+          engine: "local",
+        } as never,
+        text: "SELECT 1",
+      });
+    });
+    service.dispose();
+  });
+
+  it.each([
+    { position: Number.NaN, trigger: { kind: "invoked" } },
+    { position: -1, trigger: { kind: "invoked" } },
+    { position: 9, trigger: { kind: "invoked" } },
+    { position: 0, trigger: null },
+    { position: 0, trigger: { kind: "unknown" } },
+    {
+      position: 0,
+      trigger: { character: 1, kind: "trigger-character" },
+    },
+    {
+      position: 0,
+      trigger: { character: "", kind: "trigger-character" },
+    },
+    {
+      position: 0,
+      trigger: { character: "ab", kind: "trigger-character" },
+    },
+    {
+      position: 0,
+      trigger: { character: "😀x", kind: "trigger-character" },
+    },
+    {
+      position: 0,
+      signal: {},
+      trigger: { kind: "invoked" },
+    },
+  ])("rejects malformed completion request %#", async (request) => {
+    const { service, session } = openSession("SELECT 1");
+    await expect(
+      session.complete(request as never),
+    ).rejects.toMatchObject({
+      code: "invalid-completion-request",
+    });
+    service.dispose();
+  });
+
+  it("accepts a one-code-point trigger and rejects listeners after disposal", async () => {
+    const { service, session } = openSession(
+      "SELECT * FROM ",
+    );
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: { character: "😀", kind: "trigger-character" },
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    expectSessionError("invalid-completion-request", () => {
+      session.onDidChange(null as never);
+    });
+    const subscription = session.onDidChange(() => {});
+    subscription.dispose();
+    subscription.dispose();
+    session.dispose();
+    expectSessionError("session-disposed", () => {
+      session.onDidChange(() => {});
+    });
+    await expect(
+      session.complete({
+        position: 0,
+        trigger: { kind: "invoked" },
+      }),
+    ).rejects.toMatchObject({ code: "session-disposed" });
+    service.dispose();
+  });
+
+  it.each([
+    "DELIMITER $$",
+    `SELECT * FROM ${" ".repeat(65_537)}`,
+    "SELECT 1",
+  ])("returns closed local unavailability for %s", async (text) => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [postgres],
+    });
+    const session = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text,
+    });
+    await expect(
+      session.complete({
+        position: text.length,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({ status: "unavailable" });
+    service.dispose();
+  });
+
+  it.each([
+    null,
+    "bad",
+    { catalogResponseBudgetMs: "fast" },
+    { catalogResponseBudgetMs: Number.NaN },
+    { catalogResponseBudgetMs: -1 },
+  ])("rejects invalid completion options %#", (completion) => {
+    expectSessionError("invalid-service-options", () => {
+      createSqlLanguageService({
+        completion,
+        dialects: [duckdb],
+      } as never);
+    });
+  });
+
+  it("rejects a malformed catalog provider", () => {
+    expectSessionError("invalid-service-options", () => {
+      createSqlLanguageService({
+        catalog: { id: "", search: async () => ({}) },
+        dialects: [duckdb],
+      } as never);
+    });
+  });
+
+  it.each([
+    {
+      expectedIssue: "catalog-failed",
+      response: {
+        code: "unavailable",
+        epoch: { generation: 0, token: "failed" },
+        retry: "next-request",
+        status: "failed",
+      },
+    },
+    {
+      expectedIssue: "catalog-malformed",
+      response: {
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "bad" },
+        relations: [{ bad: true }],
+        status: "ready",
+      },
+    },
+  ])("maps catalog outcome $expectedIssue", async ({
+    expectedIssue,
+    response,
+  }) => {
+    const service = catalogService({
+      id: `catalog-${expectedIssue}`,
+      search: async () => response as never,
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:coverage" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        issues: [{ reason: expectedIssue }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("maps provider rejection and already-aborted requests", async () => {
+    const service = catalogService({
+      id: "rejecting",
+      search: async () => {
+        throw new Error("private provider failure");
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:coverage" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      value: { issues: [{ reason: "catalog-failed" }] },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      session.complete({
+        position: 14,
+        signal: controller.signal,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason: "caller",
+      status: "cancelled",
+    });
+    service.dispose();
+  });
+
+  it("expires terminal loading intent and clears it idempotently", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = catalogService({
+        id: "loading",
+        search: async () => ({
+          epoch: { generation: 0, token: "loading" },
+          status: "loading",
+        }),
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:coverage" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      session.update({
+        baseRevision: session.revision,
+        context: {
+          catalog: { scope: "connection:coverage" },
+          dialect: "duckdb",
+          engine: "changed",
+        },
+      });
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("enforces context node and property aggregate limits", () => {
+    const service = createService();
+    expectSessionError("invalid-context", () => {
+      service.openDocument({
+        context: {
+          dialect: "duckdb",
+          engine: "local",
+          nodes: Array.from({ length: 10_001 }, () => ({})),
+        } as never,
+        text: "",
+      });
+    });
+    const manyProperties = Object.fromEntries(
+      Array.from({ length: 50_001 }, (_, index) => [
+        `p${index}`,
+        null,
+      ]),
+    );
+    expectSessionError("invalid-context", () => {
+      service.openDocument({
+        context: {
+          dialect: "duckdb",
+          engine: "local",
+          manyProperties,
+        } as never,
+        text: "",
+      });
+    });
+    service.dispose();
+  });
+
+  it("keeps listener subscriptions independently disposable during dispatch", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = catalogService({
+      ...readyCatalog,
+      subscribe: (_scope, listener) => {
+        invalidate = listener;
+        return () => undefined;
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:listeners" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT 1",
+    });
+    const calls: string[] = [];
+    let second = session.onDidChange(() => {
+      calls.push("second");
+    });
+    const first = session.onDidChange(() => {
+      calls.push("first");
+      second.dispose();
+    });
+    second.dispose();
+    second = session.onDidChange(() => {
+      calls.push("second");
+    });
+    invalidate?.({
+      epoch: { generation: 1, token: "changed" },
+    });
+    expect(calls).toEqual(["first"]);
+    first.dispose();
+    service.dispose();
+  });
+
+  it.each(["update", "dispose"] as const)(
+    "releases a retained refresh intent on %s",
+    async (action) => {
+      let aborted = 0;
+      const service = createSqlLanguageService<TestContext>({
+        catalog: {
+          id: `pending-${action}`,
+          search: async (_request, signal) =>
+            new Promise((resolve) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  aborted += 1;
+                  resolve({
+                    epoch: { generation: 0, token: "late" },
+                    status: "loading",
+                  });
+                },
+                { once: true },
+              );
+            }),
+        },
+        completion: { catalogResponseBudgetMs: 0 },
+        dialects: [duckdb],
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: `connection:${action}` },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await expect(
+        session.complete({
+          position: 14,
+          trigger: { kind: "invoked" },
+        }),
+      ).resolves.toMatchObject({
+        status: "ready",
+        value: {
+          issues: [{ reason: "catalog-loading" }],
+        },
+      });
+      if (action === "update") {
+        session.update({
+          baseRevision: session.revision,
+          context: {
+            catalog: { scope: `connection:${action}` },
+            dialect: "duckdb",
+            engine: "changed",
+          },
+        });
+      } else {
+        session.dispose();
+      }
+      await Promise.resolve();
+      expect(aborted).toBe(1);
+      service.dispose();
+    },
+  );
+
+  it("hands a retained intent to a different-key completion", async () => {
+    const aborted: string[] = [];
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "different-key",
+        search: async (request, signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                aborted.push(request.prefix.value);
+                resolve({
+                  epoch: { generation: 0, token: "late" },
+                  status: "loading",
+                });
+              },
+              { once: true },
+            );
+          }),
+      },
+      completion: { catalogResponseBudgetMs: 0 },
+      dialects: [duckdb],
+    });
+    const text = "SELECT * FROM a; SELECT * FROM b";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:different-key" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+    await session.complete({
+      position: text.indexOf("a;") + 1,
+      trigger: { kind: "invoked" },
+    });
+    await session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    });
+    await Promise.resolve();
+    expect(aborted).toContain("a");
+    service.dispose();
+  });
+
+  it("maps synchronous provider budget exhaustion to catalog timeout", async () => {
+    const service = catalogService({
+      id: "synchronous-timeout",
+      search: async () => {
+        const deadline = performance.now() + 10;
+        while (performance.now() < deadline) {
+          // Deliberately exceed the coordinator's synchronous budget.
+        }
+        return {
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "late" },
+          relations: [],
+          status: "ready",
+        };
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:sync-timeout" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      value: { issues: [{ reason: "catalog-timeout" }] },
+    });
+    service.dispose();
+  });
+
+  it("rejects non-string and unknown dialect context values", () => {
+    const service = createService();
+    for (const dialect of [1, "unknown"]) {
+      expectSessionError("invalid-dialect", () => {
+        service.openDocument({
+          context: { dialect, engine: "local" } as never,
+          text: "",
+        });
+      });
+    }
+    service.dispose();
+  });
+
+  it.each([
+    ["SELECT * FROM users ON ", "unsupported-query-site"],
+    [
+      "SELECT * FROM users NATURAL WHERE ",
+      "ambiguous-query-site",
+    ],
+  ])("maps query-site uncertainty in %s", async (text, reason) => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [postgres],
+    });
+    const session = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text,
+    });
+    await expect(
+      session.complete({
+        position: text.length,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason,
+      retryable: false,
+      status: "unavailable",
+    });
+    service.dispose();
+  });
+
+  it("cancels previous active work when the replacement site is inactive", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "inactive-replacement",
+        search: async () =>
+          new Promise(() => {
+            // Cancelled by the second completion.
+          }),
+      },
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:inactive-replacement" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    const first = session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    await Promise.resolve();
+    await expect(
+      session.complete({
+        position: 0,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason: "inactive",
+      status: "unavailable",
+    });
+    await expect(first).resolves.toMatchObject({
+      reason: "superseded",
+      status: "cancelled",
+    });
+    service.dispose();
+  });
+
+  it("cancels a retained intent when the replacement site is inactive", async () => {
+    let aborts = 0;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "intent-inactive-replacement",
+        search: async (_request, signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener("abort", () => {
+              aborts += 1;
+              resolve({
+                epoch: { generation: 0, token: "late" },
+                status: "loading",
+              });
+            });
+          }),
+      },
+      completion: { catalogResponseBudgetMs: 0 },
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: {
+          scope: "connection:intent-inactive-replacement",
+        },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    await session.complete({
+      position: 0,
+      trigger: { kind: "invoked" },
+    });
+    await Promise.resolve();
+    expect(aborts).toBe(1);
+    service.dispose();
+  });
+
+  it("preserves FIFO nested dispatch across shared-scope sessions", () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = catalogService({
+      ...readyCatalog,
+      subscribe: (_scope, listener) => {
+        invalidate = listener;
+        return () => undefined;
+      },
+    });
+    const open = () =>
+      service.openDocument({
+        context: {
+          catalog: { scope: "connection:shared-dispatch" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT 1",
+      });
+    const first = open();
+    const second = open();
+    const events: string[] = [];
+    first.onDidChange(() => {
+      events.push("first");
+      if (events.length === 1) {
+        invalidate?.({
+          epoch: { generation: 2, token: "nested" },
+        });
+      }
+    });
+    second.onDidChange(() => {
+      events.push("second");
+    });
+    invalidate?.({
+      epoch: { generation: 1, token: "outer" },
+    });
+    expect(events).toEqual([
+      "first",
+      "second",
+      "first",
+      "second",
+    ]);
+    service.dispose();
+  });
+
+  it("fails catalog ownership closed after live-scope capacity", async () => {
+    const service = catalogService();
+    const sessions = Array.from({ length: 129 }, (_, index) =>
+      service.openDocument({
+        context: {
+          catalog: { scope: `connection:capacity:${index}` },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      }),
+    );
+    await expect(
+      sessions[128]!.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        issues: [{ reason: "catalog-overloaded" }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("accepts omitted and explicit-undefined completion budgets", () => {
+    const first = createSqlLanguageService({
+      completion: {},
+      dialects: [duckdb],
+    });
+    const second = createSqlLanguageService({
+      completion: { catalogResponseBudgetMs: undefined },
+      dialects: [duckdb],
+    });
+    first.dispose();
+    second.dispose();
+  });
+
+  it("contains synchronous invalidation while replacing a refresh intent", async () => {
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    let searchCount = 0;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "reentrant-invalidation",
+        search: async () => {
+          searchCount += 1;
+          if (searchCount === 1) {
+            return new Promise(() => {
+              // Retained as the first completion's refresh intent.
+            });
+          }
+          invalidate?.({
+            epoch: { generation: 1, token: "synchronous" },
+          });
+          return {
+            coverage: { kind: "complete" },
+            epoch: { generation: 1, token: "synchronous" },
+            relations: [],
+            status: "ready",
+          };
+        },
+        subscribe: (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      },
+      completion: { catalogResponseBudgetMs: 0 },
+      dialects: [duckdb],
+    });
+    const text = "SELECT * FROM a; SELECT * FROM b";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:reentrant" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+    await session.complete({
+      position: text.indexOf("a;") + 1,
+      trigger: { kind: "invoked" },
+    });
+    await expect(
+      session.complete({
+        position: text.length,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason: "superseded",
+      status: "cancelled",
+    });
+    expect(searchCount).toBe(2);
+    service.dispose();
+  });
+
+  it("contains a synchronous document update from provider search", async () => {
+    let session:
+      | ReturnType<ReturnType<typeof catalogService>["openDocument"]>
+      | undefined;
+    const service = catalogService({
+      id: "reentrant-update",
+      search: async () => {
+        if (session) {
+          session.update({
+            baseRevision: session.revision,
+            context: {
+              catalog: { scope: "connection:reentrant-update" },
+              dialect: "duckdb",
+              engine: "updated",
+            },
+          });
+        }
+        return {
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "initial" },
+          relations: [],
+          status: "ready",
+        };
+      },
+    });
+    session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:reentrant-update" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await expect(
+      session.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason: "superseded",
+      status: "cancelled",
+    });
+    service.dispose();
+  });
+
+  it("ignores a hostile late abort callback after completion", async () => {
+    const { service, session } = openSession(
+      "SELECT * FROM ",
+    );
+    const controller = new AbortController();
+    let captured:
+      | EventListenerOrEventListenerObject
+      | undefined;
+    const nativeAdd = controller.signal.addEventListener.bind(
+      controller.signal,
+    );
+    Object.defineProperty(controller.signal, "addEventListener", {
+      configurable: true,
+      value: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) => {
+        if (type === "abort") captured = listener;
+        nativeAdd(type, listener, options);
+      },
+    });
+    await session.complete({
+      position: 14,
+      signal: controller.signal,
+      trigger: { kind: "invoked" },
+    });
+    if (typeof captured === "function") {
+      captured(new Event("abort"));
+    } else {
+      captured?.handleEvent(new Event("abort"));
+    }
+    expect(session.isCurrent(session.revision)).toBe(true);
+    service.dispose();
+  });
+
+  it("normalizes a hostile range-inspection failure", () => {
+    const { service, session } = openSession("");
+    const hostileChange = new Proxy(
+      { from: 0, insert: "x", to: 0 },
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("hostile range");
+        },
+      },
+    );
+    expectSessionError("invalid-change", () => {
+      session.update({
+        baseRevision: session.revision,
+        document: {
+          changes: [hostileChange],
+          kind: "changes",
+        },
+        embeddedRegions: [],
+      });
+    });
+    service.dispose();
+  });
+
+  it("accepts a host timer whose opaque handle is null", async () => {
+    const nativeSetTimeout = globalThis.setTimeout;
+    Object.defineProperty(globalThis, "setTimeout", {
+      configurable: true,
+      value: (
+        callback: TimerHandler,
+        delay?: number,
+        ...arguments_: unknown[]
+      ) => {
+        nativeSetTimeout(callback, delay, ...arguments_);
+        return null;
+      },
+      writable: true,
+    });
+    try {
+      const service = catalogService();
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:null-timer" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await expect(
+        session.complete({
+          position: 14,
+          trigger: { kind: "invoked" },
+        }),
+      ).resolves.toMatchObject({ status: "ready" });
+      service.dispose();
+    } finally {
+      Object.defineProperty(globalThis, "setTimeout", {
+        configurable: true,
+        value: nativeSetTimeout,
+        writable: true,
+      });
+    }
+  });
+
+  it("consumes settlement racing the soft response timer", async () => {
+    let resolveSearch:
+      | ((
+          response: Awaited<
+            ReturnType<SqlRelationCatalogProvider["search"]>
+          >,
+        ) => void)
+      | undefined;
+    const searchResult = new Promise<
+      Awaited<ReturnType<SqlRelationCatalogProvider["search"]>>
+    >((resolve) => {
+      resolveSearch = resolve;
+    });
+    const nativeSetTimeout = globalThis.setTimeout;
+    let injected = false;
+    Object.defineProperty(globalThis, "setTimeout", {
+      configurable: true,
+      value: (
+        callback: TimerHandler,
+        delay?: number,
+        ...arguments_: unknown[]
+      ) =>
+        nativeSetTimeout(
+          (...timerArguments: unknown[]) => {
+            if (delay === 0 && !injected) {
+              injected = true;
+              resolveSearch?.({
+                coverage: { kind: "complete" },
+                epoch: { generation: 0, token: "initial" },
+                relations: [],
+                status: "ready",
+              });
+            }
+            if (typeof callback === "function") {
+              Reflect.apply(callback, undefined, timerArguments);
+            }
+          },
+          delay,
+          ...arguments_,
+        ),
+      writable: true,
+    });
+    try {
+      const service = createSqlLanguageService<TestContext>({
+        catalog: {
+          id: "settlement-race",
+          search: async () => searchResult,
+        },
+        completion: { catalogResponseBudgetMs: 0 },
+        dialects: [duckdb],
+      });
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:settlement-race" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      });
+      await expect(
+        session.complete({
+          position: 14,
+          trigger: { kind: "invoked" },
+        }),
+      ).resolves.toMatchObject({ status: "ready" });
+      service.dispose();
+    } finally {
+      Object.defineProperty(globalThis, "setTimeout", {
+        configurable: true,
+        value: nativeSetTimeout,
+        writable: true,
+      });
+    }
+  });
+
+  it("fails catalog ownership closed after per-scope membership capacity", async () => {
+    const service = catalogService();
+    const sessions = Array.from({ length: 257 }, () =>
+      service.openDocument({
+        context: {
+          catalog: { scope: "connection:membership-capacity" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text: "SELECT * FROM ",
+      }),
+    );
+    await expect(
+      sessions[256]!.complete({
+        position: 14,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        issues: [{ reason: "catalog-overloaded" }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("forwards a validated ordered catalog search path", async () => {
+    let observed:
+      | Parameters<SqlRelationCatalogProvider["search"]>[0]
+      | undefined;
+    const service = catalogService({
+      id: "search-path",
+      search: async (request) => {
+        observed = request;
+        return {
+          coverage: { kind: "complete" },
+          epoch: { generation: 0, token: "initial" },
+          relations: [],
+          status: "ready",
+        };
+      },
+    });
+    const searchPath = [
+      [
+        { quoted: false, value: "memory" },
+        { quoted: true, value: "Main Schema" },
+      ],
+    ] as const;
+    const session = service.openDocument({
+      context: {
+        catalog: {
+          scope: "connection:search-path",
+          searchPath,
+        },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    expect(observed?.searchPaths).toEqual(searchPath);
+    expect(observed?.searchPaths).not.toBe(searchPath);
+    service.dispose();
+  });
+
+  it("contains reentrant completion during signal registration", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "reentrant-signal",
+        search: async () =>
+          new Promise(() => {
+            // Settled by session disposal.
+          }),
+      },
+      completion: { catalogResponseBudgetMs: 0 },
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:reentrant-signal" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text: "SELECT * FROM ",
+    });
+    await session.complete({
+      position: 14,
+      trigger: { kind: "invoked" },
+    });
+    const controller = new AbortController();
+    let nested:
+      | ReturnType<typeof session.complete>
+      | undefined;
+    const nativeAdd = controller.signal.addEventListener.bind(
+      controller.signal,
+    );
+    Object.defineProperty(controller.signal, "addEventListener", {
+      configurable: true,
+      value: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) => {
+        if (!nested) {
+          nested = session.complete({
+            position: 14,
+            trigger: { kind: "invoked" },
+          });
+        }
+        nativeAdd(type, listener, options);
+      },
+    });
+    await expect(
+      session.complete({
+        position: 0,
+        signal: controller.signal,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      reason: "inactive",
+      status: "unavailable",
+    });
+    service.dispose();
+    await expect(nested).resolves.toMatchObject({
+      reason: "disposed",
+      status: "cancelled",
     });
   });
 });

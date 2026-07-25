@@ -15,6 +15,7 @@ import {
 } from "../local-relation-site.js";
 import {
   POSTGRESQL_SQL_RELATION_DIALECT,
+  type SqlRelationDialectRuntime,
 } from "../relation-dialect.js";
 import {
   createIdentitySqlSource,
@@ -28,6 +29,7 @@ import type {
   SqlCatalogRelationKind,
   SqlCatalogReadyCoverage,
   SqlCompletionList,
+  SqlRelationCompletionDialectRuntime,
 } from "../relation-completion-types.js";
 import type {
   SqlTextRange,
@@ -112,6 +114,7 @@ function relationPath(
 function catalogRelation(input: {
   readonly completionPathStart?: number;
   readonly containers?: readonly string[];
+  readonly detail?: string;
   readonly entityId: string;
   readonly kind?: SqlCatalogRelationKind;
   readonly match?: "equivalent" | "exact";
@@ -133,7 +136,7 @@ function catalogRelation(input: {
     completionPathStart === 0
       ? path
       : relationPath([], input.name);
-  return Object.freeze({
+  const relation = {
     canonicalPath: path,
     completionPath,
     completionPathStart,
@@ -143,7 +146,12 @@ function catalogRelation(input: {
     entityId: input.entityId,
     matchQuality: input.match ?? "exact",
     relationKind: input.kind ?? "table",
-  });
+  };
+  return Object.freeze(
+    input.detail === undefined
+      ? relation
+      : { ...relation, detail: input.detail },
+  );
 }
 
 function readyResponse(
@@ -362,6 +370,263 @@ describe("relation completion composition", () => {
       ]);
     },
   );
+
+  it("composes terminal loading and failed provider evidence", () => {
+    const loading = compose(
+      "SELECT * FROM |",
+      usable(
+        Object.freeze({
+          epoch: Object.freeze({
+            generation: 2,
+            token: "loading",
+          }),
+          status: "loading",
+        }),
+      ),
+    );
+    expect(loading.issues).toEqual([
+      {
+        reason: "catalog-loading",
+        remainingIntentLeaseMs: 25,
+      },
+    ]);
+
+    const local = markedLocalSite("SELECT * FROM |");
+    const failed = composeSqlRelationCompletion({
+      catalogOutcome: usable(
+        Object.freeze({
+          code: "authentication",
+          epoch: Object.freeze({
+            generation: 2,
+            token: "failed",
+          }),
+          retry: "after-invalidation",
+          status: "failed",
+        }),
+      ),
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      localSite: local.localSite,
+      providerId: "catalog",
+      remainingIntentLeaseMs: 0,
+      replacementRange: local.replacementRange,
+      statementOffset: local.statementOffset,
+    });
+    expect(failed.value.issues).toEqual([
+      { reason: "catalog-failed" },
+    ]);
+    expect(failed.sources).toEqual([
+      {
+        code: "authentication",
+        feature: "relation-catalog",
+        outcome: "failed",
+        providerId: "catalog",
+        retry: "after-invalidation",
+      },
+    ]);
+  });
+
+  it("fails closed for uncertain and hostile CTE prefix policy", () => {
+    const local = markedLocalSite(
+      "WITH local_table AS (SELECT 1) SELECT * FROM |",
+    );
+    const complete = (
+      cteIdentifierMatchesPrefix:
+        SqlRelationCompletionDialectRuntime["cteIdentifierMatchesPrefix"],
+    ): SqlCompletionList => {
+      const completion = Object.freeze({
+        ...POSTGRESQL_SQL_RELATION_DIALECT.completion,
+        cteIdentifierMatchesPrefix,
+      });
+      const dialect: SqlRelationDialectRuntime = Object.freeze({
+        ...POSTGRESQL_SQL_RELATION_DIALECT,
+        completion,
+      });
+      return composeSqlRelationCompletion({
+        catalogOutcome: null,
+        dialect,
+        localSite: local.localSite,
+        providerId: null,
+        remainingIntentLeaseMs: 0,
+        replacementRange: local.replacementRange,
+        statementOffset: local.statementOffset,
+      }).value;
+    };
+
+    const unknown = complete(() => "unknown");
+    expect(unknown.items).toEqual([]);
+    expect(unknown.issues).toContainEqual({
+      reason: "cte-scope-uncertainty",
+    });
+
+    const throwing = complete(() => {
+      throw new Error("hostile prefix policy");
+    });
+    expect(throwing.items).toEqual([]);
+    expect(throwing.issues).toContainEqual({
+      reason: "cte-scope-uncertainty",
+    });
+
+    const noMatch = complete(() => "no-match");
+    expect(noMatch.items).toEqual([]);
+    expect(noMatch.isIncomplete).toBe(false);
+  });
+
+  it("retains catalog evidence when CTE shadow comparison is uncertain", () => {
+    const local = markedLocalSite(
+      "WITH users AS (SELECT 1) SELECT * FROM |",
+    );
+    const completion = Object.freeze({
+      ...POSTGRESQL_SQL_RELATION_DIALECT.completion,
+      compareCteIdentifiers: () => {
+        throw new Error("hostile comparison policy");
+      },
+      renderRelationPath: () =>
+        Object.freeze({
+          reason: "illegal-role-sequence" as const,
+          status: "unsupported" as const,
+        }),
+    });
+    const dialect: SqlRelationDialectRuntime = Object.freeze({
+      ...POSTGRESQL_SQL_RELATION_DIALECT,
+      completion,
+    });
+    const result = composeSqlRelationCompletion({
+      catalogOutcome: usable(
+        readyResponse([
+          catalogRelation({
+            detail: "A catalog relation",
+            entityId: "users",
+            name: "users",
+          }),
+        ]),
+      ),
+      dialect,
+      localSite: local.localSite,
+      providerId: "catalog",
+      remainingIntentLeaseMs: 0,
+      replacementRange: local.replacementRange,
+      statementOffset: local.statementOffset,
+    });
+
+    expect(result.value.items).toHaveLength(2);
+    expect(result.value.items[1]).toMatchObject({
+      detail: "A catalog relation",
+      label: "users",
+      provenance: { entityId: "users" },
+    });
+    expect(result.value.issues).toContainEqual({
+      reason: "cte-scope-uncertainty",
+    });
+
+    if (local.localSite.local.kind !== "unqualified") {
+      throw new Error("Expected an unqualified local site");
+    }
+    const uncertainSite: typeof local.localSite = Object.freeze({
+      ...local.localSite,
+      local: Object.freeze({
+        ...local.localSite.local,
+        cteVisibility: Object.freeze({
+          ...local.localSite.local.cteVisibility,
+          quality: "recovered" as const,
+          shadowing: Object.freeze({
+            coverage: "unknown" as const,
+          }),
+        }),
+      }),
+    });
+    const unknownCoverage = composeSqlRelationCompletion({
+      catalogOutcome: usable(
+        readyResponse([
+          catalogRelation({
+            entityId: "users",
+            name: "users",
+          }),
+        ]),
+      ),
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      localSite: uncertainSite,
+      providerId: "catalog",
+      remainingIntentLeaseMs: 0,
+      replacementRange: local.replacementRange,
+      statementOffset: local.statementOffset,
+    });
+    expect(unknownCoverage.value.items).toHaveLength(2);
+    expect(unknownCoverage.value.issues).toContainEqual({
+      reason: "cte-scope-uncertainty",
+    });
+  });
+
+  it("surfaces recursive CTE and opaque query-site recovery", () => {
+    const recursive = compose(
+      "WITH RECURSIVE local_table AS (SELECT * FROM |) SELECT * FROM local_table",
+      null,
+    );
+    expect(recursive.issues.map((issue) => issue.reason)).toEqual([
+      "cte-scope-uncertainty",
+      "recursive-cte-uncertainty",
+    ]);
+
+    const local = markedLocalSite("SELECT * FROM |");
+    const opaqueSite: typeof local.localSite = Object.freeze({
+      ...local.localSite,
+      querySite: Object.freeze({
+        ...local.localSite.querySite,
+        recognition: Object.freeze({
+          issues: Object.freeze([
+            "opaque-template-context",
+          ] as const),
+          quality: "recovered" as const,
+        }),
+      }),
+    });
+    const opaque = composeSqlRelationCompletion({
+      catalogOutcome: null,
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      localSite: opaqueSite,
+      providerId: null,
+      remainingIntentLeaseMs: 0,
+      replacementRange: local.replacementRange,
+      statementOffset: local.statementOffset,
+    }).value;
+    expect(opaque.issues).toContainEqual({
+      reason: "opaque-template-context",
+    });
+  });
+
+  it("uses path and entity IDs as deterministic final catalog ties", () => {
+    const relations = [
+      catalogRelation({
+        completionPathStart: 0,
+        containers: ["zeta"],
+        entityId: "z-last",
+        name: "users",
+      }),
+      catalogRelation({
+        completionPathStart: 0,
+        containers: ["alpha"],
+        entityId: "b",
+        name: "users",
+      }),
+      catalogRelation({
+        completionPathStart: 0,
+        containers: ["alpha"],
+        entityId: "a",
+        name: "users",
+      }),
+    ];
+    const value = compose(
+      "SELECT * FROM |",
+      usable(readyResponse(relations)),
+    );
+    expect(
+      value.items.map(
+        (item) =>
+          item.provenance.kind === "catalog"
+            ? item.provenance.entityId
+            : "cte",
+      ),
+    ).toEqual(["a", "b", "z-last"]);
+  });
 
   it("applies the result cap after ranking and returns deeply frozen output", () => {
     const declarations = Array.from(
