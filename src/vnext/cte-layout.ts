@@ -1602,6 +1602,18 @@ export function visibleSqlCtesAt(
   layout: Exclude<SqlCteLayout, { status: "unavailable" }>,
   position: number,
 ): SqlCteVisibility {
+  if (
+    !Number.isSafeInteger(position) ||
+    position < 0 ||
+    position > layout.statementLength
+  ) {
+    return Object.freeze({
+      ctes: Object.freeze([]),
+      issues: Object.freeze([]),
+      quality: "recovered",
+      shadowing: Object.freeze({ coverage: "unknown" }),
+    });
+  }
   const namespace = new Map<
     number,
     SqlCteDeclaration | null
@@ -1612,11 +1624,7 @@ export function visibleSqlCtesAt(
     position > layout.exactThrough ||
     (position === layout.exactThrough &&
       layout.exactThrough < layout.statementLength);
-  let shadowingUnknown =
-    !Number.isSafeInteger(position) ||
-    position < 0 ||
-    position > layout.statementLength ||
-    beyondExactCoverage;
+  let shadowingUnknown = beyondExactCoverage;
 
   if (beyondExactCoverage) {
     for (const issue of layout.issues) {

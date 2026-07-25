@@ -1180,9 +1180,17 @@ describe("bounded CTE layout", () => {
         names: [{ quoted: false, value: "outer_cte" }],
       },
     });
-    for (const position of [-1, Number.NaN, text.length + 1]) {
+    for (const position of [
+      -1,
+      0.5,
+      text.length - 0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      text.length + 1,
+    ]) {
       expect(visibleSqlCtesAt(layout, position)).toMatchObject({
         ctes: [],
+        issues: [],
         quality: "recovered",
         shadowing: { coverage: "unknown" },
       });
