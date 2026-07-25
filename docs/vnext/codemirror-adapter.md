@@ -87,6 +87,17 @@ const visible = support.statementBoundariesIntersecting(view, {
 ```
 
 Both methods return `null` for foreign, destroyed, or unsynchronized views.
+Catalog-backed hosts can invalidate the adapter-owned session without exposing
+it:
+
+```ts
+const revision = support.invalidateCatalog(view);
+```
+
+This returns `null` for foreign or destroyed views. A live view advances its
+revision, cancels stale catalog work, and forces relation, column, and namespace
+providers to be consulted again.
+
 An opt-in structural gutter marks only lines intersecting scanner-owned SQL
 `code` spans. It never parses or copies statement text:
 

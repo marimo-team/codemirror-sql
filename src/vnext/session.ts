@@ -2695,6 +2695,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     }
     this.#activeCompletion = null;
     this.#columnLoadingRetry = null;
+    this.#namespaceLoadingRetry = null;
     this.#refreshIntent = null;
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();

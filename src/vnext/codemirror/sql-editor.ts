@@ -95,6 +95,7 @@ export interface SqlEditorSupport<
     readonly SqlEmbeddedRegion[]
   >;
   readonly extension: Extension;
+  readonly invalidateCatalog: (view: EditorView) => SqlRevision | null;
   readonly statementBoundariesIntersecting: (
     view: EditorView,
     request: SqlStatementBoundariesIntersectingRequest,
@@ -671,6 +672,15 @@ export function createSqlEditorInternal<
       this.#clearCompletionState();
     };
 
+    readonly invalidateCatalog = (): SqlRevision | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.invalidateCatalog();
+      } catch {
+        return null;
+      }
+    };
+
     readonly statementBoundariesIntersecting = (
       request: SqlStatementBoundariesIntersectingRequest,
     ): SqlStatementBoundariesIntersectingResult | null => {
@@ -869,6 +879,8 @@ export function createSqlEditorInternal<
         override: [completionSource, ...externalSources],
       }),
     ],
+    invalidateCatalog: (view: EditorView): SqlRevision | null =>
+      view.plugin(plugin)?.invalidateCatalog() ?? null,
     statementBoundariesIntersecting: (
       view: EditorView,
       request: SqlStatementBoundariesIntersectingRequest,

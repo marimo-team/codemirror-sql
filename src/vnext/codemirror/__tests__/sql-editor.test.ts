@@ -48,6 +48,7 @@ interface FakeServiceHarness {
   readonly completeSignals: AbortSignal[];
   readonly emit: (event: SqlSessionChangeEvent) => void;
   readonly getLastToken: () => SqlCompletionRefreshToken | null;
+  readonly invalidations: () => number;
   readonly service: SqlLanguageService<TestContext>;
   readonly sessionDisposals: () => number;
   readonly statementBoundaryCalls: () => number;
@@ -138,6 +139,7 @@ function fakeService(
     | ((event: SqlSessionChangeEvent) => void)
     | null = null;
   let lastToken: SqlCompletionRefreshToken | null = null;
+  let invalidationCount = 0;
   let sessionDisposalCount = 0;
   let statementBoundaryCallCount = 0;
   let statementIntersectionCallCount = 0;
@@ -162,6 +164,7 @@ function fakeService(
           sessionDisposalCount += 1;
         },
         invalidateCatalog: () => {
+          invalidationCount += 1;
           revision = createSqlRevisionToken();
           return revision;
         },
@@ -243,6 +246,7 @@ function fakeService(
     completeSignals,
     emit: (event) => listener?.(event),
     getLastToken: () => lastToken,
+    invalidations: () => invalidationCount,
     service,
     sessionDisposals: () => sessionDisposalCount,
     statementBoundaryCalls: () => statementBoundaryCallCount,
@@ -360,7 +364,7 @@ async function resolveCompletionInfo(
 }
 
 describe("sqlEditor", () => {
-  it("exposes current statement boundaries only for owned views", () => {
+  it("exposes session controls only for owned views", () => {
     const service = createSqlLanguageService<TestContext>({
       dialects: [duckdbDialect()],
     });
@@ -383,6 +387,8 @@ describe("sqlEditor", () => {
       from: 0,
       to: view.state.doc.length,
     })?.boundaries).toHaveLength(2);
+    expect(support.invalidateCatalog(view)).not.toBeNull();
+    expect(support.invalidateCatalog(foreign)).toBeNull();
     expect(support.statementBoundaryAt(foreign, {
       affinity: "left",
       position: 0,
@@ -397,6 +403,7 @@ describe("sqlEditor", () => {
     })).toBeNull();
 
     view.destroy();
+    expect(support.invalidateCatalog(view)).toBeNull();
     expect(support.statementBoundaryAt(view, {
       affinity: "left",
       position: 0,
@@ -406,6 +413,24 @@ describe("sqlEditor", () => {
       to: 0,
     })).toBeNull();
     service.dispose();
+  });
+
+  it("proxies catalog invalidation only to its owned live session", () => {
+    const harness = fakeService((revision) => readyResult(revision, []));
+    const support = sqlEditor({
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    const foreign = createView([]);
+
+    expect(support.invalidateCatalog(view)).not.toBeNull();
+    expect(harness.invalidations()).toBe(1);
+    expect(support.invalidateCatalog(foreign)).toBeNull();
+    expect(harness.invalidations()).toBe(1);
+    view.destroy();
+    expect(support.invalidateCatalog(view)).toBeNull();
+    expect(harness.invalidations()).toBe(1);
   });
 
   it("renders an opt-in visible-line statement gutter", async () => {
