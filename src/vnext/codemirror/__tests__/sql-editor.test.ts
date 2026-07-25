@@ -1096,6 +1096,32 @@ describe("sqlEditor", () => {
     expect(harness.sessionDisposals()).toBe(0);
   });
 
+  it("refuses a completion edit that overlaps an embedded region", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem(14, 16)])
+    );
+    const support = sqlEditor({
+      initialContext: context(),
+      initialEmbeddedRegions: [{
+        from: 15,
+        language: "host",
+        to: 16,
+      }],
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion || typeof completion.apply !== "function") {
+      throw new Error("Expected completion apply callback");
+    }
+
+    completion.apply(view, completion, 14, 16);
+    expect(view.state.doc.toString()).toBe("SELECT * FROM us");
+    expect(harness.updates).toEqual([]);
+  });
+
   it("combines document and final context effects into one current input", async () => {
     const requests: SqlCatalogSearchRequest[] = [];
     const service = createSqlLanguageService<TestContext>({
@@ -1271,6 +1297,59 @@ describe("sqlEditor", () => {
       expect.arrayContaining([
         expect.objectContaining({ label: "user_external" }),
         expect.objectContaining({ label: "users", type: "type" }),
+      ]),
+    );
+  });
+
+  it("maps column and namespace completion presentation", async () => {
+    const epoch = { generation: 1, token: "epoch-1" };
+    const items: readonly SqlCompletionItem[] = [{
+      edit: { from: 14, insert: "users_column", to: 16 },
+      kind: "column",
+      label: "users_column",
+      provenance: {
+        columnEntityId: "users:name",
+        epoch,
+        kind: "column-catalog",
+        providerId: "columns",
+        relationEntityId: "users",
+        scope: "connection:fake",
+      },
+      relationRequestKey: "binding:0",
+    }, {
+      edit: { from: 14, insert: "users_namespace", to: 16 },
+      kind: "namespace",
+      label: "users_namespace",
+      provenance: {
+        containerEntityId: "schema:main",
+        epoch,
+        kind: "namespace-catalog",
+        providerId: "namespaces",
+        scope: "connection:fake",
+      },
+      role: "schema",
+    }];
+    const harness = fakeService((revision) =>
+      readyResult(revision, items)
+    );
+    const support = sqlEditor({
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(currentCompletions(view.state)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "users_column",
+          type: "property",
+        }),
+        expect.objectContaining({
+          label: "users_namespace",
+          type: "namespace",
+        }),
       ]),
     );
   });

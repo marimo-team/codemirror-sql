@@ -1570,6 +1570,56 @@ describe("namespace completion session integration", () => {
       vi.useRealTimers();
     }
   });
+
+  it("supports a namespace-only service and preserves partial evidence", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+      namespaces: {
+        id: "namespace-only",
+        search: async () => ({
+          containers: [{
+            canonicalPath: [{
+              quoted: false,
+              role: "schema",
+              value: "main",
+            }],
+            containerEntityId: "schema:main",
+            insertText: "main",
+            matchQuality: "equivalent",
+          }],
+          coverage: "partial",
+          epoch: { generation: 1, token: "epoch-1" },
+          status: "ready",
+        }),
+      },
+    });
+    const text = "SELECT * FROM m";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:namespace-only" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{
+        coverage: "partial",
+        feature: "namespace-catalog",
+      }],
+      status: "ready",
+      value: {
+        isIncomplete: true,
+        issues: [{ reason: "namespace-catalog-partial" }],
+        items: [{ kind: "namespace", label: "main" }],
+      },
+    });
+    service.dispose();
+  });
 });
 
 describe("statement-index session cache", () => {
@@ -3880,6 +3930,18 @@ describe("session coverage hardening", () => {
         catalog: { id: "", search: async () => ({}) },
         dialects: [duckdb],
       } as never);
+    });
+  });
+
+  it.each([
+    { columns: { id: "", loadColumns: async () => ({}) } },
+    { namespaces: { id: "", search: async () => ({}) } },
+  ])("rejects a malformed auxiliary provider %#", (provider) => {
+    expectSessionError("invalid-service-options", () => {
+      createSqlLanguageService({
+        ...provider,
+        dialects: [duckdb],
+      });
     });
   });
 
