@@ -113,7 +113,8 @@ export interface SqlRelationBinding {
   readonly source: SqlRelationBindingSource;
 }
 
-export interface SqlQueryBindingModel {
+/** Validated plain-data shape used before exact source/authority authentication. */
+export interface SqlQueryBindingModelData {
   readonly blocks: readonly SqlQueryBlock[];
   readonly bindings: readonly SqlRelationBinding[];
   readonly coverage: SqlQueryBindingCoverageSet;
@@ -122,6 +123,9 @@ export interface SqlQueryBindingModel {
   readonly scopes: readonly SqlRelationScope[];
   readonly statementRange: SqlTextRange;
 }
+
+/** A model authenticated for one exact statement and parser authority. */
+export interface SqlQueryBindingModel extends SqlQueryBindingModelData {}
 
 export type SqlQueryBindingModelErrorCode =
   | "invalid-authority"

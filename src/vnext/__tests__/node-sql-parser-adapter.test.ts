@@ -5,6 +5,7 @@ import {
   exportedForTesting,
   getBigQueryNodeSqlStatementParser,
   getDuckDbCompatibilityNodeSqlStatementParser,
+  getNodeSqlParserQueryBindingModel,
   getPostgresqlNodeSqlStatementParser,
   MAX_NODE_SQL_PARSER_STATEMENT_LENGTH,
 } from "../node-sql-parser-adapter.js";
@@ -885,6 +886,20 @@ describe("real node-sql-parser builds", () => {
         mode: "compatibility",
         status: "parsed",
       });
+      if (
+        expectedKind === "query" &&
+        state.analysis.status === "parsed"
+      ) {
+        expect(
+          getNodeSqlParserQueryBindingModel(state.analysis.artifact),
+        ).toMatchObject({
+          coverage: {
+            queryBlocks: "complete",
+            relationBindings: "complete",
+            visibility: "complete",
+          },
+        });
+      }
     },
   );
 
@@ -935,6 +950,18 @@ describe("real node-sql-parser builds", () => {
       mode: "compatibility",
       status: "parsed",
     });
+    if (state.analysis.status === "parsed") {
+      expect(
+        getNodeSqlParserQueryBindingModel(state.analysis.artifact),
+      ).toMatchObject({
+        coverage: {
+          queryBlocks: "partial",
+          relationBindings: "partial",
+          visibility: "partial",
+        },
+        issues: [{ code: "parser-compatibility" }],
+      });
+    }
   });
 
   it("never turns a DuckDB compatibility rejection into invalid SQL", async () => {
@@ -953,7 +980,7 @@ describe("real node-sql-parser builds", () => {
 });
 
 describe("backend artifact privacy", () => {
-  it("retains backend data only behind the authentic artifact", async () => {
+  it("retains only normalized bindings behind the authentic artifact", async () => {
     const backendRoot = {
       privateBackendField: "must-not-leak",
       type: "select",
@@ -966,7 +993,15 @@ describe("backend artifact privacy", () => {
     }
     const { artifact } = state.analysis;
 
-    expect(exportedForTesting.hasBackendPayload(artifact)).toBe(true);
+    expect(exportedForTesting.hasBackendPayload(artifact)).toBe(false);
+    expect(getNodeSqlParserQueryBindingModel(artifact)).toMatchObject({
+      coverage: {
+        queryBlocks: "complete",
+        relationBindings: "complete",
+        visibility: "complete",
+      },
+      statementRange: { from: 0, to: 8 },
+    });
     expect(Object.keys(artifact)).toEqual(["kind", "range"]);
     expect(JSON.stringify(state)).not.toContain("must-not-leak");
     expect(Reflect.ownKeys(artifact)).not.toContain("privateBackendField");
@@ -981,6 +1016,12 @@ describe("backend artifact privacy", () => {
         structuralCopy,
       ),
     ).toBe(false);
+    expect(
+      invokeWithUnknown(
+        getNodeSqlParserQueryBindingModel,
+        structuralCopy,
+      ),
+    ).toBeNull();
   });
 
   it("does not retain malformed or unsupported backend values", async () => {

@@ -1,5 +1,5 @@
 globalThis.postMessage({
   kind: "ready",
-  protocolVersion: 1,
+  protocolVersion: 2,
 });
 globalThis.addEventListener("message", () => {});

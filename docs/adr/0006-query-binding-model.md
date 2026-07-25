@@ -97,6 +97,7 @@ expression binding, semantic diagnostics, navigation, rename, formatting, and
 vendor constructs such as `PIVOT`, `UNNEST`, table functions, and unproven
 `LATERAL` semantics are explicitly outside this slice.
 
-The next slice is a strict AST-to-plain-data decoder, normalized inside the
-worker, with direct-versus-worker differential tests. Public APIs and column
-providers follow only after that decoder proves the model.
+The node-sql-parser integration now supplies a strict AST-to-plain-data decoder,
+normalizes inside the worker, and checks direct-versus-worker parity. Public
+semantic APIs remain deferred until a column-completion vertical slice proves
+the model against consumer and dialect corpora.
