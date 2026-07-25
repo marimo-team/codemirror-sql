@@ -240,6 +240,8 @@ const SUBMITTED_RESULT: SqlCatalogResponseEpochSubmissionResult =
   Object.freeze({ status: "submitted" });
 const NO_PREPARE_CATALOG_CHANGE = (): null => null;
 const IGNORE_DETACHED_REJECTION = (): void => {};
+const INTRINSIC_PROMISE = Promise;
+const INTRINSIC_PROMISE_RESOLVE = Promise.resolve;
 const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
 const FAILED_EPOCH_TRANSITION: unique symbol = Symbol(
   "FailedSqlCatalogEpochTransition",
@@ -392,21 +394,18 @@ function drainDetachedSettlement(result: unknown): void {
     return;
   }
   try {
-    Reflect.apply(INTRINSIC_PROMISE_THEN, result, [
+    const settlement = Reflect.apply(
+      INTRINSIC_PROMISE_RESOLVE,
+      INTRINSIC_PROMISE,
+      [result],
+    );
+    Reflect.apply(INTRINSIC_PROMISE_THEN, settlement, [
       undefined,
       IGNORE_DETACHED_REJECTION,
     ]);
-    return;
   } catch {
-    // Non-native thenables are assimilated through a fresh wrapper.
+    // The detached value is hostile and cannot be observed safely.
   }
-  const settlement = new Promise<unknown>((resolve) => {
-    resolve(result);
-  });
-  Reflect.apply(INTRINSIC_PROMISE_THEN, settlement, [
-    undefined,
-    IGNORE_DETACHED_REJECTION,
-  ]);
 }
 
 function cleanupSubscription(

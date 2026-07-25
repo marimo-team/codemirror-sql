@@ -561,7 +561,9 @@ callback can always create a poisoned or independent unhandled rejection that
 no JavaScript library can retroactively contain. Legitimate asynchronous
 teardown must consume or report its own failure before the cleanup closure
 returns `undefined`. The valid `undefined` path returns without Promise
-allocation or a microtask. A closure avoids a structural TypeScript
+allocation or a microtask. Detached assimilation uses module-captured Promise
+intrinsics, so replacing the global Promise constructor cannot disable the
+drain. A closure avoids a structural TypeScript
 contract that would accept class instances or inherited methods which the
 hostile runtime boundary could not safely validate. Dropping the last owner
 removes the complete scope incarnation before cleanup. A later join creates a
@@ -660,6 +662,8 @@ outcomes settle through a discriminated request result.
 Completion is latest-wins per session:
 
 - a new completion request supersedes the previous request;
+- a new request that cannot capture an active epoch still supersedes and
+  detaches the previous request before reporting its unavailable outcome;
 - same-key supersession atomically attaches the new request consumer, or
   retags the existing observer as that consumer, before removing old request
   ownership; different-key supersession revokes the old observer first;

@@ -1330,6 +1330,78 @@ describe("catalog search epoch authority and isolation", () => {
     });
   });
 
+  it("supersedes reentrant work when its retiring membership makes the next capture fail", async () => {
+    const listener: {
+      current: ((event: unknown) => void) | null;
+    } = { current: null };
+    const calls: ProviderCall[] = [];
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search(
+          request: SqlCatalogSearchRequest,
+          signal: AbortSignal,
+        ) {
+          const settlement = deferred<unknown>();
+          calls.push({ request, settlement, signal });
+          return settlement.promise;
+        },
+        subscribe(
+          _scope: string,
+          onInvalidation: (event: unknown) => void,
+        ) {
+          listener.current = onInvalidation;
+          return () => undefined;
+        },
+      }),
+    );
+    const service = coordinator(captured);
+    let session: SqlCatalogSearchWorkOwner | null = null;
+    const reentrant: {
+      current: SqlCatalogSearchWorkTicket | null;
+    } = { current: null };
+    const prepared = service.prepareOwner(
+      "scope",
+      POSTGRESQL_SQL_RELATION_DIALECT,
+      {
+        prepareCatalogChange: () => {
+          reentrant.current =
+            session?.request(input("reentrant")) ?? null;
+          return null;
+        },
+      },
+    );
+    expect(prepared.status).toBe("prepared");
+    if (prepared.status !== "prepared") {
+      throw new Error("Expected prepared owner");
+    }
+    session = prepared.owner;
+    expect(session.activate()).toEqual({ status: "active" });
+    const initial = session.request(input("initial"));
+
+    listener.current?.({ epoch: epoch(1) });
+    await expect(initial.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(reentrant.current).not.toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(calls[1]?.signal.aborted).toBe(false);
+
+    const afterRetirement = session.request(input("after"));
+    await expect(afterRetirement.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    if (!reentrant.current) {
+      throw new Error("Expected reentrant request");
+    }
+    await expect(reentrant.current.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(calls[1]?.signal.aborted).toBe(true);
+  });
+
   it("makes a higher response self-supersede and retire other same-scope work only", async () => {
     const provider = providerHarness();
     const service = coordinator(provider.captured);

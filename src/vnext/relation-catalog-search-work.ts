@@ -1463,6 +1463,17 @@ function requestWork(
     return makeImmediateTicket(SUPERSEDED_OUTCOME);
   }
   if (captured.status !== "captured") {
+    const pending = effects();
+    const previous = owner.current;
+    if (previous) {
+      detachConsumerInto(
+        state,
+        previous,
+        SUPERSEDED_OUTCOME,
+        pending,
+      );
+    }
+    runEffects(state, pending);
     return makeImmediateTicket(
       unavailableOutcome(
         captured.reason === "inactive"
