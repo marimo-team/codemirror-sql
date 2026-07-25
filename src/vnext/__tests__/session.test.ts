@@ -1620,6 +1620,47 @@ describe("namespace completion session integration", () => {
     });
     service.dispose();
   });
+
+  it("retains auxiliary owners across unrelated context changes", () => {
+    const service = createSqlLanguageService<TestContext>({
+      columns: {
+        id: "columns",
+        loadColumns: async () => ({
+          epoch: { generation: 1, token: "epoch-1" },
+          relations: [],
+        }),
+      },
+      dialects: [duckdb],
+      namespaces: {
+        id: "namespaces",
+        search: async () => ({
+          containers: [],
+          coverage: "complete",
+          epoch: { generation: 1, token: "epoch-1" },
+          status: "ready",
+        }),
+      },
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:stable" },
+        dialect: "duckdb",
+        engine: "before",
+      },
+      text: "SELECT 1",
+    });
+    const revision = session.update({
+      baseRevision: session.revision,
+      context: {
+        catalog: { scope: "connection:stable" },
+        dialect: "duckdb",
+        engine: "after",
+      },
+    });
+
+    expect(session.revision).toBe(revision);
+    service.dispose();
+  });
 });
 
 describe("statement-index session cache", () => {
