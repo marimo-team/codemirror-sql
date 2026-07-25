@@ -183,13 +183,6 @@ export function analyzeSqlLocalRelationSite(
     });
   }
   const relativePosition = position - context.slot.source.from;
-  if (
-    !Number.isSafeInteger(relativePosition) ||
-    relativePosition < 0 ||
-    relativePosition > context.layout.statementLength
-  ) {
-    return unavailableSite();
-  }
   return Object.freeze({
     local: Object.freeze({
       cteVisibility: visibleSqlCtesAt(

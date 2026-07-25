@@ -3,8 +3,10 @@ import type {
   SqlNamespaceCatalogSearchOutcome,
 } from "./namespace-catalog-coordinator.js";
 import type {
+  SqlCanonicalNamespacePath,
   SqlNamespaceCatalogResolvedContainer,
   SqlNamespaceContainerRole,
+  SqlNamespacePathComponent,
   SqlNamespaceQuerySite,
 } from "./namespace-catalog-types.js";
 import type {
@@ -67,8 +69,12 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function last<Value>(values: readonly Value[]): Value | null {
-  return values[values.length - 1] ?? null;
+function finalComponent(
+  path: SqlCanonicalNamespacePath,
+): SqlNamespacePathComponent {
+  let current = path[0];
+  for (const component of path.slice(1)) current = component;
+  return current;
 }
 
 function pathText(
@@ -83,8 +89,8 @@ function compareContainers(
   left: SqlNamespaceCatalogResolvedContainer,
   right: SqlNamespaceCatalogResolvedContainer,
 ): number {
-  const leftLast = last(left.canonicalPath);
-  const rightLast = last(right.canonicalPath);
+  const leftLast = finalComponent(left.canonicalPath);
+  const rightLast = finalComponent(right.canonicalPath);
   return (
     (left.matchQuality === right.matchQuality
       ? 0
@@ -93,11 +99,9 @@ function compareContainers(
         : 1) ||
     left.canonicalPath.length - right.canonicalPath.length ||
     (
-      leftLast && rightLast
-        ? ROLE_ORDER[leftLast.role] - ROLE_ORDER[rightLast.role]
-        : 0
+      ROLE_ORDER[leftLast.role] - ROLE_ORDER[rightLast.role]
     ) ||
-    compareText(leftLast?.value ?? "", rightLast?.value ?? "") ||
+    compareText(leftLast.value, rightLast.value) ||
     compareText(pathText(left), pathText(right)) ||
     compareText(
       left.provenance.containerEntityId,
@@ -158,9 +162,8 @@ function unavailable(
 function item(
   container: SqlNamespaceCatalogResolvedContainer,
   replacementRange: SqlTextRange,
-): SqlNamespaceCompletionItem | null {
-  const component = last(container.canonicalPath);
-  if (!component) return null;
+): SqlNamespaceCompletionItem {
+  const component = finalComponent(container.canonicalPath);
   return Object.freeze({
     ...(container.detail === undefined
       ? {}
@@ -228,8 +231,7 @@ export function composeSqlNamespaceCompletion(
   const seen = new Set<string>();
   const containers: SqlNamespaceCatalogResolvedContainer[] = [];
   for (const container of response.containers) {
-    const component = last(container.canonicalPath);
-    if (!component) continue;
+    const component = finalComponent(container.canonicalPath);
     let match: ReturnType<SqlNamespacePrefixMatcher>;
     try {
       match = input.matchPrefix(component, input.prefix);
@@ -251,10 +253,9 @@ export function composeSqlNamespaceCompletion(
     containers.push(container);
   }
   containers.sort(compareContainers);
-  const items = containers.flatMap((container) => {
-    const value = item(container, input.replacementRange);
-    return value ? [value] : [];
-  });
+  const items = containers.map((container) =>
+    item(container, input.replacementRange)
+  );
   return Object.freeze({
     source: Object.freeze({
       coverage: response.coverage,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeSqlLocalColumnSite,
   analyzeSqlLocalRelationSite,
   prepareSqlLocalRelationStatement,
   type SqlLocalRelationSiteResult,
@@ -491,6 +492,24 @@ describe("local relation-site evidence", () => {
         null,
         fixture.position,
       ]),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+    expect(
+      Reflect.apply(analyzeSqlLocalColumnSite, undefined, [
+        null,
+        fixture.position,
+      ]),
+    ).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+    expect(
+      analyzeSqlLocalColumnSite(
+        { ...preparation.statement },
+        fixture.position,
+      ),
     ).toEqual({
       reason: "ambiguous-query-site",
       status: "unavailable",
