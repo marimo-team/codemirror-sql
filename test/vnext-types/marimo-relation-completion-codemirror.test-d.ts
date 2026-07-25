@@ -3,7 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
-} from "../../src/vnext/codemirror/relation-completion-types.js";
+} from "../../src/vnext/codemirror/index.js";
 import type { SqlCompletionItem } from "../../src/vnext/relation-completion-types.js";
 
 interface ReactRootLike {
