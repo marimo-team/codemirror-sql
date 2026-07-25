@@ -28,3 +28,27 @@ export type {
   SqlTextRange,
 } from "./types.js";
 export { SqlSessionError } from "./types.js";
+export type {
+  SqlCanonicalRelationPath,
+  SqlCatalogEpoch,
+  SqlCatalogFailureCode,
+  SqlCatalogProviderReport,
+  SqlCatalogReadyCoverage,
+  SqlCatalogRelation,
+  SqlCatalogRelationKind,
+  SqlCatalogRetryPolicy,
+  SqlCatalogSearchRequest,
+  SqlCatalogSearchResponse,
+  SqlCompletionCancellationReason,
+  SqlCompletionIssue,
+  SqlCompletionRequest,
+  SqlCompletionTrigger,
+  SqlDisposable,
+  SqlRelationCatalogProvider,
+  SqlRelationCompletionItem,
+  SqlRelationCompletionList,
+  SqlRelationCompletionResult,
+  SqlRelationCompletionSession,
+  SqlSessionChangeEvent,
+  SqlSessionChangeReason,
+} from "./relation-completion-types.js";

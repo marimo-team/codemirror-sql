@@ -1,6 +1,6 @@
 import type {
   SqlDocumentContext,
-  SqlDocumentUpdate,
+  SqlDocumentSession,
   SqlIdentifierComponent,
   SqlIdentifierPath,
   SqlRevision,
@@ -344,19 +344,6 @@ export type SqlRelationCompletionResult =
       readonly failure: SqlServiceFailure;
     };
 
-export interface SqlRelationCompletionSession<
+export type SqlRelationCompletionSession<
   Context extends SqlDocumentContext,
-> {
-  readonly revision: SqlRevision;
-  readonly update: (
-    transaction: SqlDocumentUpdate<Context>,
-  ) => SqlRevision;
-  readonly complete: (
-    request: SqlCompletionRequest,
-  ) => Promise<SqlRelationCompletionResult>;
-  readonly onDidChange: (
-    listener: (event: SqlSessionChangeEvent) => void,
-  ) => SqlDisposable;
-  readonly isCurrent: (revision: SqlRevision) => boolean;
-  readonly dispose: () => void;
-}
+> = SqlDocumentSession<Context>;

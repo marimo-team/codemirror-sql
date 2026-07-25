@@ -6,15 +6,50 @@ import type {
   SqlLanguageService,
   SqlLanguageServiceOptions,
   SqlRevision,
+  SqlIdentifierPath,
   SqlTextChange,
   SqlTextRange,
 } from "./types.js";
 import {
   buildSqlStatementIndex,
+  findSqlStatementSlot,
   type SqlLexicalProfile,
   type SqlStatementIndex,
+  type SqlStatementSlot,
   updateSqlStatementIndex,
 } from "./statement-index.js";
+import {
+  captureSqlRelationCatalogProvider,
+  MAX_CATALOG_IDENTIFIER_LENGTH,
+  MAX_CATALOG_SCOPE_LENGTH,
+  MAX_CATALOG_SEARCH_PATH_COMPONENTS,
+  MAX_CATALOG_SEARCH_PATHS,
+} from "./relation-catalog-boundary.js";
+import {
+  createSqlCatalogSearchWorkCoordinator,
+  type SqlCatalogSearchWorkCoordinator,
+  type SqlCatalogSearchWorkOwner,
+  type SqlCatalogSearchWorkOutcome,
+  type SqlCatalogSearchWorkTicket,
+} from "./relation-catalog-search-work.js";
+import {
+  analyzeSqlLocalRelationSite,
+  prepareSqlLocalRelationStatement,
+  type SqlLocalRelationStatementPreparation,
+  type SqlLocalRelationSiteResult,
+} from "./local-relation-site.js";
+import {
+  composeSqlRelationCompletion,
+  MAX_RELATION_COMPLETION_RESULTS,
+  type SqlComposableCatalogOutcome,
+} from "./relation-completion.js";
+import type {
+  SqlCompletionRequest,
+  SqlDisposable,
+  SqlRelationCompletionResult,
+  SqlSessionChangeEvent,
+  SqlSessionChangeReason,
+} from "./relation-completion-types.js";
 import {
   BIGQUERY_SQL_RELATION_DIALECT,
   DREMIO_SQL_RELATION_DIALECT,
@@ -45,6 +80,25 @@ const MAX_CONTEXT_STRING_LENGTH = 1_000_000;
 const MAX_CONTEXT_ARRAY_LENGTH = 50_000;
 const MAX_CHANGES_PER_UPDATE = 10_000;
 const MAX_DIALECTS = 1_000;
+const DEFAULT_CATALOG_RESPONSE_BUDGET_MS = 40;
+const MAX_CATALOG_RESPONSE_BUDGET_MS = 50;
+const TERMINAL_LOADING_INTENT_LEASE_MS = 1_000;
+
+interface ResolvedCatalogContext {
+  readonly scope: string;
+  readonly searchPaths: readonly SqlIdentifierPath[];
+}
+
+interface CompletionRequestState {
+  cancelReason: "caller" | "disposed" | "superseded" | null;
+  readonly revision: SqlRevision;
+  ticket: SqlCatalogSearchWorkTicket | null;
+  readonly token: object;
+}
+
+interface CompletionConfiguration {
+  readonly catalogResponseBudgetMs: number;
+}
 
 interface SqlDialectRuntime {
   readonly dialect: SqlDialect;
@@ -352,6 +406,89 @@ function resolveDialectRuntime(
   return runtime;
 }
 
+function resolveCatalogContext(
+  context: SqlDocumentContext,
+): ResolvedCatalogContext | null {
+  const catalog = context.catalog;
+  if (!catalog) return null;
+  if (
+    typeof catalog !== "object" ||
+    typeof catalog.scope !== "string" ||
+    catalog.scope.length === 0 ||
+    catalog.scope.length > MAX_CATALOG_SCOPE_LENGTH
+  ) {
+    throw new SqlSessionError(
+      "invalid-context",
+      "SQL catalog context has an invalid scope",
+    );
+  }
+  const candidatePaths = catalog.searchPath ?? [];
+  if (
+    !Array.isArray(candidatePaths) ||
+    candidatePaths.length > MAX_CATALOG_SEARCH_PATHS
+  ) {
+    throw new SqlSessionError(
+      "invalid-context",
+      "SQL catalog search paths are invalid",
+    );
+  }
+  for (const path of candidatePaths) {
+    if (
+      !Array.isArray(path) ||
+      path.length === 0 ||
+      path.length > MAX_CATALOG_SEARCH_PATH_COMPONENTS
+    ) {
+      throw new SqlSessionError(
+        "invalid-context",
+        "SQL catalog search path is invalid",
+      );
+    }
+    for (const component of path) {
+      if (
+        !component ||
+        typeof component !== "object" ||
+        typeof component.value !== "string" ||
+        component.value.length === 0 ||
+        component.value.length > MAX_CATALOG_IDENTIFIER_LENGTH ||
+        typeof component.quoted !== "boolean"
+      ) {
+        throw new SqlSessionError(
+          "invalid-context",
+          "SQL catalog search path component is invalid",
+        );
+      }
+    }
+  }
+  return Object.freeze({
+    scope: catalog.scope,
+    searchPaths: candidatePaths,
+  });
+}
+
+function unavailableCompletionReason(
+  local: Exclude<SqlLocalRelationSiteResult, { status: "ready" }>,
+): "inactive" | "unsupported-query-site" | "opaque-statement" |
+  "ambiguous-query-site" | "resource-limit" {
+  if (local.status === "inactive") return "inactive";
+  switch (local.reason) {
+    case "opaque-statement":
+      return "opaque-statement";
+    case "resource-limit":
+      return "resource-limit";
+    case "unsupported-query-site":
+      return "unsupported-query-site";
+    case "ambiguous-query-site":
+      return "ambiguous-query-site";
+  }
+}
+
+function completionCancellation(
+  revision: SqlRevision,
+  reason: "caller" | "disposed" | "superseded",
+): SqlRelationCompletionResult {
+  return Object.freeze({ reason, revision, status: "cancelled" });
+}
+
 interface MissingDataProperty {
   readonly found: false;
 }
@@ -588,22 +725,49 @@ interface StatementIndexCache {
   readonly sourceSequence: number;
 }
 
+interface LocalRelationStatementCache {
+  readonly dialect: SqlRelationDialectRuntime;
+  readonly index: SqlStatementIndex;
+  readonly preparation: SqlLocalRelationStatementPreparation;
+  readonly slot: SqlStatementSlot;
+  readonly sourceSequence: number;
+}
+
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   implements SqlDocumentSession<Context>
 {
+  readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
+  readonly #catalogResponseBudgetMs: number;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #onDispose: () => void;
+  readonly #listeners = new Set<
+    (event: SqlSessionChangeEvent) => void
+  >();
+  #activeCompletion: CompletionRequestState | null = null;
+  #catalogOwner: SqlCatalogSearchWorkOwner | null = null;
+  #catalogOwnerDialect: SqlRelationDialectRuntime | null = null;
+  #catalogOwnerScope: string | null = null;
   #disposed = false;
+  #localRelationStatementCache:
+    | LocalRelationStatementCache
+    | null = null;
+  #refreshIntent: CompletionRequestState | null = null;
   #snapshot: SessionSnapshot<Context>;
   #statementIndexCache: StatementIndexCache | null = null;
+  #terminalIntentTimer: ReturnType<typeof setTimeout> | null = null;
   #updating = false;
 
   constructor(
     source: SqlSourceSnapshot,
     context: Context,
     dialects: ReadonlyMap<string, SqlDialectRuntime>,
+    catalogCoordinator: SqlCatalogSearchWorkCoordinator | null,
+    completion: CompletionConfiguration,
     onDispose: () => void,
   ) {
+    this.#catalogCoordinator = catalogCoordinator;
+    this.#catalogResponseBudgetMs =
+      completion.catalogResponseBudgetMs;
     this.#dialects = dialects;
     this.#onDispose = onDispose;
     const sequence = 0;
@@ -621,6 +785,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       source,
       sourceSequence,
     });
+    this.#replaceCatalogOwner();
   }
 
   get revision(): SqlRevision {
@@ -661,6 +826,532 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     });
     return index;
   }
+
+  #clearTerminalIntent(): void {
+    if (this.#terminalIntentTimer !== null) {
+      clearTimeout(this.#terminalIntentTimer);
+      this.#terminalIntentTimer = null;
+    }
+  }
+
+  #dispatchChange(
+    revision: SqlRevision,
+    reason: SqlSessionChangeReason,
+  ): void {
+    if (this.#disposed || revision !== this.#snapshot.revision) {
+      return;
+    }
+    const event = Object.freeze({ reason, revision });
+    for (const listener of Array.from(this.#listeners)) {
+      if (!this.#listeners.has(listener) || this.#disposed) {
+        continue;
+      }
+      try {
+        Reflect.apply(listener, undefined, [event]);
+      } catch {
+        // Listener failures do not interrupt coordinator state changes.
+      }
+    }
+  }
+
+  #prepareServiceChange(
+    reason: SqlSessionChangeReason,
+    expected?: CompletionRequestState,
+  ): (() => undefined) | null {
+    if (
+      this.#disposed ||
+      (expected !== undefined &&
+        (this.#activeCompletion !== expected &&
+          this.#refreshIntent !== expected ||
+          expected.cancelReason !== null ||
+          expected.revision !== this.#snapshot.revision))
+    ) {
+      return null;
+    }
+    const previous = this.#snapshot;
+    const revision = createSqlRevisionToken();
+    this.#snapshot = Object.freeze({
+      ...previous,
+      revision,
+      sequence: previous.sequence + 1,
+    });
+    const active = this.#activeCompletion;
+    const intent = this.#refreshIntent;
+    this.#activeCompletion = null;
+    this.#refreshIntent = null;
+    this.#clearTerminalIntent();
+    if (active && active.cancelReason === null) {
+      active.cancelReason = "superseded";
+    }
+    if (intent && intent !== active) {
+      if (intent.cancelReason === null) {
+        intent.cancelReason = "superseded";
+      }
+    }
+    return (): undefined => {
+      active?.ticket?.cancel();
+      if (intent !== active) intent?.ticket?.cancel();
+      this.#dispatchChange(revision, reason);
+      return undefined;
+    };
+  }
+
+  #replaceCatalogOwner(): void {
+    const catalog = resolveCatalogContext(this.#snapshot.context);
+    const dialect = this.#snapshot.dialect.relationDialect;
+    if (
+      this.#catalogOwner &&
+      catalog &&
+      this.#catalogOwnerScope === catalog.scope &&
+      this.#catalogOwnerDialect === dialect
+    ) {
+      return;
+    }
+    this.#catalogOwner?.dispose();
+    this.#catalogOwner = null;
+    this.#catalogOwnerDialect = null;
+    this.#catalogOwnerScope = null;
+    if (!catalog || !this.#catalogCoordinator || this.#disposed) {
+      return;
+    }
+    const prepared = this.#catalogCoordinator.prepareOwner(
+      catalog.scope,
+      dialect,
+      Object.freeze({
+        prepareCatalogChange: (): (() => undefined) | null =>
+          this.#prepareServiceChange("catalog"),
+      }),
+    );
+    if (prepared.status !== "prepared") return;
+    this.#catalogOwner = prepared.owner;
+    this.#catalogOwnerDialect = dialect;
+    this.#catalogOwnerScope = catalog.scope;
+    const activation = prepared.owner.activate();
+    if (activation.status !== "active") {
+      prepared.owner.dispose();
+      if (this.#catalogOwner === prepared.owner) {
+        this.#catalogOwner = null;
+        this.#catalogOwnerDialect = null;
+        this.#catalogOwnerScope = null;
+      }
+    }
+  }
+
+  readonly onDidChange = (
+    listener: (event: SqlSessionChangeEvent) => void,
+  ): SqlDisposable => {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    if (typeof listener !== "function") {
+      throw new SqlSessionError(
+        "invalid-completion-request",
+        "SQL session change listener must be a function",
+      );
+    }
+    this.#listeners.add(listener);
+    let active = true;
+    return Object.freeze({
+      dispose: (): void => {
+        if (!active) return;
+        active = false;
+        this.#listeners.delete(listener);
+      },
+    });
+  };
+
+  readonly complete = async (
+    request: SqlCompletionRequest,
+  ): Promise<SqlRelationCompletionResult> => {
+    const completionStartedAt = performance.now();
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    let position: number;
+    let signal: AbortSignal | undefined;
+    try {
+      if (request === null || typeof request !== "object") {
+        throw new Error();
+      }
+      position = readRequiredDataProperty(
+        request,
+        "position",
+        "invalid-completion-request",
+        "SQL completion request",
+      );
+      const trigger = readRequiredDataProperty(
+        request,
+        "trigger",
+        "invalid-completion-request",
+        "SQL completion request",
+      );
+      if (
+        !Number.isSafeInteger(position) ||
+        position < 0 ||
+        position > this.#snapshot.source.originalText.length ||
+        trigger === null ||
+        typeof trigger !== "object"
+      ) {
+        throw new Error();
+      }
+      const triggerKind = readRequiredDataProperty(
+        trigger,
+        "kind",
+        "invalid-completion-request",
+        "SQL completion trigger",
+      );
+      if (
+        triggerKind !== "invoked" &&
+        triggerKind !== "trigger-character"
+      ) {
+        throw new Error();
+      }
+      if (triggerKind === "trigger-character") {
+        const character = readRequiredDataProperty(
+          trigger,
+          "character",
+          "invalid-completion-request",
+          "SQL completion trigger",
+        );
+        if (
+          typeof character !== "string" ||
+          character.length === 0 ||
+          character.length > 2 ||
+          Array.from(character).length !== 1
+        ) {
+          throw new Error();
+        }
+      }
+      const signalProperty = readOwnDataProperty(
+        request,
+        "signal",
+        "invalid-completion-request",
+        "SQL completion request",
+      );
+      if (
+        signalProperty.found &&
+        signalProperty.value !== undefined
+      ) {
+        if (!(signalProperty.value instanceof AbortSignal)) {
+          throw new Error();
+        }
+        signal = signalProperty.value;
+      }
+    } catch (error) {
+      if (
+        error instanceof SqlSessionError &&
+        error.code === "invalid-completion-request"
+      ) {
+        throw error;
+      }
+      throw new SqlSessionError(
+        "invalid-completion-request",
+        "SQL completion request is invalid",
+      );
+    }
+
+    const previousActive = this.#activeCompletion;
+    const previousIntent = this.#refreshIntent;
+    if (
+      previousActive &&
+      previousActive.cancelReason === null
+    ) {
+      previousActive.cancelReason = "superseded";
+    }
+    if (
+      previousIntent &&
+      previousIntent !== previousActive &&
+      previousIntent.cancelReason === null
+    ) {
+      previousIntent.cancelReason = "superseded";
+    }
+    const cancelPrevious = (): void => {
+      previousActive?.ticket?.cancel();
+      if (previousIntent !== previousActive) {
+        previousIntent?.ticket?.cancel();
+      }
+      if (this.#refreshIntent === previousIntent) {
+        this.#refreshIntent = null;
+      }
+    };
+    this.#clearTerminalIntent();
+    const snapshot = this.#snapshot;
+    const active: CompletionRequestState = {
+      cancelReason: null,
+      revision: snapshot.revision,
+      ticket: null,
+      token: {},
+    };
+    this.#activeCompletion = active;
+    if (signal?.aborted) {
+      active.cancelReason = "caller";
+      this.#activeCompletion = null;
+      cancelPrevious();
+      return completionCancellation(snapshot.revision, "caller");
+    }
+    const onAbort = (): void => {
+      if (
+        this.#activeCompletion === active &&
+        active.cancelReason === null
+      ) {
+        active.cancelReason = "caller";
+        active.ticket?.cancel();
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const index = this.getStatementIndexForTesting();
+      const slot = findSqlStatementSlot(index, position, "left");
+      const cachedLocal = this.#localRelationStatementCache;
+      const prepared =
+        cachedLocal &&
+        cachedLocal.sourceSequence === snapshot.sourceSequence &&
+        cachedLocal.index === index &&
+        cachedLocal.slot === slot &&
+        cachedLocal.dialect === snapshot.dialect.relationDialect
+          ? cachedLocal.preparation
+          : prepareSqlLocalRelationStatement(
+              snapshot.source,
+              index,
+              slot,
+              snapshot.dialect.relationDialect,
+            );
+      if (cachedLocal?.preparation !== prepared) {
+        this.#localRelationStatementCache = Object.freeze({
+          dialect: snapshot.dialect.relationDialect,
+          index,
+          preparation: prepared,
+          slot,
+          sourceSequence: snapshot.sourceSequence,
+        });
+      }
+      if (prepared.status !== "ready") {
+        cancelPrevious();
+        return Object.freeze({
+          reason: unavailableCompletionReason(prepared),
+          retryable: false,
+          revision: snapshot.revision,
+          status: "unavailable",
+        });
+      }
+      const localSite = analyzeSqlLocalRelationSite(
+        prepared.statement,
+        position,
+      );
+      if (localSite.status !== "ready") {
+        cancelPrevious();
+        return Object.freeze({
+          reason: unavailableCompletionReason(localSite),
+          retryable: false,
+          revision: snapshot.revision,
+          status: "unavailable",
+        });
+      }
+      if (
+        this.#activeCompletion !== active ||
+        active.cancelReason !== null ||
+        snapshot.revision !== this.#snapshot.revision
+      ) {
+        return completionCancellation(
+          snapshot.revision,
+          active.cancelReason ?? "superseded",
+        );
+      }
+
+      const querySite = localSite.querySite;
+      const statementOffset =
+        slot.boundaryQuality === "exact" ? slot.source.from : 0;
+      const replacementRange = Object.freeze({
+        from: statementOffset + querySite.typedPathRange.from,
+        to: statementOffset + querySite.typedPathRange.to,
+      });
+      const catalog = resolveCatalogContext(snapshot.context);
+      let catalogOutcome: SqlComposableCatalogOutcome = null;
+      let remainingIntentLeaseMs = 0;
+      const owner = this.#catalogOwner;
+
+      if (catalog && this.#catalogCoordinator) {
+        if (!owner) {
+          cancelPrevious();
+          catalogOutcome = Object.freeze({
+            reason: "overloaded",
+            status: "unavailable",
+          });
+        } else {
+          const ticket = owner.request({
+            continuationToken: null,
+            limit: MAX_RELATION_COMPLETION_RESULTS,
+            prefix: querySite.prefix,
+            qualifier: querySite.qualifier,
+            searchPaths: catalog.searchPaths,
+          });
+          if (this.#refreshIntent === previousIntent) {
+            this.#refreshIntent = null;
+          }
+          active.ticket = ticket;
+          const elapsed = Math.max(
+            0,
+            performance.now() - completionStartedAt,
+          );
+          const remaining = Math.max(
+            0,
+            this.#catalogResponseBudgetMs - elapsed,
+          );
+          let responseTimer: ReturnType<typeof setTimeout> | null =
+            null;
+          const raced = await Promise.race([
+            ticket.result.then((outcome) =>
+              Object.freeze({
+                kind: "outcome" as const,
+                outcome,
+              }),
+            ),
+            new Promise<{ readonly kind: "timeout" }>((resolve) => {
+              responseTimer = setTimeout(
+                () => resolve(Object.freeze({ kind: "timeout" })),
+                remaining,
+              );
+            }),
+          ]);
+          if (responseTimer !== null) clearTimeout(responseTimer);
+          if (
+            this.#activeCompletion !== active ||
+            active.cancelReason !== null ||
+            snapshot.revision !== this.#snapshot.revision
+          ) {
+            ticket.cancel();
+            return completionCancellation(
+              snapshot.revision,
+              active.cancelReason ?? "superseded",
+            );
+          }
+          let providerOutcome: SqlCatalogSearchWorkOutcome | null =
+            raced.kind === "outcome" ? raced.outcome : null;
+          if (raced.kind === "timeout") {
+            const retained = ticket.retainForRefresh(
+              (): (() => undefined) | null =>
+                this.#prepareServiceChange(
+                  "catalog-availability",
+                  active,
+                ),
+            );
+            if (retained.status === "retained") {
+              remainingIntentLeaseMs = retained.remainingLeaseMs;
+              this.#refreshIntent = active;
+              catalogOutcome = Object.freeze({
+                status: "loading",
+              });
+            } else if (
+              retained.reason === "not-retainable"
+            ) {
+              providerOutcome = await ticket.result;
+            } else {
+              catalogOutcome = Object.freeze({
+                reason: "execution-timeout",
+                status: "unavailable",
+              });
+            }
+          }
+          if (providerOutcome) {
+            const outcome = providerOutcome;
+            if (
+              outcome.status === "cancelled" ||
+              outcome.status === "superseded"
+            ) {
+              return completionCancellation(
+                snapshot.revision,
+                active.cancelReason ??
+                  (outcome.status === "cancelled"
+                    ? "caller"
+                    : "superseded"),
+              );
+            }
+            if (outcome.status === "unavailable") {
+              if (
+                outcome.reason === "disposed" ||
+                outcome.reason === "inactive"
+              ) {
+                return completionCancellation(
+                  snapshot.revision,
+                  this.#disposed ? "disposed" : "superseded",
+                );
+              }
+              switch (outcome.reason) {
+                case "invalid-request":
+                  catalogOutcome = Object.freeze({
+                    reason: "provider-failed",
+                    status: "unavailable",
+                  });
+                  break;
+                case "execution-timeout":
+                case "malformed-response":
+                case "overloaded":
+                case "provider-failed":
+                case "queue-timeout":
+                  catalogOutcome = Object.freeze({
+                    reason: outcome.reason,
+                    status: "unavailable",
+                  });
+                  break;
+              }
+            } else {
+              catalogOutcome = outcome;
+              if (outcome.response.status === "loading") {
+                remainingIntentLeaseMs =
+                  TERMINAL_LOADING_INTENT_LEASE_MS;
+                this.#terminalIntentTimer = setTimeout(() => {
+                  this.#terminalIntentTimer = null;
+                }, remainingIntentLeaseMs);
+              }
+            }
+          }
+        }
+      } else {
+        cancelPrevious();
+      }
+
+      const composition = composeSqlRelationCompletion({
+        catalogOutcome,
+        dialect: snapshot.dialect.relationDialect,
+        localSite,
+        providerId:
+          catalog && this.#catalogCoordinator
+            ? this.#catalogCoordinator.providerId
+            : null,
+        remainingIntentLeaseMs,
+        replacementRange,
+        statementOffset,
+      });
+      if (
+        this.#activeCompletion !== active ||
+        active.cancelReason !== null ||
+        snapshot.revision !== this.#snapshot.revision
+      ) {
+        return completionCancellation(
+          snapshot.revision,
+          active.cancelReason ?? "superseded",
+        );
+      }
+      return Object.freeze({
+        revision: snapshot.revision,
+        sources: composition.sources,
+        status: "ready",
+        value: composition.value,
+      });
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      if (this.#activeCompletion === active) {
+        this.#activeCompletion = null;
+      }
+    }
+  };
 
   readonly update = (update: SqlDocumentUpdate<Context>): SqlRevision => {
     if (this.#disposed) {
@@ -866,6 +1557,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextContext,
       this.#dialects,
     );
+    resolveCatalogContext(nextContext);
     const nextLexicalProfile = nextDialect.lexicalProfile;
     if (this.#disposed) {
       throw new SqlSessionError(
@@ -919,9 +1611,39 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           })
         : null;
     }
+    const activeCompletion = this.#activeCompletion;
+    const refreshIntent = this.#refreshIntent;
+    const invalidatesLocalRelationCache =
+      nextSourceSequence !== this.#snapshot.sourceSequence ||
+      nextDialect.relationDialect !==
+        this.#snapshot.dialect.relationDialect;
     this.#snapshot = nextSnapshot;
     this.#statementIndexCache = nextStatementIndexCache;
-    return revision;
+    if (invalidatesLocalRelationCache) {
+      this.#localRelationStatementCache = null;
+    }
+    this.#activeCompletion = null;
+    this.#refreshIntent = null;
+    this.#clearTerminalIntent();
+    if (
+      activeCompletion &&
+      activeCompletion.cancelReason === null
+    ) {
+      activeCompletion.cancelReason = "superseded";
+    }
+    if (
+      refreshIntent &&
+      refreshIntent !== activeCompletion &&
+      refreshIntent.cancelReason === null
+    ) {
+      refreshIntent.cancelReason = "superseded";
+    }
+    activeCompletion?.ticket?.cancel();
+    if (refreshIntent !== activeCompletion) {
+      refreshIntent?.ticket?.cancel();
+    }
+    this.#replaceCatalogOwner();
+    return this.#snapshot.revision;
   }
 
   readonly isCurrent = (revision: SqlRevision): boolean => {
@@ -933,7 +1655,34 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       return;
     }
     this.#disposed = true;
+    const activeCompletion = this.#activeCompletion;
+    const refreshIntent = this.#refreshIntent;
+    const catalogOwner = this.#catalogOwner;
+    this.#activeCompletion = null;
+    this.#refreshIntent = null;
+    this.#catalogOwner = null;
+    this.#clearTerminalIntent();
+    this.#listeners.clear();
+    this.#localRelationStatementCache = null;
     this.#statementIndexCache = null;
+    if (
+      activeCompletion &&
+      activeCompletion.cancelReason === null
+    ) {
+      activeCompletion.cancelReason = "disposed";
+    }
+    if (
+      refreshIntent &&
+      refreshIntent !== activeCompletion &&
+      refreshIntent.cancelReason === null
+    ) {
+      refreshIntent.cancelReason = "disposed";
+    }
+    activeCompletion?.ticket?.cancel();
+    if (refreshIntent !== activeCompletion) {
+      refreshIntent?.ticket?.cancel();
+    }
+    catalogOwner?.dispose();
     this.#onDispose();
   };
 }
@@ -941,6 +1690,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
   implements SqlLanguageService<Context>
 {
+  readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
+  readonly #completion: CompletionConfiguration;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #sessions = new Set<DefaultSqlDocumentSession<Context>>();
   #disposed = false;
@@ -1001,6 +1752,78 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         dialects.set(runtime.dialect.id, runtime);
       }
       this.#dialects = dialects;
+
+      let catalogResponseBudgetMs =
+        DEFAULT_CATALOG_RESPONSE_BUDGET_MS;
+      const completion = readOwnDataProperty(
+        options,
+        "completion",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      if (completion.found && completion.value !== undefined) {
+        if (
+          completion.value === null ||
+          typeof completion.value !== "object"
+        ) {
+          throw new SqlSessionError(
+            "invalid-service-options",
+            "SQL completion options must be an object",
+          );
+        }
+        const budget = readOwnDataProperty(
+          completion.value,
+          "catalogResponseBudgetMs",
+          "invalid-service-options",
+          "SQL completion options",
+        );
+        if (budget.found && budget.value !== undefined) {
+          if (
+            typeof budget.value !== "number" ||
+            !Number.isFinite(budget.value) ||
+            budget.value < 0 ||
+            budget.value > MAX_CATALOG_RESPONSE_BUDGET_MS
+          ) {
+            throw new SqlSessionError(
+              "invalid-service-options",
+              `Catalog response budget must be between 0 and ${MAX_CATALOG_RESPONSE_BUDGET_MS} milliseconds`,
+            );
+          }
+          catalogResponseBudgetMs = budget.value;
+        }
+      }
+      this.#completion = Object.freeze({
+        catalogResponseBudgetMs,
+      });
+
+      const catalog = readOwnDataProperty(
+        options,
+        "catalog",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      if (!catalog.found || catalog.value === undefined) {
+        this.#catalogCoordinator = null;
+      } else {
+        const captured = captureSqlRelationCatalogProvider(
+          catalog.value,
+        );
+        if (captured.status !== "accepted") {
+          throw new SqlSessionError(
+            "invalid-service-options",
+            "SQL relation catalog provider is invalid",
+          );
+        }
+        const coordinator =
+          createSqlCatalogSearchWorkCoordinator(captured.value);
+        if (coordinator.status !== "created") {
+          throw new SqlSessionError(
+            "invalid-service-options",
+            "SQL relation catalog coordinator could not be created",
+          );
+        }
+        this.#catalogCoordinator = coordinator.coordinator;
+      }
     } catch (error) {
       if (error instanceof SqlSessionError) {
         throw error;
@@ -1068,6 +1891,8 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         source,
         context,
         this.#dialects,
+        this.#catalogCoordinator,
+        this.#completion,
         () => {
           this.#sessions.delete(session);
         },
@@ -1107,6 +1932,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
       session.dispose();
     }
     this.#sessions.clear();
+    this.#catalogCoordinator?.dispose();
   };
 }
 

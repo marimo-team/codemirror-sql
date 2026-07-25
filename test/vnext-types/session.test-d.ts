@@ -7,6 +7,7 @@ import {
   type SqlDocumentSession,
   type SqlEmbeddedRegion,
   type SqlLanguageService,
+  type SqlRelationCatalogProvider,
   type SqlRevision,
   type SqlTextChange,
   type SqlTextRange,
@@ -33,6 +34,21 @@ void typedDialect.grammar;
 // @ts-expect-error dialect rendering policy is package-private
 void typedDialect.renderRelationPath;
 const service = createSqlLanguageService<HostContext>({ dialects: [dialect] });
+const relationCatalog = {
+  id: "host-catalog",
+  search: async () => ({
+    coverage: { kind: "complete" as const },
+    epoch: { generation: 0, token: "initial" },
+    relations: [],
+    status: "ready" as const,
+  }),
+} satisfies SqlRelationCatalogProvider;
+const catalogService = createSqlLanguageService<HostContext>({
+  catalog: relationCatalog,
+  completion: { catalogResponseBudgetMs: 40 },
+  dialects: [dialect],
+});
+void catalogService;
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
   embeddedRegions: [{ from: 0, language: "python", to: 1 }],
@@ -53,6 +69,15 @@ const hostOpen = {
 };
 service.openDocument(hostOpen);
 const revision: SqlRevision = session.revision;
+void session.complete({
+  position: 0,
+  trigger: { kind: "invoked" },
+});
+const changeSubscription = session.onDidChange((event) => {
+  const changedRevision: SqlRevision = event.revision;
+  void changedRevision;
+});
+changeSubscription.dispose();
 declare const maybeContext: HostContext | undefined;
 declare const maybeDocument: SqlDocumentEdit | undefined;
 
