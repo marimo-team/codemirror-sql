@@ -8,6 +8,7 @@ import {
 } from "../relation-catalog-epoch-coordinator.js";
 import type {
   SqlCatalogEpochCoordinator,
+  SqlCatalogEpochTransitionTarget,
   SqlCatalogResponseEpochDecision,
   SqlCatalogResponseEpochSubmissionResult,
   SqlCatalogRevisionTarget,
@@ -110,7 +111,10 @@ function requireDecision(
   return decision;
 }
 
-function createFixture(memberCount: number): CoordinatorFixture {
+function createFixture(
+  memberCount: number,
+  prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
+): CoordinatorFixture {
   let invalidationListener:
     | ((this: void, event: unknown) => void)
     | null = null;
@@ -141,6 +145,7 @@ function createFixture(memberCount: number): CoordinatorFixture {
   }
   const created = createSqlCatalogEpochCoordinator(
     captured.value,
+    prepareEpochTransition,
   );
   if (created.status !== "created") {
     return benchmarkFailure("coordinator creation was unavailable");
@@ -411,6 +416,32 @@ describe("relation catalog epoch coordinator", () => {
         generation += 1
       ) {
         fixture.emitInvalidation(generation);
+      }
+      fixture.dispose();
+    },
+  );
+
+  bench(
+    "process a bounded 256-event storm with a null transition dispatch",
+    () => {
+      let transitions = 0;
+      const fixture = createFixture(1, () => {
+        transitions += 1;
+        return null;
+      });
+      for (
+        let generation = 1;
+        generation <= MAX_CATALOG_CALLBACKS_PER_RESET_WINDOW;
+        generation += 1
+      ) {
+        fixture.emitInvalidation(generation);
+      }
+      if (
+        transitions !== MAX_CATALOG_CALLBACKS_PER_RESET_WINDOW
+      ) {
+        benchmarkFailure(
+          "configured transition hook lost an accepted epoch",
+        );
       }
       fixture.dispose();
     },

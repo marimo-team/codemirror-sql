@@ -15,6 +15,7 @@ import {
   MAX_CATALOG_MEMBERSHIPS_PER_SCOPE,
   type SqlCatalogEpochCapture,
   type SqlCatalogEpochCoordinator,
+  type SqlCatalogEpochTransitionTarget,
   type SqlCatalogResponseEpochDecision,
   type SqlCatalogResponseEpochSubmissionResult,
   type SqlCatalogRevisionTarget,
@@ -61,9 +62,27 @@ function capturedProvider(
 function coordinator(
   subscribe?: RawSubscribe,
   id = "catalog",
+  prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
 ): SqlCatalogEpochCoordinator {
   const result = createSqlCatalogEpochCoordinator(
     capturedProvider(subscribe, id),
+    prepareEpochTransition,
+  );
+  expect(result.status).toBe("created");
+  if (result.status !== "created") {
+    throw new Error("Expected a coordinator fixture");
+  }
+  return result.coordinator;
+}
+
+function coordinatorWithRawTransition(
+  prepareEpochTransition: unknown,
+  subscribe?: RawSubscribe,
+): SqlCatalogEpochCoordinator {
+  const result = Reflect.apply(
+    createSqlCatalogEpochCoordinator,
+    undefined,
+    [capturedProvider(subscribe), prepareEpochTransition],
   );
   expect(result.status).toBe("created");
   if (result.status !== "created") {
@@ -192,6 +211,29 @@ describe("catalog epoch coordinator construction and membership", () => {
     const owner = coordinator(undefined, "provider-a");
     expect(owner.providerId).toBe("provider-a");
     expect(Object.isFrozen(owner)).toBe(true);
+  });
+
+  it("rejects a non-function epoch transition target without inspecting it", () => {
+    let reads = 0;
+    const target = new Proxy(
+      {},
+      {
+        get() {
+          reads += 1;
+          throw new Error("hostile transition target");
+        },
+      },
+    );
+    expect(
+      Reflect.apply(createSqlCatalogEpochCoordinator, undefined, [
+        capturedProvider(),
+        target,
+      ]),
+    ).toEqual({
+      reason: "invalid-transition-target",
+      status: "unavailable",
+    });
+    expect(reads).toBe(0);
   });
 
   it("validates exact bounded well-formed scopes without raw errors", () => {
@@ -719,6 +761,461 @@ describe("response epoch observations and capture authority", () => {
     expect(disposed.decisions).toEqual([
       { reason: "disposed", status: "discarded" },
     ]);
+  });
+});
+
+describe("service epoch transition ordering", () => {
+  it("prepares retirement after epoch installation and dispatches it before revision listeners", () => {
+    const harness = listenerProvider();
+    const events: string[] = [];
+    let membership: SqlCatalogScopeMembership;
+    const owner = coordinator(
+      harness.subscribe,
+      "catalog",
+      function (this: void, scope, nextEpoch) {
+        events.push("transition-prepare");
+        expect(this).toBeUndefined();
+        expect(scope).toBe("scope");
+        expect(Object.isFrozen(nextEpoch)).toBe(true);
+        expect(nextEpoch).toEqual(epoch(1));
+        expect(capture(membership).expectedEpoch).toEqual(epoch(1));
+        return () => {
+          events.push("transition-dispatch");
+        };
+      },
+    );
+    membership = active(owner, "scope", {
+      prepareCatalogChange: () => {
+        events.push("revision-prepare");
+        return () => {
+          events.push("revision-dispatch");
+        };
+      },
+    });
+
+    harness.listeners[0]?.(invalidation(1));
+    expect(events).toEqual([
+      "transition-prepare",
+      "revision-prepare",
+      "transition-dispatch",
+      "revision-dispatch",
+    ]);
+  });
+
+  it("runs only for response advances and settles the producer before retirement dispatch", () => {
+    const events: string[] = [];
+    const owner = coordinator(
+      undefined,
+      "catalog",
+      (_scope, nextEpoch) => {
+        events.push(`transition-prepare-${nextEpoch.generation}`);
+        return () => {
+          events.push(
+            `transition-dispatch-${nextEpoch.generation}`,
+          );
+        };
+      },
+    );
+    const membership = active(owner, "scope", {
+      prepareCatalogChange: () => {
+        events.push("revision-prepare");
+        return () => {
+          events.push("revision-dispatch");
+        };
+      },
+    });
+
+    const baseline = submit(owner, capture(membership), epoch(1));
+    expect(baseline.decisions).toEqual([
+      {
+        epoch: epoch(1),
+        observation: "baseline",
+        status: "usable",
+      },
+    ]);
+    expect(events).toEqual([]);
+
+    const advancedDecisions: SqlCatalogResponseEpochDecision[] = [];
+    expect(
+      owner.submitResponseEpoch(
+        capture(membership),
+        epoch(2),
+        (decision) => {
+          events.push(`decision-${decision.status}`);
+          advancedDecisions.push(decision);
+        },
+      ),
+    ).toEqual({ status: "submitted" });
+    expect(advancedDecisions).toEqual([
+      { epoch: epoch(2), status: "superseded" },
+    ]);
+    expect(events).toEqual([
+      "transition-prepare-2",
+      "revision-prepare",
+      "decision-superseded",
+      "transition-dispatch-2",
+      "revision-dispatch",
+    ]);
+
+    events.length = 0;
+    expect(
+      submit(owner, capture(membership), epoch(2)).decisions,
+    ).toEqual([
+      {
+        epoch: epoch(2),
+        observation: "equal",
+        status: "usable",
+      },
+    ]);
+    expect(events).toEqual([]);
+  });
+
+  it("snapshots the revision audience before transition preparation", () => {
+    const harness = listenerProvider();
+    const first = counterTarget();
+    const second = counterTarget();
+    let secondMembership: SqlCatalogScopeMembership;
+    let joinedEpoch: SqlCatalogEpochCapture["expectedEpoch"] = null;
+    const owner = coordinator(
+      harness.subscribe,
+      "catalog",
+      (_scope, nextEpoch) => {
+        if (nextEpoch.generation === 1) {
+          expect(secondMembership.activate()).toEqual({
+            status: "active",
+          });
+          joinedEpoch = capture(secondMembership).expectedEpoch;
+        }
+        return null;
+      },
+    );
+    active(owner, "scope", first.target);
+    secondMembership = prepared(owner, "scope", second.target);
+
+    harness.listeners[0]?.(invalidation(1));
+    expect(joinedEpoch).toEqual(epoch(1));
+    expect(first).toMatchObject({ dispatched: 1, prepared: 1 });
+    expect(second).toMatchObject({ dispatched: 0, prepared: 0 });
+
+    harness.listeners[0]?.(invalidation(2));
+    expect(first).toMatchObject({ dispatched: 2, prepared: 2 });
+    expect(second).toMatchObject({ dispatched: 1, prepared: 1 });
+  });
+
+  it("queues transition-dispatch reentrancy behind the current revision dispatch", () => {
+    const harness = listenerProvider();
+    const events: string[] = [];
+    const owner = coordinator(
+      harness.subscribe,
+      "catalog",
+      (_scope, nextEpoch) => {
+        const generation = nextEpoch.generation;
+        events.push(`transition-prepare-${generation}`);
+        return () => {
+          events.push(`transition-dispatch-${generation}`);
+          if (generation === 1) {
+            harness.listeners[0]?.(invalidation(2));
+          }
+        };
+      },
+    );
+    active(owner, "scope", {
+      prepareCatalogChange: () => {
+        const generation =
+          events.filter((event) =>
+            event.startsWith("transition-prepare"),
+          ).length;
+        events.push(`revision-prepare-${generation}`);
+        return () => {
+          events.push(`revision-dispatch-${generation}`);
+        };
+      },
+    });
+
+    harness.listeners[0]?.(invalidation(1));
+    expect(events).toEqual([
+      "transition-prepare-1",
+      "revision-prepare-1",
+      "transition-dispatch-1",
+      "revision-dispatch-1",
+      "transition-prepare-2",
+      "revision-prepare-2",
+      "transition-dispatch-2",
+      "revision-dispatch-2",
+    ]);
+  });
+
+  it("dispatches prepared retirement after reentrant coordinator disposal", () => {
+    const events: string[] = [];
+    let owner: SqlCatalogEpochCoordinator;
+    owner = coordinator(
+      undefined,
+      "catalog",
+      () => {
+        events.push("transition-prepare");
+        owner.dispose();
+        return () => {
+          events.push("transition-dispatch");
+        };
+      },
+    );
+    const membership = active(owner, "scope");
+    submit(owner, capture(membership), epoch(1));
+
+    const decisions: SqlCatalogResponseEpochDecision[] = [];
+    expect(
+      owner.submitResponseEpoch(
+        capture(membership),
+        epoch(2),
+        (decision) => {
+          events.push(`decision-${decision.status}`);
+          decisions.push(decision);
+        },
+      ),
+    ).toEqual({ status: "submitted" });
+    expect(decisions).toEqual([
+      { reason: "disposed", status: "discarded" },
+    ]);
+    expect(events).toEqual([
+      "transition-prepare",
+      "decision-discarded",
+      "transition-dispatch",
+    ]);
+  });
+
+  it("drains rejected and poisoned transition dispatch results", async () => {
+    const asyncHarness = listenerProvider();
+    let asyncDispatchCalls = 0;
+    const asyncOwner = coordinatorWithRawTransition(
+      () => async () => {
+        asyncDispatchCalls += 1;
+        throw new Error("async transition dispatch failed");
+      },
+      asyncHarness.subscribe,
+    );
+    active(asyncOwner, "scope");
+    asyncHarness.listeners[0]?.(invalidation(1));
+
+    let thenReads = 0;
+    let catchReads = 0;
+    const thenProperty = ["th", "en"].join("");
+    const poisonedResult = Promise.reject(
+      new Error("poisoned transition rejection"),
+    );
+    Object.defineProperty(poisonedResult, thenProperty, {
+      get() {
+        thenReads += 1;
+        throw new Error("poisoned transition then");
+      },
+    });
+    Object.defineProperty(poisonedResult, "catch", {
+      get() {
+        catchReads += 1;
+        throw new Error("poisoned transition catch");
+      },
+    });
+    const poisonedHarness = listenerProvider();
+    const poisonedOwner = coordinatorWithRawTransition(
+      () => () => poisonedResult,
+      poisonedHarness.subscribe,
+    );
+    active(poisonedOwner, "scope");
+    poisonedHarness.listeners[0]?.(invalidation(1));
+
+    let hostileThenReads = 0;
+    let hostileReentryStatus: string | undefined;
+    let hostileOwner: SqlCatalogEpochCoordinator;
+    const hostileThenable = Object.defineProperty(
+      {},
+      thenProperty,
+      {
+        get() {
+          hostileThenReads += 1;
+          hostileReentryStatus = hostileOwner.prepareScopeMembership(
+            "reentrant",
+            counterTarget().target,
+          ).status;
+          throw new Error("hostile transition thenable");
+        },
+      },
+    );
+    const hostileHarness = listenerProvider();
+    hostileOwner = coordinatorWithRawTransition(
+      () => () => hostileThenable,
+      hostileHarness.subscribe,
+    );
+    active(hostileOwner, "scope");
+    hostileHarness.listeners[0]?.(invalidation(1));
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(asyncDispatchCalls).toBe(1);
+    expect(thenReads).toBe(0);
+    expect(catchReads).toBe(0);
+    expect(hostileThenReads).toBe(1);
+    expect(hostileReentryStatus).toBe("unavailable");
+  });
+
+  it("quarantines thrown dispatch and invalid preparation", () => {
+    const harness = listenerProvider();
+    const live = counterTarget();
+    const throwingDispatchOwner = coordinator(
+      harness.subscribe,
+      "catalog",
+      () => () => {
+        throw new Error("transition dispatch failed");
+      },
+    );
+    const throwingDispatchMembership = active(
+      throwingDispatchOwner,
+      "scope",
+      live.target,
+    );
+    harness.listeners[0]?.(invalidation(1));
+    expect(live).toMatchObject({ dispatched: 0, prepared: 1 });
+    expect(throwingDispatchMembership.captureEpoch()).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+
+    const throwingHarness = listenerProvider();
+    const throwingOwner = coordinator(
+      throwingHarness.subscribe,
+      "catalog",
+      () => {
+        throw new Error("transition preparation failed");
+      },
+    );
+    const retired = active(throwingOwner, "scope");
+    throwingHarness.listeners[0]?.(invalidation(1));
+    expect(retired.captureEpoch()).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(throwingHarness.cleanupCalls).toBe(1);
+
+    const invalidHarness = listenerProvider();
+    const created = Reflect.apply(
+      createSqlCatalogEpochCoordinator,
+      undefined,
+      [
+        capturedProvider(invalidHarness.subscribe),
+        () => 1,
+      ],
+    );
+    expect(created.status).toBe("created");
+    if (created.status !== "created") {
+      throw new Error("Expected a coordinator fixture");
+    }
+    const invalidMembership = active(
+      created.coordinator,
+      "scope",
+    );
+    invalidHarness.listeners[0]?.(invalidation(1));
+    expect(invalidMembership.captureEpoch()).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(invalidHarness.cleanupCalls).toBe(1);
+
+    let responseOwner: SqlCatalogEpochCoordinator;
+    responseOwner = coordinator(
+      undefined,
+      "catalog",
+      () => {
+        throw new Error("response transition failed");
+      },
+    );
+    const responseMembership = active(responseOwner, "scope");
+    submit(responseOwner, capture(responseMembership), epoch(1));
+    const responseDecisions: SqlCatalogResponseEpochDecision[] = [];
+    expect(
+      responseOwner.submitResponseEpoch(
+        capture(responseMembership),
+        epoch(2),
+        (decision) => responseDecisions.push(decision),
+      ),
+    ).toEqual({ status: "submitted" });
+    expect(responseDecisions).toEqual([
+      { reason: "disposed", status: "discarded" },
+    ]);
+    expect(responseMembership.captureEpoch()).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+
+  it("drains invalid preparation results after making state inert", async () => {
+    let asyncPreparationCalls = 0;
+    const asyncHarness = listenerProvider();
+    const asyncOwner = coordinatorWithRawTransition(
+      async () => {
+        asyncPreparationCalls += 1;
+        throw new Error("async transition preparation failed");
+      },
+      asyncHarness.subscribe,
+    );
+    active(asyncOwner, "scope");
+    asyncHarness.listeners[0]?.(invalidation(1));
+
+    let thenReads = 0;
+    let catchReads = 0;
+    const thenProperty = ["th", "en"].join("");
+    const poisonedResult = Promise.reject(
+      new Error("poisoned preparation rejection"),
+    );
+    Object.defineProperty(poisonedResult, thenProperty, {
+      get() {
+        thenReads += 1;
+        throw new Error("poisoned preparation then");
+      },
+    });
+    Object.defineProperty(poisonedResult, "catch", {
+      get() {
+        catchReads += 1;
+        throw new Error("poisoned preparation catch");
+      },
+    });
+    const poisonedHarness = listenerProvider();
+    const poisonedOwner = coordinatorWithRawTransition(
+      () => poisonedResult,
+      poisonedHarness.subscribe,
+    );
+    active(poisonedOwner, "scope");
+    poisonedHarness.listeners[0]?.(invalidation(1));
+
+    let hostileThenReads = 0;
+    let hostileReentryStatus: string | undefined;
+    let hostileOwner: SqlCatalogEpochCoordinator;
+    const hostileThenable = Object.defineProperty(
+      {},
+      thenProperty,
+      {
+        get() {
+          hostileThenReads += 1;
+          hostileReentryStatus = hostileOwner.prepareScopeMembership(
+            "reentrant",
+            counterTarget().target,
+          ).status;
+          throw new Error("hostile preparation thenable");
+        },
+      },
+    );
+    const hostileHarness = listenerProvider();
+    hostileOwner = coordinatorWithRawTransition(
+      () => hostileThenable,
+      hostileHarness.subscribe,
+    );
+    active(hostileOwner, "scope");
+    hostileHarness.listeners[0]?.(invalidation(1));
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(asyncPreparationCalls).toBe(1);
+    expect(thenReads).toBe(0);
+    expect(catchReads).toBe(0);
+    expect(hostileThenReads).toBe(1);
+    expect(hostileReentryStatus).toBe("unavailable");
   });
 });
 
@@ -1307,7 +1804,7 @@ describe("hostile subscription lifecycle", () => {
     expect(getterCalls).toBe(0);
   });
 
-  it("isolates thrown cleanup and retains no live callback after failed subscribe", () => {
+  it("quarantines thrown cleanup and retains no live callback after failed subscribe", () => {
     let retained: RawInvalidationListener | undefined;
     const owner = coordinator((_scope, notify) => {
       retained = notify;
@@ -1320,6 +1817,12 @@ describe("hostile subscription lifecycle", () => {
     expect(() => membership.dispose()).not.toThrow();
     retained?.(invalidation(1));
     expect(target.dispatched).toBe(0);
+    expect(
+      owner.prepareScopeMembership("replacement", target.target),
+    ).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
 
     let failedRetained: RawInvalidationListener | undefined;
     const failedOwner = coordinator((_scope, notify) => {
@@ -1346,10 +1849,16 @@ describe("hostile subscription lifecycle", () => {
 
     let applyCalls = 0;
     let thenReads = 0;
+    let hostileReentryStatus: string | undefined;
+    let hostileOwner: SqlCatalogEpochCoordinator;
     const thenProperty = ["th", "en"].join("");
     const hostileResult = Object.defineProperty({}, thenProperty, {
       get() {
         thenReads += 1;
+        hostileReentryStatus = hostileOwner.prepareScopeMembership(
+          "reentrant",
+          counterTarget().target,
+        ).status;
         throw new Error("hostile then getter");
       },
     });
@@ -1360,7 +1869,7 @@ describe("hostile subscription lifecycle", () => {
         return Reflect.apply(target, receiver, argumentsList);
       },
     });
-    const hostileOwner = coordinator(() => hostileCleanup);
+    hostileOwner = coordinator(() => hostileCleanup);
     const hostileMembership = active(hostileOwner, "scope");
     hostileMembership.dispose();
     hostileMembership.dispose();
@@ -1390,6 +1899,32 @@ describe("hostile subscription lifecycle", () => {
       () => () => nonCallableCatchResult,
     );
     active(nonCallableCatchOwner, "scope").dispose();
+
+    let nativeThenReads = 0;
+    const throwingThenResult = Promise.reject(
+      new Error("shadowed then rejection"),
+    );
+    Object.defineProperty(throwingThenResult, thenProperty, {
+      get() {
+        nativeThenReads += 1;
+        throw new Error("hostile native then getter");
+      },
+    });
+    const throwingThenOwner = coordinator(
+      () => () => throwingThenResult,
+    );
+    active(throwingThenOwner, "scope").dispose();
+
+    const nonCallableThenResult = Promise.reject(
+      new Error("non-callable then rejection"),
+    );
+    Object.defineProperty(nonCallableThenResult, thenProperty, {
+      value: null,
+    });
+    const nonCallableThenOwner = coordinator(
+      () => () => nonCallableThenResult,
+    );
+    active(nonCallableThenOwner, "scope").dispose();
 
     let thenCalls = 0;
     let reentrantOwner: SqlCatalogEpochCoordinator;
@@ -1423,8 +1958,19 @@ describe("hostile subscription lifecycle", () => {
     expect(asyncCleanupCalls).toBe(1);
     expect(applyCalls).toBe(1);
     expect(thenReads).toBe(1);
+    expect(hostileReentryStatus).toBe("unavailable");
     expect(catchReads).toBe(0);
+    expect(nativeThenReads).toBe(0);
     expect(thenCalls).toBe(1);
+    expect(
+      rejectingOwner.prepareScopeMembership(
+        "replacement",
+        counterTarget().target,
+      ),
+    ).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
   });
 
   it("retries a failed subscription only in a new last-owner incarnation", () => {
@@ -2018,7 +2564,9 @@ describe("service disposal and bounded command draining", () => {
     const cleanupScopes: string[] = [];
     const owner = coordinator((scope, notify) => {
       listeners.set(scope, notify);
-      return () => cleanupScopes.push(scope);
+      return () => {
+        cleanupScopes.push(scope);
+      };
     });
     const stormMemberships = Array.from({ length: 5 }, (_, index) =>
       active(owner, `storm-${index}`),

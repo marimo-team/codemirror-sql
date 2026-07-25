@@ -14,7 +14,7 @@ export interface SqlDisposable {
 
 export type SqlCatalogSubscriptionCleanup = (
   this: void,
-) => void | PromiseLike<void>;
+) => undefined;
 
 export type SqlCatalogContainerRole =
   | "catalog"

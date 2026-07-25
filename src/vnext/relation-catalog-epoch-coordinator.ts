@@ -20,6 +20,14 @@ export interface SqlCatalogRevisionTarget {
   ) => ((this: void) => void) | null;
 }
 
+export type SqlCatalogEpochTransitionTarget = (
+  this: void,
+  scope: string,
+  epoch: SqlCatalogEpoch,
+) =>
+  | ((this: void) => undefined)
+  | null;
+
 const epochCaptureBrand: unique symbol = Symbol(
   "SqlCatalogEpochCapture",
 );
@@ -134,7 +142,9 @@ export type SqlCatalogEpochCoordinatorResult =
     }
   | {
       readonly status: "unavailable";
-      readonly reason: "invalid-provider";
+      readonly reason:
+        | "invalid-provider"
+        | "invalid-transition-target";
     };
 
 interface CoordinatorState {
@@ -147,6 +157,7 @@ interface CoordinatorState {
   readonly commands: EpochCommand[];
   readonly deferredCleanup: Set<SubscriptionState>;
   readonly memberships: Set<MembershipState>;
+  prepareEpochTransition: Function | null;
   readonly providerId: string;
   readonly scopes: Map<string, ScopeEntry>;
   subscribe: SqlCapturedRelationCatalogProviderContext["subscribe"];
@@ -226,7 +237,11 @@ const ACTIVE_RESULT: SqlCatalogMembershipActivationResult =
 const SUBMITTED_RESULT: SqlCatalogResponseEpochSubmissionResult =
   Object.freeze({ status: "submitted" });
 const NO_PREPARE_CATALOG_CHANGE = (): null => null;
-const IGNORE_CLEANUP_REJECTION = (): void => {};
+const IGNORE_DETACHED_REJECTION = (): void => {};
+const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
+const FAILED_EPOCH_TRANSITION: unique symbol = Symbol(
+  "FailedSqlCatalogEpochTransition",
+);
 
 function unavailableActivation(
   reason: Exclude<
@@ -366,7 +381,36 @@ function captureCleanup(candidate: unknown): Function | null {
   return typeof candidate === "function" ? candidate : null;
 }
 
-function cleanupSubscription(subscription: SubscriptionState): void {
+function drainDetachedSettlement(result: unknown): void {
+  if (
+    result === null ||
+    (typeof result !== "object" &&
+      typeof result !== "function")
+  ) {
+    return;
+  }
+  try {
+    Reflect.apply(INTRINSIC_PROMISE_THEN, result, [
+      undefined,
+      IGNORE_DETACHED_REJECTION,
+    ]);
+    return;
+  } catch {
+    // Non-native thenables are assimilated through a fresh wrapper.
+  }
+  const settlement = new Promise<unknown>((resolve) => {
+    resolve(result);
+  });
+  Reflect.apply(INTRINSIC_PROMISE_THEN, settlement, [
+    undefined,
+    IGNORE_DETACHED_REJECTION,
+  ]);
+}
+
+function cleanupSubscription(
+  state: CoordinatorState,
+  subscription: SubscriptionState,
+): void {
   if (subscription.cleanupCalled) {
     subscription.cleanup = null;
     return;
@@ -377,12 +421,12 @@ function cleanupSubscription(subscription: SubscriptionState): void {
   subscription.cleanup = null;
   try {
     const result = Reflect.apply(cleanup, undefined, []);
-    const settlement = new Promise<unknown>((resolve) => {
-      resolve(result);
-    });
-    void settlement.then(undefined, IGNORE_CLEANUP_REJECTION);
+    if (result !== undefined) {
+      disposeCoordinator(state);
+      drainDetachedSettlement(result);
+    }
   } catch {
-    // Provider cleanup is isolated after state is inert.
+    disposeCoordinator(state);
   }
 }
 
@@ -447,7 +491,7 @@ function flushDeferredCleanup(state: CoordinatorState): void {
     while (state.deferredCleanup.size > 0) {
       for (const subscription of state.deferredCleanup) {
         state.deferredCleanup.delete(subscription);
-        cleanupSubscription(subscription);
+        cleanupSubscription(state, subscription);
         break;
       }
     }
@@ -668,6 +712,55 @@ interface PreparedRevision {
   readonly member: MembershipState;
 }
 
+type PreparedEpochTransition =
+  | Function
+  | null
+  | typeof FAILED_EPOCH_TRANSITION;
+
+function prepareEpochTransition(
+  state: CoordinatorState,
+  scope: string,
+  epoch: SqlCatalogEpoch,
+): PreparedEpochTransition {
+  const prepare = state.prepareEpochTransition;
+  if (!prepare) return null;
+  let candidate: unknown;
+  try {
+    candidate = Reflect.apply(prepare, undefined, [scope, epoch]);
+  } catch {
+    disposeCoordinator(state);
+    return FAILED_EPOCH_TRANSITION;
+  }
+  if (candidate === null) return null;
+  if (typeof candidate !== "function") {
+    disposeCoordinator(state);
+    drainDetachedSettlement(candidate);
+    return FAILED_EPOCH_TRANSITION;
+  }
+  return candidate;
+}
+
+function dispatchEpochTransition(
+  state: CoordinatorState,
+  prepared: PreparedEpochTransition,
+): void {
+  if (
+    prepared === null ||
+    prepared === FAILED_EPOCH_TRANSITION
+  ) {
+    return;
+  }
+  try {
+    const result = Reflect.apply(prepared, undefined, []);
+    if (result !== undefined) {
+      disposeCoordinator(state);
+      drainDetachedSettlement(result);
+    }
+  } catch {
+    disposeCoordinator(state);
+  }
+}
+
 function prepareRevisions(
   audience: readonly MembershipState[],
   entry: ScopeEntry,
@@ -756,10 +849,17 @@ function processInvalidation(
     const audience = snapshotAudience(command.entry);
     command.entry.observedEpoch = comparison.epoch;
     command.entry.notificationSequence += 1;
+    const transition = prepareEpochTransition(
+      state,
+      command.entry.scope,
+      comparison.epoch,
+    );
+    if (transition === FAILED_EPOCH_TRANSITION) return;
     const prepared = prepareRevisions(
       audience,
       command.entry,
     );
+    dispatchEpochTransition(state, transition);
     dispatchRevisions(prepared, command.entry);
   } finally {
     leaveCleanupBarrier(state);
@@ -860,9 +960,19 @@ function processResponse(
     const audience = snapshotAudience(entry);
     entry.observedEpoch = comparison.epoch;
     entry.notificationSequence += 1;
+    const transition = prepareEpochTransition(
+      state,
+      entry.scope,
+      comparison.epoch,
+    );
+    if (transition === FAILED_EPOCH_TRANSITION) {
+      settleDecision(command.onDecision, discarded("disposed"));
+      return;
+    }
     const prepared = prepareRevisions(audience, entry);
     if (state.disposed) {
       settleDecision(command.onDecision, discarded("disposed"));
+      dispatchEpochTransition(state, transition);
       return;
     }
     if (isLiveCapture(state, command.capture)) {
@@ -876,6 +986,7 @@ function processResponse(
     } else {
       settleDecision(command.onDecision, discarded("retired"));
     }
+    dispatchEpochTransition(state, transition);
     dispatchRevisions(prepared, entry);
   } finally {
     leaveCleanupBarrier(state);
@@ -1137,6 +1248,7 @@ function submitResponse(
 function disposeCoordinator(state: CoordinatorState): void {
   if (state.disposed) return;
   state.disposed = true;
+  state.prepareEpochTransition = null;
   state.subscribe = null;
   const subscriptions: SubscriptionState[] = [];
   for (const entry of state.scopes.values()) {
@@ -1192,6 +1304,7 @@ function createCoordinatorHandle(
 
 export function createSqlCatalogEpochCoordinator(
   capturedProvider: unknown,
+  prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
 ): SqlCatalogEpochCoordinatorResult {
   const provider = resolveSqlRelationCatalogProvider(
     capturedProvider,
@@ -1199,6 +1312,15 @@ export function createSqlCatalogEpochCoordinator(
   if (!provider) {
     return Object.freeze({
       reason: "invalid-provider",
+      status: "unavailable",
+    });
+  }
+  if (
+    prepareEpochTransition !== undefined &&
+    typeof prepareEpochTransition !== "function"
+  ) {
+    return Object.freeze({
+      reason: "invalid-transition-target",
       status: "unavailable",
     });
   }
@@ -1214,6 +1336,8 @@ export function createSqlCatalogEpochCoordinator(
     disposed: false,
     draining: false,
     memberships: new Set(),
+    prepareEpochTransition:
+      prepareEpochTransition ?? null,
     providerId,
     scopes: new Map(),
     subscribe,
