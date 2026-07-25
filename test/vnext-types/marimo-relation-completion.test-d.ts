@@ -23,6 +23,9 @@ import type {
   SqlRelationCatalogProvider,
   SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
+import type {
+  SqlCatalogEpochTransitionTarget,
+} from "../../src/vnext/relation-catalog-epoch-coordinator.js";
 
 interface MarimoSqlContext extends SqlDocumentContext {
   readonly engine: string;
@@ -152,8 +155,9 @@ const receiverDependentProvider: SqlRelationCatalogProvider = {
 
 const receiverDependentDispose = function (
   this: { readonly id: string },
-): void {
+): undefined {
   void this.id;
+  return undefined;
 };
 const receiverDependentDisposable: SqlDisposable = {
   // @ts-expect-error disposable callbacks are this-free closures
@@ -164,6 +168,25 @@ const receiverDependentDisposable: SqlDisposable = {
 const receiverDependentCatalogCleanup: SqlCatalogSubscriptionCleanup =
   receiverDependentDispose;
 void receiverDependentCatalogCleanup;
+
+// @ts-expect-error catalog cleanup is synchronously exact-return
+const asynchronousCatalogCleanup: SqlCatalogSubscriptionCleanup =
+  async () => {};
+void asynchronousCatalogCleanup;
+
+const nonUndefinedCatalogCleanup: SqlCatalogSubscriptionCleanup =
+  // @ts-expect-error catalog cleanup must return exactly undefined
+  () => 1;
+void nonUndefinedCatalogCleanup;
+
+const synchronousEpochTransition: SqlCatalogEpochTransitionTarget =
+  () => () => undefined;
+void synchronousEpochTransition;
+
+const asynchronousEpochTransition: SqlCatalogEpochTransitionTarget =
+  // @ts-expect-error epoch transition dispatch is synchronously exact-return
+  () => async () => {};
+void asynchronousEpochTransition;
 
 const relationPath = [
   { quoted: false, role: "catalog", value: "memory" },

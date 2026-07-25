@@ -463,6 +463,28 @@ A higher accepted invalidation or response atomically installs the new epoch,
 clears older scope cache entries, supersedes affected work, and then advances
 each subscribed session revision exactly once.
 
+The epoch coordinator accepts one optional package-owned, receiver-free
+transition-preparation closure. For an accepted invalidation baseline or
+advance, and for a higher response, it snapshots the active revision audience,
+installs the epoch and notification sequence, and then calls that closure with
+a copied scope and the already-frozen epoch. The closure synchronously detaches
+incompatible work, cache entries, and epoch-specific gates and may return one
+receiver-free dispatch closure. The no-hook and no-dispatch paths allocate no
+transition wrapper state. Only after transition and session preparation
+has finished does the coordinator settle the producing response, invoke the
+transition dispatch, and dispatch session listeners. Provider aborts and work
+settlement therefore observe every prepared session revision, while listener
+code observes already-retired catalog work. Reentrant transition dispatch
+commands remain behind the current revision dispatch in the epoch FIFO.
+A missing or `null` dispatch is valid. A thrown transition preparation or
+non-function result is an internal contract failure and disposes the
+coordinator fail-closed. Dispatch is synchronously exact-return: it must return
+`undefined`. A throw or any other return value disposes the coordinator after
+state preparation and suppresses later revision listeners; an accidental
+Promise result receives best-effort detached rejection draining. Coordinator
+disposal revokes the preparation closure before external cleanup. The hook
+remains package-private and is not a provider or session extension point.
+
 A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different
 epochs are never merged.
@@ -523,13 +545,21 @@ A thrown subscription or malformed returned cleanup value discards that buffer
 and disables automatic invalidation for the live scope; explicit search
 remains available.
 The returned cleanup closure is itself untrusted: the service captures only a
-function, calls it with `this === undefined` at most once, and isolates
-malformed values, thrown cleanup, and rejected or hostile thenable results.
-Detached cleanup settlement retains no coordinator state. A closure avoids a
-structural TypeScript contract that would accept class instances or inherited
-methods which the hostile runtime boundary could not safely validate. Dropping
-the last owner removes the complete scope incarnation before cleanup. A later
-join creates a new unobserved incarnation and may attempt a fresh subscription.
+function and calls it with `this === undefined` at most once. Its exact
+synchronous contract returns `undefined`; TypeScript therefore rejects async
+cleanup functions rather than silently accepting them through `void`
+assignability. A throw or any other return value quarantines the coordinator
+after the subscription is inert. Accidental ordinary Promise or thenable
+returns receive best-effort detached rejection draining, but a same-realm
+callback can always create a poisoned or independent unhandled rejection that
+no JavaScript library can retroactively contain. Legitimate asynchronous
+teardown must consume or report its own failure before the cleanup closure
+returns `undefined`. The valid `undefined` path returns without Promise
+allocation or a microtask. A closure avoids a structural TypeScript
+contract that would accept class instances or inherited methods which the
+hostile runtime boundary could not safely validate. Dropping the last owner
+removes the complete scope incarnation before cleanup. A later join creates a
+new unobserved incarnation and may attempt a fresh subscription.
 
 Malformed, duplicate, stale, or token-conflicting invalidations do not mutate
 state and do not tear down an otherwise valid subscription. Every raw callback
