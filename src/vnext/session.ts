@@ -43,12 +43,14 @@ import {
   MAX_RELATION_COMPLETION_RESULTS,
   type SqlComposableCatalogOutcome,
 } from "./relation-completion.js";
-import type {
-  SqlCompletionRequest,
-  SqlDisposable,
-  SqlCompletionResult,
-  SqlSessionChangeEvent,
-  SqlSessionChangeReason,
+import {
+  createSqlCompletionRefreshToken,
+  type SqlCompletionRequest,
+  type SqlCompletionRefreshToken,
+  type SqlDisposable,
+  type SqlCompletionResult,
+  type SqlCompletionTask,
+  type SqlSessionChangeEvent,
 } from "./relation-completion-types.js";
 import {
   BIGQUERY_SQL_RELATION_DIALECT,
@@ -93,8 +95,17 @@ interface CompletionRequestState {
   cancelReason: "caller" | "disposed" | "superseded" | null;
   readonly revision: SqlRevision;
   ticket: SqlCatalogSearchWorkTicket | null;
-  readonly token: object;
+  readonly token: SqlCompletionRefreshToken;
 }
+
+type ServiceChange =
+  | {
+      readonly reason: "catalog-availability";
+      readonly expected: CompletionRequestState;
+    }
+  | {
+      readonly reason: "catalog";
+    };
 
 interface SessionChangeSubscription {
   active: boolean;
@@ -104,6 +115,11 @@ interface SessionChangeSubscription {
 interface SessionTimerCell {
   active: boolean;
   handle: ReturnType<typeof setTimeout> | undefined;
+}
+
+interface TerminalRefreshIntent {
+  readonly timer: SessionTimerCell;
+  readonly token: SqlCompletionRefreshToken;
 }
 
 interface CompletionConfiguration {
@@ -499,6 +515,12 @@ function completionCancellation(
   return Object.freeze({ reason, revision, status: "cancelled" });
 }
 
+function completionCancellationReason(
+  request: CompletionRequestState,
+): "caller" | "disposed" | "superseded" {
+  return request.cancelReason ?? "superseded";
+}
+
 interface MissingDataProperty {
   readonly found: false;
 }
@@ -743,6 +765,13 @@ interface LocalRelationStatementCache {
   readonly sourceSequence: number;
 }
 
+function createCompletionTask(
+  refreshToken: SqlCompletionRefreshToken,
+  result: Promise<SqlCompletionResult>,
+): SqlCompletionTask {
+  return Object.freeze(Object.assign(result, { refreshToken }));
+}
+
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   implements SqlDocumentSession<Context>
 {
@@ -761,8 +790,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     | null = null;
   #refreshIntent: CompletionRequestState | null = null;
   #snapshot: SessionSnapshot<Context>;
+  #softRefreshIntentTimer: SessionTimerCell | null = null;
   #statementIndexCache: StatementIndexCache | null = null;
-  #terminalIntentTimer: SessionTimerCell | null = null;
+  #terminalRefreshIntent: TerminalRefreshIntent | null = null;
   #updating = false;
 
   constructor(
@@ -836,25 +866,32 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   }
 
   #clearTerminalIntent(): void {
-    const cell = this.#terminalIntentTimer;
-    if (!cell) return;
-    this.#terminalIntentTimer = null;
-    cell.active = false;
-    clearTimeout(cell.handle);
+    const intent = this.#terminalRefreshIntent;
+    if (!intent) return;
+    this.#terminalRefreshIntent = null;
+    intent.timer.active = false;
+    clearTimeout(intent.timer.handle);
   }
 
-  #dispatchChange(
-    revision: SqlRevision,
-    reason: SqlSessionChangeReason,
-  ): void {
-    if (this.#disposed || revision !== this.#snapshot.revision) {
+  #clearSoftRefreshIntentTimer(): void {
+    const timer = this.#softRefreshIntentTimer;
+    if (!timer) return;
+    this.#softRefreshIntentTimer = null;
+    timer.active = false;
+    clearTimeout(timer.handle);
+  }
+
+  #dispatchChange(event: SqlSessionChangeEvent): void {
+    if (
+      this.#disposed ||
+      event.revision !== this.#snapshot.revision
+    ) {
       return;
     }
-    const event = Object.freeze({ reason, revision });
     for (const subscription of Array.from(this.#listeners)) {
       if (
         this.#disposed ||
-        revision !== this.#snapshot.revision
+        event.revision !== this.#snapshot.revision
       ) {
         return;
       }
@@ -873,9 +910,12 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   }
 
   #prepareServiceChange(
-    reason: SqlSessionChangeReason,
-    expected?: CompletionRequestState,
+    change: ServiceChange,
   ): (() => undefined) | null {
+    const expected =
+      change.reason === "catalog-availability"
+        ? change.expected
+        : undefined;
     if (
       this.#disposed ||
       (expected !== undefined &&
@@ -886,6 +926,19 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     ) {
       return null;
     }
+    const terminal = this.#terminalRefreshIntent;
+    const soft = this.#refreshIntent;
+    const activeIntent = this.#activeCompletion;
+    const refreshToken =
+      change.reason === "catalog-availability"
+        ? change.expected.token
+        : soft?.cancelReason === null
+          ? soft.token
+          : terminal?.timer.active === true
+            ? terminal.token
+            : activeIntent?.cancelReason === null
+              ? activeIntent.token
+              : null;
     const previous = this.#snapshot;
     const revision = createSqlRevisionToken();
     this.#snapshot = Object.freeze({
@@ -893,10 +946,23 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       revision,
       sequence: previous.sequence + 1,
     });
+    const event: SqlSessionChangeEvent =
+      change.reason === "catalog-availability"
+        ? Object.freeze({
+            reason: change.reason,
+            refreshToken: change.expected.token,
+            revision,
+          })
+        : Object.freeze({
+            reason: change.reason,
+            refreshToken,
+            revision,
+          });
     const active = this.#activeCompletion;
     const intent = this.#refreshIntent;
     this.#activeCompletion = null;
     this.#refreshIntent = null;
+    this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     if (active && active.cancelReason === null) {
       active.cancelReason = "superseded";
@@ -909,7 +975,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return (): undefined => {
       active?.ticket?.cancel();
       if (intent !== active) intent?.ticket?.cancel();
-      this.#dispatchChange(revision, reason);
+      this.#dispatchChange(event);
       return undefined;
     };
   }
@@ -937,7 +1003,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       dialect,
       Object.freeze({
         prepareCatalogChange: (): (() => undefined) | null =>
-          this.#prepareServiceChange("catalog"),
+          this.#prepareServiceChange({ reason: "catalog" }),
       }),
     );
     if (prepared.status !== "prepared") return;
@@ -984,9 +1050,18 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     });
   };
 
-  readonly complete = async (
+  readonly complete = (
     request: SqlCompletionRequest,
-  ): Promise<SqlCompletionResult> => {
+  ): SqlCompletionTask => {
+    const refreshToken = createSqlCompletionRefreshToken();
+    const result = this.#runCompletion(request, refreshToken);
+    return createCompletionTask(refreshToken, result);
+  };
+
+  async #runCompletion(
+    request: SqlCompletionRequest,
+    refreshToken: SqlCompletionRefreshToken,
+  ): Promise<SqlCompletionResult> {
     const completionStartedAt = performance.now();
     if (this.#disposed) {
       throw new SqlSessionError(
@@ -1107,22 +1182,36 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       if (this.#refreshIntent === previousIntent) {
         this.#refreshIntent = null;
       }
+      this.#clearSoftRefreshIntentTimer();
     };
+    this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     const snapshot = this.#snapshot;
     const active: CompletionRequestState = {
       cancelReason: null,
       revision: snapshot.revision,
       ticket: null,
-      token: {},
+      token: refreshToken,
     };
     this.#activeCompletion = active;
-    if (signal?.aborted) {
-      active.cancelReason = "caller";
-      this.#activeCompletion = null;
-      cancelPrevious();
-      return completionCancellation(snapshot.revision, "caller");
-    }
+    const cancellationIfNotCurrent =
+      (): SqlCompletionResult | null => {
+        if (
+          this.#activeCompletion === active &&
+          active.cancelReason === null &&
+          snapshot.revision === this.#snapshot.revision
+        ) {
+          return null;
+        }
+        cancelPrevious();
+        return completionCancellation(
+          snapshot.revision,
+          completionCancellationReason(active),
+        );
+      };
+    await Promise.resolve();
+    const publicationCancellation = cancellationIfNotCurrent();
+    if (publicationCancellation) return publicationCancellation;
     const onAbort = (): void => {
       if (
         this.#activeCompletion === active &&
@@ -1132,9 +1221,66 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         active.ticket?.cancel();
       }
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
+    const makeInvocationInert = (): void => {
+      if (this.#activeCompletion === active) {
+        this.#activeCompletion = null;
+      }
+      if (active.cancelReason === null) {
+        active.cancelReason = "superseded";
+      }
+      cancelPrevious();
+    };
+    const readSignalAborted = (
+      currentSignal: AbortSignal,
+    ): boolean => {
+      try {
+        return currentSignal.aborted;
+      } catch (error) {
+        makeInvocationInert();
+        throw error;
+      }
+    };
+    let signalRegistrationAttempted = false;
     try {
+      if (signal) {
+        const abortedBeforeRegistration =
+          readSignalAborted(signal);
+        const readCancellation = cancellationIfNotCurrent();
+        if (readCancellation) return readCancellation;
+        if (abortedBeforeRegistration) {
+          active.cancelReason = "caller";
+          this.#activeCompletion = null;
+          cancelPrevious();
+          return completionCancellation(
+            snapshot.revision,
+            "caller",
+          );
+        }
+        signalRegistrationAttempted = true;
+        try {
+          signal.addEventListener("abort", onAbort, { once: true });
+        } catch (error) {
+          makeInvocationInert();
+          throw error;
+        }
+        const registrationCancellation =
+          cancellationIfNotCurrent();
+        if (registrationCancellation) {
+          return registrationCancellation;
+        }
+        const abortedAfterRegistration =
+          readSignalAborted(signal);
+        const rereadCancellation = cancellationIfNotCurrent();
+        if (rereadCancellation) return rereadCancellation;
+        if (abortedAfterRegistration) {
+          onAbort();
+          cancelPrevious();
+          return completionCancellation(
+            snapshot.revision,
+            "caller",
+          );
+        }
+      }
       const index = this.getStatementIndexForTesting();
       const slot = findSqlStatementSlot(index, position, "left");
       const cachedLocal = this.#localRelationStatementCache;
@@ -1189,7 +1335,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       ) {
         return completionCancellation(
           snapshot.revision,
-          active.cancelReason ?? "superseded",
+          completionCancellationReason(active),
         );
       }
 
@@ -1213,6 +1359,17 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             status: "unavailable",
           });
         } else {
+          if (
+            this.#activeCompletion !== active ||
+            active.cancelReason !== null ||
+            snapshot.revision !== this.#snapshot.revision
+          ) {
+            cancelPrevious();
+            return completionCancellation(
+              snapshot.revision,
+              completionCancellationReason(active),
+            );
+          }
           const ticket = owner.request({
             continuationToken: null,
             limit: MAX_RELATION_COMPLETION_RESULTS,
@@ -1258,7 +1415,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             ticket.cancel();
             return completionCancellation(
               snapshot.revision,
-              active.cancelReason ?? "superseded",
+              completionCancellationReason(active),
             );
           }
           let providerOutcome: SqlCatalogSearchWorkOutcome | null =
@@ -1267,13 +1424,42 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             const retained = ticket.retainForRefresh(
               (): (() => undefined) | null =>
                 this.#prepareServiceChange(
-                  "catalog-availability",
-                  active,
+                  {
+                    expected: active,
+                    reason: "catalog-availability",
+                  },
                 ),
             );
             if (retained.status === "retained") {
               remainingIntentLeaseMs = retained.remainingLeaseMs;
               this.#refreshIntent = active;
+              const cell: SessionTimerCell = {
+                active: true,
+                handle: undefined,
+              };
+              this.#softRefreshIntentTimer = cell;
+              const handle = setTimeout(() => {
+                if (
+                  !cell.active ||
+                  this.#softRefreshIntentTimer !== cell
+                ) {
+                  return;
+                }
+                cell.active = false;
+                this.#softRefreshIntentTimer = null;
+                this.#refreshIntent = null;
+                ticket.cancel();
+              }, remainingIntentLeaseMs);
+              cell.handle = handle;
+              if (
+                !cell.active ||
+                this.#softRefreshIntentTimer !== cell
+              ) {
+                clearTimeout(handle);
+              }
+              if (this.#refreshIntent !== active) {
+                remainingIntentLeaseMs = 0;
+              }
               catalogOutcome = Object.freeze({
                 status: "loading",
               });
@@ -1339,20 +1525,27 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
                   active: true,
                   handle: undefined,
                 };
-                this.#terminalIntentTimer = cell;
+                const intent: TerminalRefreshIntent = {
+                  timer: cell,
+                  token: active.token,
+                };
+                this.#terminalRefreshIntent = intent;
                 const handle = setTimeout(() => {
                   if (!cell.active) return;
                   cell.active = false;
-                  if (this.#terminalIntentTimer === cell) {
-                    this.#terminalIntentTimer = null;
+                  if (this.#terminalRefreshIntent === intent) {
+                    this.#terminalRefreshIntent = null;
                   }
                 }, remainingIntentLeaseMs);
                 cell.handle = handle;
                 if (
                   !cell.active ||
-                  this.#terminalIntentTimer !== cell
+                  this.#terminalRefreshIntent !== intent
                 ) {
                   clearTimeout(handle);
+                }
+                if (this.#terminalRefreshIntent !== intent) {
+                  remainingIntentLeaseMs = 0;
                 }
               }
             }
@@ -1381,22 +1574,36 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       ) {
         return completionCancellation(
           snapshot.revision,
-          active.cancelReason ?? "superseded",
+          completionCancellationReason(active),
         );
       }
       return Object.freeze({
+        refreshToken:
+          (catalogOutcome?.status === "loading" ||
+            (catalogOutcome?.status === "usable" &&
+              catalogOutcome.response.status === "loading")) &&
+          (this.#refreshIntent === active ||
+            this.#terminalRefreshIntent?.token === active.token)
+            ? active.token
+            : null,
         revision: snapshot.revision,
         sources: composition.sources,
         status: "ready",
         value: composition.value,
       });
     } finally {
-      signal?.removeEventListener("abort", onAbort);
       if (this.#activeCompletion === active) {
         this.#activeCompletion = null;
       }
+      if (signal && signalRegistrationAttempted) {
+        try {
+          signal.removeEventListener("abort", onAbort);
+        } catch {
+          // Signal cleanup cannot retain or fail the completion.
+        }
+      }
     }
-  };
+  }
 
   readonly update = (update: SqlDocumentUpdate<Context>): SqlRevision => {
     if (this.#disposed) {
@@ -1675,6 +1882,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     }
     this.#activeCompletion = null;
     this.#refreshIntent = null;
+    this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     if (
       activeCompletion &&
@@ -1712,6 +1920,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     this.#activeCompletion = null;
     this.#refreshIntent = null;
     this.#catalogOwner = null;
+    this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     this.#listeners.clear();
     this.#localRelationStatementCache = null;

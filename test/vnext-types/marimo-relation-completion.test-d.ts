@@ -6,6 +6,8 @@ import type {
   SqlDocumentUpdate,
   SqlEmbeddedRegion,
   SqlIdentifierComponent,
+  SqlCompletionRefreshToken,
+  SqlCompletionTask,
   OpenSqlDocument,
 } from "../../src/vnext/index.js";
 import type {
@@ -22,6 +24,7 @@ import type {
   SqlCompletionItem,
   SqlCompletionList,
   SqlRelationCatalogProvider,
+  SqlSessionChangeEvent,
 } from "../../src/vnext/relation-completion-types.js";
 import type {
   SqlCatalogEpochTransitionTarget,
@@ -96,24 +99,73 @@ const subscription = session.onDidChange((event) => {
   const reason: "catalog" | "catalog-availability" | "provider-configuration" =
     event.reason;
   session.isCurrent(event.revision);
+  if (event.reason === "catalog-availability") {
+    const token: SqlCompletionRefreshToken = event.refreshToken;
+    void token;
+  }
   void reason;
 });
 subscription.dispose();
 subscription.dispose();
-void session.complete({
+const completionTask: SqlCompletionTask = session.complete({
   position: 14,
   signal: new AbortController().signal,
   trigger: { kind: "invoked" },
 });
+const invocationToken: SqlCompletionRefreshToken =
+  completionTask.refreshToken;
+void invocationToken;
 void session.complete({
   position: 14,
   trigger: { character: ".", kind: "trigger-character" },
 }).then((result) => {
+  if (result.status === "ready") {
+    const token: SqlCompletionRefreshToken | null =
+      result.refreshToken;
+    void token;
+  }
   // @ts-expect-error scheduler work identities never enter consumer results
   void result.workId;
   // @ts-expect-error catalog epochs never enter consumer results
   void result.epoch;
 });
+
+declare const refreshToken: SqlCompletionRefreshToken;
+const catalogAvailabilityEvent = {
+  reason: "catalog-availability",
+  refreshToken,
+  revision: session.revision,
+} satisfies SqlSessionChangeEvent;
+const catalogEventWithoutIntent = {
+  reason: "catalog",
+  refreshToken: null,
+  revision: session.revision,
+} satisfies SqlSessionChangeEvent;
+const providerConfigurationEvent = {
+  reason: "provider-configuration",
+  refreshToken: null,
+  revision: session.revision,
+} satisfies SqlSessionChangeEvent;
+const invalidAvailabilityEvent = {
+  reason: "catalog-availability",
+  refreshToken: null,
+  revision: session.revision,
+  // @ts-expect-error availability always identifies the exact refresh intent
+} satisfies SqlSessionChangeEvent;
+const invalidProviderConfigurationEvent = {
+  reason: "provider-configuration",
+  refreshToken,
+  revision: session.revision,
+  // @ts-expect-error provider configuration is never a completion refresh
+} satisfies SqlSessionChangeEvent;
+// @ts-expect-error completion refresh identities are service-issued
+const fabricatedRefreshToken: SqlCompletionRefreshToken = {};
+void catalogAvailabilityEvent;
+void catalogEventWithoutIntent;
+void providerConfigurationEvent;
+void invalidAvailabilityEvent;
+void invalidProviderConfigurationEvent;
+void fabricatedRefreshToken;
 
 const provider: SqlRelationCatalogProvider = {
   id: "marimo",
