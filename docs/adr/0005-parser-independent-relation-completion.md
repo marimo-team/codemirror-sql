@@ -97,12 +97,20 @@ embedded region are unavailable or inactive according to the closed result.
 CTE visibility is the one narrow scope-semantics exception; general
 parser-derived scope semantics remain deferred.
 
+The recognizer may cross a `USING` join constraint only after authenticating
+the complete bounded grammar `USING(identifier [, identifier ...])` with
+dialect-owned identifier validation. It does not interpret `ON` expressions:
+encountering `ON` makes the query site unavailable until a future
+parser-backed or separately specified expression recognizer can prove the
+boundary.
+
 The conformance corpus includes positive base `FROM`, qualified prefix,
-aliased `JOIN`, same-depth comma, and nested supported-query cases. It includes
+aliased `JOIN`, authenticated `USING`, same-depth comma, and nested
+supported-query cases. It includes
 negative `IS DISTINCT FROM`, `substring(... FROM ...)`, `extract(... FROM
-...)`, `DELETE FROM`, `COPY ... FROM`, set-operation, `QUALIFY`, `WINDOW`, join
-constraint, DML, and expression cases. A keyword match alone never creates a
-site.
+...)`, `DELETE FROM`, `COPY ... FROM`, set-operation, `QUALIFY`, `WINDOW`,
+`ON`, malformed `USING`, DML, and expression cases. A keyword match alone
+never creates a site.
 
 The result distinguishes:
 
@@ -518,7 +526,7 @@ The initial checked limits are:
 | Lexical tokens | 16,384 |
 | Parenthesis/query depth | 128 |
 | CTE declarations | 256 |
-| Identifier path segments | 4 |
+| Identifier path segments | 32 global ceiling; dialect runtime sets the checked limit |
 | Identifier segment | 256 UTF-16 units |
 | Catalog scope | 512 UTF-16 units |
 | Search paths | 32 |
