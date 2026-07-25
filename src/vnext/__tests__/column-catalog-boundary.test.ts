@@ -127,6 +127,31 @@ describe("column catalog provider boundary", () => {
       loadColumns: () => undefined,
     }).status).toBe("malformed");
     expect(captureSqlColumnCatalogProvider(null).status).toBe("malformed");
+    expect(resolveSqlColumnCatalogProvider(null)).toBeNull();
+    expect(resolveSqlColumnCatalogProvider(1)).toBeNull();
+  });
+
+  it("contains hostile own-key and descriptor traps", () => {
+    const ownKeys = new Proxy(
+      { id: "catalog", loadColumns: () => undefined },
+      {
+        ownKeys() {
+          throw new Error("private ownKeys trap");
+        },
+      },
+    );
+    const descriptor = new Proxy(
+      { id: "catalog", loadColumns: () => undefined },
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("private descriptor trap");
+        },
+      },
+    );
+    expect(captureSqlColumnCatalogProvider(ownKeys).status).toBe("malformed");
+    expect(captureSqlColumnCatalogProvider(descriptor).status).toBe(
+      "malformed",
+    );
   });
 });
 
@@ -238,6 +263,99 @@ describe("column catalog batch request boundary", () => {
       scope: "scope",
       searchPaths: [],
     }).status).toBe("accepted");
+  });
+
+  it("rejects malformed epochs, path components, search paths, and array traps", () => {
+    const base = {
+      dialectId: "duckdb",
+      expectedEpoch: epoch,
+      relations: [{ path, requestKey: "users" }],
+      scope: "scope",
+      searchPaths: [],
+    };
+    const badEpochs = [
+      { generation: -1, token: "x" },
+      { generation: 1.5, token: "x" },
+      { generation: 1, token: "" },
+      { generation: "1", token: "x" },
+    ];
+    for (const expectedEpoch of badEpochs) {
+      expect(
+        createSqlColumnCatalogBatchRequest({ ...base, expectedEpoch }).status,
+      ).toBe("malformed");
+    }
+
+    const sparsePath: unknown[] = [];
+    sparsePath.length = 1;
+    const sparseSearchPaths: unknown[] = [];
+    sparseSearchPaths.length = 1;
+    const malformedPaths = [
+      sparsePath,
+      [null],
+      [{ quoted: "false", value: "users" }],
+      [{ quoted: false, value: "" }],
+    ];
+    for (const malformedPath of malformedPaths) {
+      expect(
+        createSqlColumnCatalogBatchRequest({
+          ...base,
+          relations: [{ path: malformedPath, requestKey: "users" }],
+        }).status,
+      ).toBe("malformed");
+    }
+    expect(
+      createSqlColumnCatalogBatchRequest({
+        ...base,
+        searchPaths: sparseSearchPaths,
+      }).status,
+    ).toBe("malformed");
+    expect(
+      createSqlColumnCatalogBatchRequest({
+        ...base,
+        searchPaths: [["not-a-component"]],
+      }).status,
+    ).toBe("malformed");
+    expect(
+      createSqlColumnCatalogBatchRequest({
+        ...base,
+        relations: [null],
+      }).status,
+    ).toBe("malformed");
+
+    const trappedLength = new Proxy(
+      [{ path, requestKey: "users" }],
+      {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "length") {
+            throw new Error("private length trap");
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    const trappedElement = new Proxy(
+      [{ path, requestKey: "users" }],
+      {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "0") {
+            throw new Error("private element trap");
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    expect(
+      createSqlColumnCatalogBatchRequest({
+        ...base,
+        relations: trappedLength,
+      }).status,
+    ).toBe("malformed");
+    expect(
+      createSqlColumnCatalogBatchRequest({
+        ...base,
+        relations: trappedElement,
+      }).status,
+    ).toBe("malformed");
   });
 });
 
@@ -468,5 +586,202 @@ describe("column catalog response boundary", () => {
       [{}, request(), value],
     );
     expect(invalid.status).toBe("malformed");
+  });
+
+  it("rejects malformed relation and column state combinations", () => {
+    const captured = provider(() => undefined);
+    const request_ = request();
+    const validUsers = readyResponse().relations[0];
+    const validEvents = readyResponse().relations[1];
+    const invalidUsers = [
+      null,
+      { requestKey: "", status: "loading" },
+      {
+        columns: [],
+        coverage: "complete",
+        relationEntityId: "",
+        requestKey: "users",
+        status: "ready",
+      },
+      { code: "mystery", requestKey: "users", retry: "never", status: "failed" },
+      {
+        code: "unavailable",
+        requestKey: "users",
+        retry: "mystery",
+        status: "failed",
+      },
+      { requestKey: "users", status: "mystery" },
+      {
+        columns: [null],
+        coverage: "complete",
+        relationEntityId: "relation-users",
+        requestKey: "users",
+        status: "ready",
+      },
+      {
+        columns: [{
+          columnEntityId: "",
+          identifier: { quoted: false, value: "id" },
+          insertText: "id",
+          ordinal: 0,
+        }],
+        coverage: "complete",
+        relationEntityId: "relation-users",
+        requestKey: "users",
+        status: "ready",
+      },
+      {
+        columns: [{
+          columnEntityId: "id",
+          identifier: null,
+          insertText: "id",
+          ordinal: 0,
+        }],
+        coverage: "complete",
+        relationEntityId: "relation-users",
+        requestKey: "users",
+        status: "ready",
+      },
+      {
+        columns: [{
+          columnEntityId: "id",
+          identifier: { quoted: false, value: "id" },
+          insertText: "id",
+          ordinal: -1,
+        }],
+        coverage: "complete",
+        relationEntityId: "relation-users",
+        requestKey: "users",
+        status: "ready",
+      },
+    ];
+    for (const users of invalidUsers) {
+      expect(
+        decodeSqlColumnCatalogBatchResponse(captured, request_, {
+          epoch,
+          relations: [users, validEvents],
+        }).status,
+      ).toBe("malformed");
+    }
+
+    const sparseColumns: unknown[] = [];
+    sparseColumns.length = 1;
+    const sparseRelations: unknown[] = [];
+    sparseRelations.length = 2;
+    expect(
+      decodeSqlColumnCatalogBatchResponse(captured, request_, {
+        epoch,
+        relations: [
+          { ...validUsers, columns: sparseColumns },
+          validEvents,
+        ],
+      }).status,
+    ).toBe("malformed");
+    expect(
+      decodeSqlColumnCatalogBatchResponse(captured, request_, {
+        epoch,
+        relations: sparseRelations,
+      }).status,
+    ).toBe("malformed");
+  });
+
+  it("rejects an unexpected relation without conflating it with response size", () => {
+    const result = decodeSqlColumnCatalogBatchResponse(
+      provider(() => undefined),
+      request(),
+      {
+        epoch,
+        relations: [
+          readyResponse().relations[0],
+          { requestKey: "other", status: "loading" },
+        ],
+      },
+    );
+    expect(result).toEqual({
+      reason: "unexpected-relation",
+      status: "malformed",
+    });
+  });
+
+  it("sorts stable ties and enforces the aggregate batch column cap", () => {
+    const tied = {
+      epoch,
+      relations: [
+        {
+          columns: [
+            {
+              columnEntityId: "b",
+              identifier: { quoted: true, value: "same" },
+              insertText: "same",
+              ordinal: 0,
+            },
+            {
+              columnEntityId: "a",
+              identifier: { quoted: true, value: "same" },
+              insertText: "same",
+              ordinal: 0,
+            },
+          ],
+          coverage: "complete",
+          relationEntityId: "relation-users",
+          requestKey: "users",
+          status: "ready",
+        },
+        readyResponse().relations[1],
+      ],
+    };
+    const sorted = decodeSqlColumnCatalogBatchResponse(
+      provider(() => undefined),
+      request(),
+      tied,
+    );
+    expect(sorted).toMatchObject({
+      status: "accepted",
+      value: {
+        relations: [
+          { requestKey: "events" },
+          {
+            columns: [
+              { columnEntityId: "a" },
+              { columnEntityId: "b" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const references = Array.from({ length: 17 }, (_, index) => ({
+      path,
+      requestKey: `r${index}`,
+    }));
+    const created = createSqlColumnCatalogBatchRequest({
+      dialectId: "duckdb",
+      expectedEpoch: epoch,
+      relations: references,
+      scope: "scope",
+      searchPaths: [],
+    });
+    if (created.status !== "accepted") {
+      throw new Error("Expected aggregate-limit request");
+    }
+    const relations = references.map((reference, relationIndex) => ({
+      columns: Array.from({ length: MAX_COLUMNS_PER_RELATION }, (_, ordinal) => ({
+        columnEntityId: `c${relationIndex}-${ordinal}`,
+        identifier: { quoted: false, value: `c${ordinal}` },
+        insertText: `c${ordinal}`,
+        ordinal,
+      })),
+      coverage: "complete",
+      relationEntityId: `relation-${relationIndex}`,
+      requestKey: reference.requestKey,
+      status: "ready",
+    }));
+    expect(
+      decodeSqlColumnCatalogBatchResponse(
+        provider(() => undefined),
+        created.value,
+        { epoch, relations },
+      ),
+    ).toEqual({ reason: "resource-limit", status: "malformed" });
   });
 });

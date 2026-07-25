@@ -152,6 +152,30 @@ describe("column catalog batch coordinator", () => {
     });
   });
 
+  it("separates quoted relation and search-path cache identities", async () => {
+    let calls = 0;
+    const { owner } = setup((request) => {
+      calls += 1;
+      return ready(request);
+    });
+    const quoted = {
+      expectedEpoch: epoch,
+      relations: [{
+        path: [{ quoted: true, value: "users" }],
+        requestKey: "quoted",
+      }],
+      searchPaths: [[{ quoted: true, value: "main" }]],
+    };
+
+    await expect(owner.request(quoted).result).resolves.toMatchObject({
+      status: "usable",
+    });
+    await expect(owner.request(quoted).result).resolves.toMatchObject({
+      status: "usable",
+    });
+    expect(calls).toBe(1);
+  });
+
   it("supports cold null epochs and reuses the observed response epoch", async () => {
     const expected: Array<SqlCatalogEpoch | null> = [];
     const { owner } = setup((request) => {
@@ -262,6 +286,17 @@ describe("column catalog batch coordinator", () => {
     await expect(ticket.result).resolves.toEqual({ status: "cancelled" });
   });
 
+  it("ignores a provider rejection after its consumer is cancelled", async () => {
+    const work = deferred<unknown>();
+    const { owner } = setup(() => work.promise);
+    const ticket = owner.request(input());
+
+    ticket.cancel();
+    work.reject(new Error("late rejection"));
+    await expect(ticket.result).resolves.toEqual({ status: "cancelled" });
+    await Promise.resolve();
+  });
+
   it("supersedes prior owner work but isolates other owners", async () => {
     const pending: Array<ReturnType<typeof deferred<unknown>>> = [];
     const { coordinator, owner } = setup(() => {
@@ -300,6 +335,7 @@ describe("column catalog batch coordinator", () => {
       return new Promise(() => undefined);
     });
     const ownerTicket = owner.request(input());
+    owner.dispose();
     owner.dispose();
     await expect(ownerTicket.result).resolves.toEqual({
       reason: "disposed",
@@ -377,6 +413,12 @@ describe("column catalog batch coordinator", () => {
       status: "unavailable",
     });
     expect(createSqlColumnCatalogBatchCoordinator({
+      provider: {},
+    })).toEqual({
+      reason: "invalid-provider",
+      status: "unavailable",
+    });
+    expect(createSqlColumnCatalogBatchCoordinator({
       maxCacheEntries: 0,
       provider: { id: "catalog", loadColumns: vi.fn() },
     })).toEqual({
@@ -396,10 +438,33 @@ describe("column catalog batch coordinator", () => {
       scope: "scope",
     });
     if (prepared.status !== "prepared") throw new Error("Expected owner");
-    await expect(prepared.owner.request({
+    const invalidTicket = prepared.owner.request({
       expectedEpoch: epoch,
       relations: [],
       searchPaths: [],
+    });
+    invalidTicket.cancel();
+    await expect(invalidTicket.result).resolves.toEqual({
+      reason: "invalid-request",
+      status: "unavailable",
+    });
+  });
+
+  it("contains hostile and missing request properties", async () => {
+    const { owner } = setup(vi.fn());
+    const hostile = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("hostile descriptor");
+      },
+    });
+
+    await expect(owner.request(hostile).result).resolves.toEqual({
+      reason: "invalid-request",
+      status: "unavailable",
+    });
+    await expect(owner.request({
+      expectedEpoch: epoch,
+      relations: [reference("users")],
     }).result).resolves.toEqual({
       reason: "invalid-request",
       status: "unavailable",

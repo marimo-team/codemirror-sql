@@ -210,9 +210,10 @@ function cacheSet(
   state.cache.delete(key);
   state.cache.set(key, value);
   while (state.cache.size > state.maxCacheEntries) {
-    const oldest = state.cache.keys().next().value;
-    if (typeof oldest !== "string") break;
-    state.cache.delete(oldest);
+    for (const oldest of state.cache.keys()) {
+      state.cache.delete(oldest);
+      break;
+    }
   }
 }
 
@@ -229,11 +230,8 @@ function settle(
   consumer: ConsumerState,
   outcome: SqlColumnCatalogBatchOutcome,
 ): void {
-  if (consumer.settled) return;
   consumer.settled = true;
-  if (consumer.owner.active === consumer) {
-    consumer.owner.active = null;
-  }
+  consumer.owner.active = null;
   const resolve = consumer.resolve;
   consumer.resolve = null;
   resolve?.(outcome);
@@ -258,28 +256,26 @@ function makeSettledTicket(
 }
 
 function combineRelations(
-  request: SqlColumnCatalogBatchRequest,
   cached: ReadonlyMap<string, ReadyRelation>,
   loaded: readonly SqlColumnCatalogRelationResult[],
-): readonly SqlColumnCatalogRelationResult[] | null {
-  const byKey = new Map<string, SqlColumnCatalogRelationResult>();
-  for (const relation of loaded) byKey.set(relation.requestKey, relation);
-  const output: SqlColumnCatalogRelationResult[] = [];
-  for (const reference of request.relations) {
-    const cachedRelation = cached.get(reference.requestKey);
-    const relation = cachedRelation
-      ? withRequestKey(cachedRelation, reference.requestKey)
-      : byKey.get(reference.requestKey);
-    if (!relation) return null;
-    output.push(relation);
+): readonly SqlColumnCatalogRelationResult[] {
+  const output: SqlColumnCatalogRelationResult[] = [...loaded];
+  for (const [requestKey, relation] of cached) {
+    output.push(withRequestKey(relation, requestKey));
   }
+  output.sort((left, right) =>
+    left.requestKey < right.requestKey
+      ? -1
+      : left.requestKey > right.requestKey
+      ? 1
+      : 0
+  );
   return Object.freeze(output);
 }
 
 function startProviderWork(
   state: CoordinatorState,
   owner: OwnerState,
-  fullRequest: SqlColumnCatalogBatchRequest,
   missingRequest: SqlColumnCatalogBatchRequest,
   cached: ReadonlyMap<string, ReadyRelation>,
   consumer: ConsumerState,
@@ -296,15 +292,7 @@ function startProviderWork(
   }
   Promise.resolve(providerResult).then(
     (value) => {
-      if (
-        consumer.settled ||
-        consumer.controller.signal.aborted ||
-        state.disposed ||
-        owner.disposed ||
-        owner.owner !== state
-      ) {
-        return;
-      }
+      if (consumer.settled) return;
       const decoded = decodeSqlColumnCatalogBatchResponse(
         state.capturedProvider,
         missingRequest,
@@ -332,21 +320,18 @@ function startProviderWork(
         }
       }
       const relations = combineRelations(
-        fullRequest,
         cached,
         decoded.value.relations,
       );
       settle(
         consumer,
-        relations
-          ? Object.freeze({
-              providerId: state.context.id,
-              epoch: decoded.value.epoch,
-              relations,
-              scope: owner.scope,
-              status: "usable",
-            })
-          : unavailable("malformed-response"),
+        Object.freeze({
+          providerId: state.context.id,
+          epoch: decoded.value.epoch,
+          relations,
+          scope: owner.scope,
+          status: "usable",
+        }),
       );
     },
     () => {
@@ -399,31 +384,21 @@ function requestColumns(
       missing.push(reference);
     }
   }
-  if (missing.length === 0) {
-    const combined = combineRelations(request, cached, []);
-    if (request.expectedEpoch === null) {
-      return makeSettledTicket(unavailable("invalid-request"));
-    }
+  if (request.expectedEpoch !== null && missing.length === 0) {
     return makeSettledTicket(
       Object.freeze({
         epoch: request.expectedEpoch,
         providerId: state.context.id,
-        relations: combined ?? Object.freeze([]),
+        relations: combineRelations(cached, []),
         scope: owner.scope,
         status: "usable",
       }),
     );
   }
-  const missingCreated = createSqlColumnCatalogBatchRequest({
-    dialectId: request.dialectId,
-    expectedEpoch: request.expectedEpoch,
-    relations: missing,
-    scope: request.scope,
-    searchPaths: request.searchPaths,
+  const missingRequest: SqlColumnCatalogBatchRequest = Object.freeze({
+    ...request,
+    relations: Object.freeze(missing),
   });
-  if (missingCreated.status === "malformed") {
-    return makeSettledTicket(unavailable("invalid-request"));
-  }
   let resolveResult: (
     value: SqlColumnCatalogBatchOutcome,
   ) => void = (): void => {};
@@ -444,8 +419,7 @@ function requestColumns(
   startProviderWork(
     state,
     owner,
-    request,
-    missingCreated.value,
+    missingRequest,
     cached,
     consumer,
   );
