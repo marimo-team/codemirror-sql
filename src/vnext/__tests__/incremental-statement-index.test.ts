@@ -4,6 +4,7 @@ import {
   buildSqlStatementIndex,
   DREMIO_SQL_LEXICAL_PROFILE,
   DUCKDB_SQL_LEXICAL_PROFILE,
+  isExactSqlStatementSlotSnapshotFor,
   MAX_SQL_STATEMENT_SLOTS,
   POSTGRESQL_SQL_LEXICAL_PROFILE,
   type SqlLexicalProfile,
@@ -358,18 +359,93 @@ describe("incremental statement index reuse", () => {
     },
   );
 
+  it("rebuilds when empty change metadata does not match the text", () => {
+    const previousIndex = buildSqlStatementIndex(
+      "SELECT 1",
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    const nextIndex = updateSqlStatementIndex(
+      previousIndex,
+      "SELECT 2",
+      [],
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    expect(nextIndex).not.toBe(previousIndex);
+    expect(nextIndex).toEqual(
+      buildSqlStatementIndex(
+        "SELECT 2",
+        POSTGRESQL_SQL_LEXICAL_PROFILE,
+      ),
+    );
+  });
+
+  it("rebuilds when the lexical profile changes", () => {
+    const text = "SELECT 1";
+    const previousIndex = buildSqlStatementIndex(
+      text,
+      DUCKDB_SQL_LEXICAL_PROFILE,
+    );
+    const nextIndex = updateSqlStatementIndex(
+      previousIndex,
+      text,
+      [],
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    expect(nextIndex).not.toBe(previousIndex);
+    expect(nextIndex).toEqual(
+      buildSqlStatementIndex(
+        text,
+        POSTGRESQL_SQL_LEXICAL_PROFILE,
+      ),
+    );
+  });
+
+  it("rebuilds when one lexical profile object mutates", () => {
+    const profile = { ...POSTGRESQL_SQL_LEXICAL_PROFILE };
+    const text = "SELECT # ;\n SELECT 2";
+    const previousIndex = buildSqlStatementIndex(text, profile);
+    expect(previousIndex.slots).toHaveLength(2);
+    profile.hashLineComments = true;
+    const nextIndex = updateSqlStatementIndex(
+      previousIndex,
+      text,
+      [],
+      profile,
+    );
+    expect(nextIndex).not.toBe(previousIndex);
+    expect(nextIndex).toEqual(buildSqlStatementIndex(text, profile));
+    expect(nextIndex.slots).toHaveLength(1);
+  });
+
   it("reuses unchanged prefix and zero-delta suffix slot identities", () => {
     const profile = DUCKDB_SQL_LEXICAL_PROFILE;
     const text = "SELECT 1; SELECT 2; SELECT 3";
     const change = replaceFirst(text, "2", "9");
-    const { nextIndex, previousIndex } = expectIncrementalMatchesOracle(
-      text,
-      [change],
-      profile,
-    );
-    expect(expectSlot(nextIndex.slots, 0)).toBe(
-      expectSlot(previousIndex.slots, 0),
-    );
+    const { nextIndex, nextText, previousIndex } =
+      expectIncrementalMatchesOracle(
+        text,
+        [change],
+        profile,
+      );
+    const sharedPrefix = expectSlot(nextIndex.slots, 0);
+    expect(sharedPrefix).toBe(expectSlot(previousIndex.slots, 0));
+    expect(sharedPrefix.boundaryQuality).toBe("exact");
+    expect(
+      isExactSqlStatementSlotSnapshotFor(
+        previousIndex,
+        sharedPrefix,
+        text,
+        profile,
+      ),
+    ).toBe(true);
+    expect(
+      isExactSqlStatementSlotSnapshotFor(
+        nextIndex,
+        sharedPrefix,
+        nextText,
+        profile,
+      ),
+    ).toBe(true);
     expect(expectSlot(nextIndex.slots, 1)).not.toBe(
       expectSlot(previousIndex.slots, 1),
     );

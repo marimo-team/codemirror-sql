@@ -3,6 +3,7 @@ import {
   createIdentitySqlSource,
   createMaskedSqlSource,
   findSqlEmbeddedRegionAtOrAfter,
+  isSqlSourceSnapshot,
   mapAnalysisRangeToOriginal,
   mapOriginalRangeToAnalysis,
   MAX_SQL_EMBEDDED_REGIONS,
@@ -147,6 +148,9 @@ describe("SQL source snapshots", () => {
     expect(source.embeddedRegions).toEqual([]);
     expect(Object.isFrozen(source)).toBe(true);
     expect(Object.isFrozen(source.embeddedRegions)).toBe(true);
+    expect(isSqlSourceSnapshot(source)).toBe(true);
+    expect(isSqlSourceSnapshot({ ...source })).toBe(false);
+    expect(isSqlSourceSnapshot(null)).toBe(false);
   });
 
   it("bounds and validates source text", () => {

@@ -10,6 +10,9 @@ import {
   POSTGRESQL_SQL_RELATION_DIALECT,
   type SqlRelationDialectRuntime,
 } from "../relation-dialect.js";
+import {
+  isSqlRelationDialectRuntime,
+} from "../relation-runtime-auth.js";
 import type {
   SqlCanonicalRelationPath,
   SqlIdentifierDecodeResult,
@@ -64,15 +67,21 @@ function analyze(
   text: string,
 ): SqlCteLayout {
   const source = createIdentitySqlSource(text);
-  const slot = buildSqlStatementIndex(
+  const index = buildSqlStatementIndex(
     source.analysisText,
     runtime.querySite.lexicalProfile,
-  ).slots[0];
+  );
+  const slot = index.slots[0];
   expect(slot?.boundaryQuality).toBe("exact");
   if (!slot || slot.boundaryQuality !== "exact") {
     throw new Error("Expected one exact SQL statement");
   }
-  return analyzeSqlCteLayout(source, slot, runtime.cteLayout);
+  return analyzeSqlCteLayout(
+    source,
+    index,
+    slot,
+    runtime.cteLayout,
+  );
 }
 
 function expectDeepFrozenRuntime(
@@ -86,6 +95,20 @@ function expectDeepFrozenRuntime(
 }
 
 describe("built-in relation dialect runtime", () => {
+  it("authenticates only package-owned coherent runtime aggregates", () => {
+    expect(
+      isSqlRelationDialectRuntime(
+        POSTGRESQL_SQL_RELATION_DIALECT,
+      ),
+    ).toBe(true);
+    expect(
+      isSqlRelationDialectRuntime({
+        ...POSTGRESQL_SQL_RELATION_DIALECT,
+      }),
+    ).toBe(false);
+    expect(isSqlRelationDialectRuntime(null)).toBe(false);
+  });
+
   it("owns stable, deeply frozen, coherent views", () => {
     for (const runtime of Object.values(RUNTIMES)) {
       expectDeepFrozenRuntime(runtime);

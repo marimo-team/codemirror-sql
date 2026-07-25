@@ -5,6 +5,9 @@ import {
   DREMIO_SQL_LEXICAL_PROFILE,
   DUCKDB_SQL_LEXICAL_PROFILE,
   findSqlStatementSlot,
+  isExactSqlStatementSlotSnapshot,
+  isExactSqlStatementSlotSnapshotFor,
+  isSqlStatementSlotSnapshot,
   MAX_SQL_STATEMENT_SLOTS,
   POSTGRESQL_SQL_LEXICAL_PROFILE,
   type SqlLexicalProfile,
@@ -78,6 +81,47 @@ function expectPartition(text: string, index: SqlStatementIndex): void {
 }
 
 describe("statement partition", () => {
+  it("authenticates only package-created immutable slot snapshots", () => {
+    const exactIndex = buildSqlStatementIndex(
+      "SELECT 1",
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    const exact = itemAt(
+      exactIndex.slots,
+      0,
+    );
+    const opaqueIndex = buildSqlStatementIndex(
+      "DELIMITER $$",
+      POSTGRESQL_SQL_LEXICAL_PROFILE,
+    );
+    const opaque = itemAt(
+      opaqueIndex.slots,
+      0,
+    );
+    expect(isSqlStatementSlotSnapshot(exact)).toBe(true);
+    expect(isExactSqlStatementSlotSnapshot(exact)).toBe(true);
+    expect(
+      isExactSqlStatementSlotSnapshotFor(
+        exactIndex,
+        exact,
+        "SELECT 1",
+        POSTGRESQL_SQL_LEXICAL_PROFILE,
+      ),
+    ).toBe(true);
+    expect(
+      isExactSqlStatementSlotSnapshotFor(
+        exactIndex,
+        exact,
+        "SELECT 2",
+        POSTGRESQL_SQL_LEXICAL_PROFILE,
+      ),
+    ).toBe(false);
+    expect(isSqlStatementSlotSnapshot(opaque)).toBe(true);
+    expect(isExactSqlStatementSlotSnapshot(opaque)).toBe(false);
+    expect(isSqlStatementSlotSnapshot({ ...exact })).toBe(false);
+    expect(isExactSqlStatementSlotSnapshot(null)).toBe(false);
+  });
+
   it.each([
     [
       "",

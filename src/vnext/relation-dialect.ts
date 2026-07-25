@@ -20,6 +20,9 @@ import {
   type SqlQuerySiteDialect,
 } from "./query-site.js";
 import { isSqlRelationReservedWord } from "./relation-reserved-words.js";
+import {
+  registerSqlRelationDialectRuntime,
+} from "./relation-runtime-auth.js";
 import type {
   SqlCteIdentifierComparison,
   SqlCteIdentifierPrefixMatch,
@@ -1413,7 +1416,13 @@ function createRuntime(spec: RelationDialectSpec): SqlRelationDialectRuntime {
     maximumPathDepth: spec.maximumPathDepth,
     supportsNaturalJoin: spec.supportsNaturalJoin,
   });
-  return Object.freeze({ completion, cteLayout, querySite });
+  return registerSqlRelationDialectRuntime(
+    Object.freeze({
+      completion,
+      cteLayout,
+      querySite,
+    }),
+  );
 }
 
 function createGrammar(

@@ -4,8 +4,15 @@ import {
   type BoundedSqlLexerResource,
 } from "./bounded-sql-lexer.js";
 import type { SqlLexicalProfile } from "./lexical.js";
-import type { SqlSourceSnapshot } from "./source.js";
-import type { ExactSqlStatementSlot } from "./statement-index.js";
+import {
+  isSqlSourceSnapshot,
+  type SqlSourceSnapshot,
+} from "./source.js";
+import {
+  isExactSqlStatementSlotSnapshotFor,
+  type ExactSqlStatementSlot,
+  type SqlStatementIndex,
+} from "./statement-index.js";
 import type { SqlIdentifierComponent } from "./types.js";
 
 const cteRangeBrand: unique symbol = Symbol("SqlCteRange");
@@ -165,6 +172,20 @@ export interface SqlCteVisibility {
   readonly quality: "exact" | "recovered";
   readonly shadowing: SqlCteShadowing;
 }
+
+interface SqlCteLayoutProvenance {
+  readonly dialect: SqlCteLayoutDialect;
+  readonly entrypoints: readonly SqlCteMainQueryEntrypoint[];
+  readonly index: SqlStatementIndex;
+  readonly lexicalProfile: SqlLexicalProfile;
+  readonly slot: ExactSqlStatementSlot;
+  readonly source: SqlSourceSnapshot;
+}
+
+const sqlCteLayoutProvenance = new WeakMap<
+  object,
+  SqlCteLayoutProvenance
+>();
 
 type HeaderState =
   | "after-as"
@@ -872,7 +893,7 @@ function freezeLayout(
   exactThrough: number,
   issues: Set<SqlCteLayoutIssue>,
   resource?: SqlCteLayoutResource,
-): SqlCteLayout {
+): Exclude<SqlCteLayout, { readonly status: "unavailable" }> {
   const unknownClasses = (identityIndex: number): readonly number[] =>
     Object.freeze(
       [
@@ -1012,6 +1033,7 @@ function freezeLayout(
 
 export function analyzeSqlCteLayout(
   source: SqlSourceSnapshot,
+  index: SqlStatementIndex,
   slot: ExactSqlStatementSlot,
   dialect: SqlCteLayoutDialect,
 ): SqlCteLayout {
@@ -1551,7 +1573,7 @@ export function analyzeSqlCteLayout(
     relations,
     exactThrough,
   );
-  return freezeLayout(
+  const layout = freezeLayout(
     frames,
     declarations,
     draftDeclarations,
@@ -1561,6 +1583,58 @@ export function analyzeSqlCteLayout(
     issues,
     resource,
   );
+  if (
+    isSqlSourceSnapshot(source) &&
+    isExactSqlStatementSlotSnapshotFor(
+      index,
+      slot,
+      source.analysisText,
+      lexicalProfile,
+    )
+  ) {
+    sqlCteLayoutProvenance.set(
+      layout,
+      Object.freeze({
+        dialect,
+        entrypoints: layout.mainQueryEntrypoints,
+        index,
+        lexicalProfile,
+        slot,
+        source,
+      }),
+    );
+  }
+  return layout;
+}
+
+export function resolveAuthenticatedSqlCteEntrypoints(
+  candidate: unknown,
+  source: SqlSourceSnapshot,
+  slot: ExactSqlStatementSlot,
+  dialect: SqlCteLayoutDialect,
+): readonly SqlCteMainQueryEntrypoint[] | null {
+  if (
+    candidate === null ||
+    typeof candidate !== "object" ||
+    !isSqlSourceSnapshot(source)
+  ) {
+    return null;
+  }
+  const provenance = sqlCteLayoutProvenance.get(candidate);
+  if (
+    provenance?.source !== source ||
+    provenance.slot !== slot ||
+    provenance.dialect !== dialect ||
+    !isExactSqlStatementSlotSnapshotFor(
+      provenance.index,
+      slot,
+      source.analysisText,
+      provenance.lexicalProfile,
+    )
+  ) {
+    return null;
+  }
+  return provenance.entrypoints;
 }
 
 function framePhase(

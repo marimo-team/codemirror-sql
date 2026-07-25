@@ -7,6 +7,7 @@ const MAX_EMBEDDED_LANGUAGE_LENGTH = 256;
 const MASK_CHUNK_LENGTH = 64 * 1024;
 const EMPTY_EMBEDDED_REGIONS: readonly SqlEmbeddedRegion[] = Object.freeze([]);
 const sourceErrors = new WeakSet<object>();
+const sqlSourceSnapshots = new WeakSet<object>();
 
 export type SqlSourceErrorCode =
   | "invalid-source"
@@ -36,6 +37,16 @@ export interface SqlSourceSnapshot {
   readonly analysisText: string;
   readonly embeddedRegions: readonly SqlEmbeddedRegion[];
   readonly originalText: string;
+}
+
+export function isSqlSourceSnapshot(
+  candidate: unknown,
+): candidate is SqlSourceSnapshot {
+  return (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    sqlSourceSnapshots.has(candidate)
+  );
 }
 
 export function findSqlEmbeddedRegionAtOrAfter(
@@ -292,11 +303,13 @@ function maskRegion(text: string, from: number, to: number): string {
 
 export function createIdentitySqlSource(text: unknown): SqlSourceSnapshot {
   const originalText = normalizeSourceText(text);
-  return Object.freeze({
+  const source = Object.freeze({
     analysisText: originalText,
     embeddedRegions: EMPTY_EMBEDDED_REGIONS,
     originalText,
   });
+  sqlSourceSnapshots.add(source);
+  return source;
 }
 
 export function createMaskedSqlSource(
@@ -323,11 +336,13 @@ export function createMaskedSqlSource(
   }
   output.push(originalText.slice(cursor));
   const analysisText = output.join("");
-  return Object.freeze({
+  const source = Object.freeze({
     analysisText,
     embeddedRegions,
     originalText,
   });
+  sqlSourceSnapshots.add(source);
+  return source;
 }
 
 export function mapAnalysisRangeToOriginal(
