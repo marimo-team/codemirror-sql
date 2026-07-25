@@ -6,6 +6,17 @@ export {
   postgresDialect,
 } from "./session.js";
 export type {
+  SqlColumnCatalogBatchRequest,
+  SqlColumnCatalogBatchResponse,
+  SqlColumnCatalogColumn,
+  SqlColumnCatalogCoverage,
+  SqlColumnCatalogProvider,
+  SqlColumnCatalogProvenance,
+  SqlColumnCatalogRelationReference,
+  SqlColumnCatalogRelationResult,
+  SqlColumnCatalogResolvedColumn,
+} from "./column-catalog-types.js";
+export type {
   OpenSqlDocument,
   SqlCatalogContext,
   SqlContextInput,
@@ -53,6 +64,9 @@ export type {
   SqlCatalogSearchRequest,
   SqlCatalogSearchResponse,
   SqlCompletionCancellationReason,
+  SqlColumnCatalogProviderReport,
+  SqlColumnCompletionProvenance,
+  SqlCompletionProviderReport,
   SqlCompletionIssue,
   SqlCompletionRequest,
   SqlCompletionRefreshToken,

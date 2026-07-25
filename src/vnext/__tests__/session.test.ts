@@ -6,6 +6,7 @@ import {
   duckdbDialect,
   postgresDialect,
   SqlSessionError,
+  type SqlColumnCatalogProvider,
 } from "../index.js";
 import {
   DefaultSqlLanguageService,
@@ -1236,6 +1237,194 @@ describe("relation completion session integration", () => {
     });
     expect(session.revision).toBe(revision);
     service.dispose();
+  });
+});
+
+describe("column completion session integration", () => {
+  const relationCatalog: SqlRelationCatalogProvider = {
+    id: "relations",
+    search: async () => ({
+      coverage: { kind: "complete" },
+      epoch: { generation: 1, token: "epoch-1" },
+      relations: [],
+      status: "ready",
+    }),
+  };
+
+  function serviceWithColumns(
+    loadColumns: SqlColumnCatalogProvider["loadColumns"],
+  ) {
+    return createSqlLanguageService<TestContext>({
+      catalog: relationCatalog,
+      columns: { id: "columns", loadColumns },
+      completion: { catalogResponseBudgetMs: 40 },
+      dialects: [duckdb],
+    });
+  }
+
+  it("batches and completes a qualified alias through the session", async () => {
+    const requests: Parameters<
+      SqlColumnCatalogProvider["loadColumns"]
+    >[0][] = [];
+    const service = serviceWithColumns(async (request) => {
+      requests.push(request);
+      return {
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [{
+          columns: [{
+            columnEntityId: "users:name",
+            dataType: "VARCHAR",
+            identifier: { quoted: false, value: "name" },
+            insertText: "name",
+            ordinal: 0,
+          }],
+          coverage: "complete",
+          relationEntityId: "users",
+          requestKey: request.relations[0]?.requestKey,
+          status: "ready",
+        }],
+      };
+    });
+    const text = "SELECT u.na FROM app.users AS u";
+    const session = service.openDocument({
+      context: {
+        catalog: {
+          scope: "connection:1",
+          searchPath: [[{ quoted: false, value: "app" }]],
+        },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(
+      session.complete({
+        position: text.indexOf("na") + 2,
+        trigger: { kind: "invoked" },
+      }),
+    ).resolves.toMatchObject({
+      sources: [{
+        feature: "column-catalog",
+        outcome: "ready",
+        providerId: "columns",
+      }],
+      status: "ready",
+      value: {
+        isIncomplete: false,
+        items: [{
+          dataType: "VARCHAR",
+          edit: { from: 9, insert: "name", to: 11 },
+          kind: "column",
+          label: "name",
+          provenance: {
+            columnEntityId: "users:name",
+            kind: "column-catalog",
+            providerId: "columns",
+            relationEntityId: "users",
+            scope: "connection:1",
+          },
+        }],
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      dialectId: "duckdb",
+      expectedEpoch: null,
+      relations: [{
+        path: [
+          { quoted: false, value: "app" },
+          { quoted: false, value: "users" },
+        ],
+        requestKey: "binding:0",
+      }],
+      scope: "connection:1",
+    });
+    service.dispose();
+  });
+
+  it("loads all visible relations in one unqualified batch", async () => {
+    let calls = 0;
+    const service = serviceWithColumns(async (request) => {
+      calls += 1;
+      return {
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: request.relations.map((relation, index) => ({
+          columns: [{
+            columnEntityId: `relation-${index}:id`,
+            identifier: { quoted: false, value: "id" },
+            insertText: "id",
+            ordinal: 0,
+          }],
+          coverage: "complete",
+          relationEntityId: `relation-${index}`,
+          requestKey: relation.requestKey,
+          status: "ready",
+        })),
+      };
+    });
+    const text =
+      "SELECT i FROM users u JOIN orders o ON o.user_id = u.id";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+    const result = await session.complete({
+      position: "SELECT i".length,
+      trigger: { kind: "invoked" },
+    });
+
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          { detail: "o", label: "id" },
+          { detail: "u", label: "id" },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
+  it("keeps slow providers inside the completion response budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = serviceWithColumns(() => new Promise(() => {}));
+      const text = "SELECT u. FROM users u";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const completion = session.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(40);
+      await expect(completion).resolves.toMatchObject({
+        sources: [{
+          feature: "column-catalog",
+          outcome: "loading",
+        }],
+        status: "ready",
+        value: {
+          isIncomplete: true,
+          issues: [{ reason: "column-catalog-loading" }],
+          items: [],
+        },
+      });
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

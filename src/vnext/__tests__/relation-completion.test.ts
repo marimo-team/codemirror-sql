@@ -232,11 +232,16 @@ describe("relation completion composition", () => {
     );
 
     expect(
-      value.items.map((item) => [
-        item.relationKind,
-        item.label,
-        item.edit.insert,
-      ]),
+      value.items.map((item) => {
+        if (item.kind !== "relation") {
+          throw new Error("Expected a relation completion");
+        }
+        return [
+          item.relationKind,
+          item.label,
+          item.edit.insert,
+        ];
+      }),
     ).toEqual([
       ["cte", "users", "users"],
       ["cte", "zed", "zed"],

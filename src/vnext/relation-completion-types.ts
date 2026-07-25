@@ -249,6 +249,15 @@ export interface SqlCatalogCompletionProvenance {
   readonly entityId: string;
 }
 
+export interface SqlColumnCompletionProvenance {
+  readonly kind: "column-catalog";
+  readonly providerId: string;
+  readonly scope: string;
+  readonly epoch: SqlCatalogEpoch;
+  readonly relationEntityId: string;
+  readonly columnEntityId: string;
+}
+
 interface SqlCompletionItemBase {
   readonly label: string;
   readonly edit: SqlTextChange;
@@ -265,6 +274,12 @@ export type SqlCompletionItem =
       readonly kind: "relation";
       readonly relationKind: SqlCatalogRelationKind;
       readonly provenance: SqlCatalogCompletionProvenance;
+    })
+  | (SqlCompletionItemBase & {
+      readonly dataType?: string;
+      readonly kind: "column";
+      readonly provenance: SqlColumnCompletionProvenance;
+      readonly relationRequestKey: string;
     });
 
 export type SqlCompletionIssue =
@@ -281,7 +296,12 @@ export type SqlCompletionIssue =
         | "catalog-overloaded"
         | "catalog-queue-timeout"
         | "catalog-timeout"
+        | "column-catalog-failed"
+        | "column-catalog-loading"
+        | "column-catalog-malformed"
+        | "column-catalog-partial"
         | "cte-scope-uncertainty"
+        | "query-binding-partial"
         | "query-site-recovery"
         | "opaque-template-context"
         | "recursive-cte-uncertainty"
@@ -345,6 +365,38 @@ export type SqlCatalogProviderReport =
       readonly reason: SqlCatalogProviderUnavailableReason;
     });
 
+export type SqlColumnCatalogProviderReport =
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "ready";
+      readonly providerId: string;
+      readonly coverage: "complete" | "partial";
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "loading";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "failed";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "unavailable";
+      readonly providerId: string;
+      readonly reason:
+        | "disposed"
+        | "invalid-request"
+        | "malformed-response"
+        | "provider-failed";
+    };
+
+export type SqlCompletionProviderReport =
+  | SqlCatalogProviderReport
+  | SqlColumnCatalogProviderReport;
+
 export interface SqlServiceFailure {
   readonly code: "internal";
   readonly retryable: boolean;
@@ -356,7 +408,7 @@ export type SqlCompletionResult =
       readonly revision: SqlRevision;
       readonly refreshToken: SqlCompletionRefreshToken | null;
       readonly value: SqlCompletionList;
-      readonly sources: readonly SqlCatalogProviderReport[];
+      readonly sources: readonly SqlCompletionProviderReport[];
     }
   | {
       readonly status: "unavailable";

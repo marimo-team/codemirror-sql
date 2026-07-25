@@ -11,6 +11,16 @@ import type {
   SqlTextRange,
 } from "./types.js";
 import {
+  createSqlColumnCatalogBatchCoordinator,
+  type SqlColumnCatalogBatchCoordinator,
+  type SqlColumnCatalogBatchOwner,
+  type SqlColumnCatalogBatchTicket,
+} from "./column-catalog-batch-coordinator.js";
+import {
+  composeSqlColumnCompletion,
+  prepareSqlColumnCatalogRelations,
+} from "./column-completion.js";
+import {
   buildSqlStatementIndex,
   findSqlStatementSlot,
   findSqlStatementSlotsIntersecting,
@@ -34,6 +44,7 @@ import {
   type SqlCatalogSearchWorkTicket,
 } from "./relation-catalog-search-work.js";
 import {
+  analyzeSqlLocalColumnSite,
   analyzeSqlLocalRelationSite,
   prepareSqlLocalRelationStatement,
   type SqlLocalRelationStatementPreparation,
@@ -104,7 +115,10 @@ interface ResolvedCatalogContext {
 interface CompletionRequestState {
   cancelReason: "caller" | "disposed" | "superseded" | null;
   readonly revision: SqlRevision;
-  ticket: SqlCatalogSearchWorkTicket | null;
+  ticket:
+    | SqlCatalogSearchWorkTicket
+    | SqlColumnCatalogBatchTicket
+    | null;
   readonly token: SqlCompletionRefreshToken;
 }
 
@@ -937,6 +951,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 {
   readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
   readonly #catalogResponseBudgetMs: number;
+  readonly #columnCoordinator: SqlColumnCatalogBatchCoordinator | null;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #onDispose: () => void;
   readonly #listeners = new Set<SessionChangeSubscription>();
@@ -944,6 +959,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #catalogOwner: SqlCatalogSearchWorkOwner | null = null;
   #catalogOwnerDialect: SqlRelationDialectRuntime | null = null;
   #catalogOwnerScope: string | null = null;
+  #columnOwner: SqlColumnCatalogBatchOwner | null = null;
+  #columnOwnerDialect: SqlRelationDialectRuntime | null = null;
+  #columnOwnerScope: string | null = null;
   #disposed = false;
   #localRelationStatementCache:
     | LocalRelationStatementCache
@@ -960,10 +978,12 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     context: Context,
     dialects: ReadonlyMap<string, SqlDialectRuntime>,
     catalogCoordinator: SqlCatalogSearchWorkCoordinator | null,
+    columnCoordinator: SqlColumnCatalogBatchCoordinator | null,
     completion: CompletionConfiguration,
     onDispose: () => void,
   ) {
     this.#catalogCoordinator = catalogCoordinator;
+    this.#columnCoordinator = columnCoordinator;
     this.#catalogResponseBudgetMs =
       completion.catalogResponseBudgetMs;
     this.#dialects = dialects;
@@ -984,6 +1004,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       sourceSequence,
     });
     this.#replaceCatalogOwner();
+    this.#replaceColumnOwner();
   }
 
   get revision(): SqlRevision {
@@ -1238,6 +1259,34 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         this.#catalogOwnerScope = null;
       }
     }
+  }
+
+  #replaceColumnOwner(): void {
+    const catalog = resolveCatalogContext(this.#snapshot.context);
+    const dialect = this.#snapshot.dialect.relationDialect;
+    if (
+      this.#columnOwner &&
+      catalog &&
+      this.#columnOwnerScope === catalog.scope &&
+      this.#columnOwnerDialect === dialect
+    ) {
+      return;
+    }
+    this.#columnOwner?.dispose();
+    this.#columnOwner = null;
+    this.#columnOwnerDialect = null;
+    this.#columnOwnerScope = null;
+    if (!catalog || !this.#columnCoordinator || this.#disposed) {
+      return;
+    }
+    const prepared = this.#columnCoordinator.prepareOwner({
+      dialectId: dialect.id,
+      scope: catalog.scope,
+    });
+    if (prepared.status !== "prepared") return;
+    this.#columnOwner = prepared.owner;
+    this.#columnOwnerDialect = dialect;
+    this.#columnOwnerScope = catalog.scope;
   }
 
   readonly onDidChange = (
@@ -1539,6 +1588,125 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         position,
       );
       if (localSite.status !== "ready") {
+        const columnSite = analyzeSqlLocalColumnSite(
+          prepared.statement,
+          position,
+        );
+        if (
+          localSite.status === "inactive" &&
+          columnSite.status === "ready"
+        ) {
+          const catalog = resolveCatalogContext(snapshot.context);
+          const columnOwner = this.#columnOwner;
+          const columnCoordinator = this.#columnCoordinator;
+          const preparedRelations = prepareSqlColumnCatalogRelations(
+            columnSite,
+            snapshot.dialect.relationDialect,
+          );
+          if (preparedRelations.references.length === 0) {
+            cancelPrevious();
+            return Object.freeze({
+              reason: unavailableCompletionReason(localSite),
+              retryable: false,
+              revision: snapshot.revision,
+              status: "unavailable",
+            });
+          }
+          if (!catalog || !columnOwner || !columnCoordinator) {
+            cancelPrevious();
+            return Object.freeze({
+              reason: "unsupported-query-site",
+              retryable: false,
+              revision: snapshot.revision,
+              status: "unavailable",
+            });
+          }
+          if (
+            this.#activeCompletion !== active ||
+            active.cancelReason !== null ||
+            snapshot.revision !== this.#snapshot.revision
+          ) {
+            return completionCancellation(
+              snapshot.revision,
+              completionCancellationReason(active),
+            );
+          }
+          const ticket = columnOwner.request({
+            expectedEpoch: null,
+            relations: preparedRelations.references,
+            searchPaths: catalog.searchPaths,
+          });
+          active.ticket = ticket;
+          let responseTimer:
+            | ReturnType<typeof setTimeout>
+            | undefined;
+          const raced = await Promise.race([
+            ticket.result.then((outcome) =>
+              Object.freeze({
+                kind: "outcome" as const,
+                outcome,
+              }),
+            ),
+            new Promise<{ readonly kind: "timeout" }>((resolve) => {
+              responseTimer = setTimeout(
+                () => resolve(Object.freeze({ kind: "timeout" })),
+                this.#catalogResponseBudgetMs,
+              );
+            }),
+          ]);
+          clearTimeout(responseTimer);
+          if (
+            this.#activeCompletion !== active ||
+            active.cancelReason !== null ||
+            snapshot.revision !== this.#snapshot.revision
+          ) {
+            ticket.cancel();
+            return completionCancellation(
+              snapshot.revision,
+              completionCancellationReason(active),
+            );
+          }
+          if (raced.kind === "timeout") {
+            ticket.cancel();
+            return Object.freeze({
+              refreshToken: null,
+              revision: snapshot.revision,
+              sources: Object.freeze([Object.freeze({
+                feature: "column-catalog" as const,
+                outcome: "loading" as const,
+                providerId: columnCoordinator.providerId,
+              })]),
+              status: "ready",
+              value: Object.freeze({
+                isIncomplete: true,
+                issues: Object.freeze([Object.freeze({
+                  reason: "column-catalog-loading" as const,
+                })] as const),
+                items: Object.freeze([]),
+              }),
+            });
+          }
+          const composition = composeSqlColumnCompletion({
+            dialect: snapshot.dialect.relationDialect,
+            outcome: raced.outcome,
+            prepared: preparedRelations,
+            providerId: columnCoordinator.providerId,
+            site: columnSite,
+          });
+          if (!composition) {
+            return completionCancellation(
+              snapshot.revision,
+              completionCancellationReason(active),
+            );
+          }
+          return Object.freeze({
+            refreshToken: null,
+            revision: snapshot.revision,
+            sources: composition.sources,
+            status: "ready",
+            value: composition.value,
+          });
+        }
         cancelPrevious();
         return Object.freeze({
           reason: unavailableCompletionReason(localSite),
@@ -2121,6 +2289,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       refreshIntent?.ticket?.cancel();
     }
     this.#replaceCatalogOwner();
+    this.#replaceColumnOwner();
     return this.#snapshot.revision;
   }
 
@@ -2136,9 +2305,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const activeCompletion = this.#activeCompletion;
     const refreshIntent = this.#refreshIntent;
     const catalogOwner = this.#catalogOwner;
+    const columnOwner = this.#columnOwner;
     this.#activeCompletion = null;
     this.#refreshIntent = null;
     this.#catalogOwner = null;
+    this.#columnOwner = null;
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     this.#listeners.clear();
@@ -2162,6 +2333,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       refreshIntent?.ticket?.cancel();
     }
     catalogOwner?.dispose();
+    columnOwner?.dispose();
     this.#onDispose();
   };
 }
@@ -2170,6 +2342,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
   implements SqlLanguageService<Context>
 {
   readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
+  readonly #columnCoordinator: SqlColumnCatalogBatchCoordinator | null;
   readonly #completion: CompletionConfiguration;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #sessions = new Set<DefaultSqlDocumentSession<Context>>();
@@ -2303,6 +2476,27 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         }
         this.#catalogCoordinator = coordinator.coordinator;
       }
+
+      const columns = readOwnDataProperty(
+        options,
+        "columns",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      if (!columns.found || columns.value === undefined) {
+        this.#columnCoordinator = null;
+      } else {
+        const coordinator = createSqlColumnCatalogBatchCoordinator({
+          provider: columns.value,
+        });
+        if (coordinator.status !== "created") {
+          throw new SqlSessionError(
+            "invalid-service-options",
+            "SQL column catalog provider is invalid",
+          );
+        }
+        this.#columnCoordinator = coordinator.coordinator;
+      }
     } catch (error) {
       if (error instanceof SqlSessionError) {
         throw error;
@@ -2378,6 +2572,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         context,
         this.#dialects,
         this.#catalogCoordinator,
+        this.#columnCoordinator,
         this.#completion,
         () => {
           this.#sessions.delete(session);
@@ -2419,6 +2614,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
     }
     this.#sessions.clear();
     this.#catalogCoordinator?.dispose();
+    this.#columnCoordinator?.dispose();
   };
 }
 

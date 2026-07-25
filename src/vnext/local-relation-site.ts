@@ -5,6 +5,10 @@ import {
   visibleSqlCtesAt,
 } from "./cte-layout.js";
 import {
+  recognizeSqlColumnQuerySite,
+  type SqlColumnQuerySiteResult,
+} from "./column-query-site.js";
+import {
   recognizeSqlRelationQuerySiteWithEntrypoints,
   type SqlQuerySiteResult,
 } from "./query-site.js";
@@ -197,4 +201,32 @@ export function analyzeSqlLocalRelationSite(
     querySite,
     status: "ready",
   });
+}
+
+export function analyzeSqlLocalColumnSite(
+  statement: SqlLocalRelationStatement,
+  position: number,
+): SqlColumnQuerySiteResult {
+  if (
+    statement === null ||
+    typeof statement !== "object"
+  ) {
+    return Object.freeze({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  }
+  const context = localRelationStatements.get(statement);
+  if (!context) {
+    return Object.freeze({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  }
+  return recognizeSqlColumnQuerySite(
+    context.source,
+    context.slot,
+    position,
+    context.dialect,
+  );
 }

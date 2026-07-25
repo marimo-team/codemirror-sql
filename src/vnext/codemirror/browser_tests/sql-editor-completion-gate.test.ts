@@ -151,3 +151,70 @@ test("vNext completion gate permits normal SQL in a browser editor", async () =>
   service.dispose();
   parent.remove();
 });
+
+test("vNext editor applies a batched column completion", async () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  let columnCalls = 0;
+  const service = createSqlLanguageService({
+    catalog: {
+      id: "browser-relations",
+      search: async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [],
+        status: "ready" as const,
+      }),
+    },
+    columns: {
+      id: "browser-columns",
+      loadColumns: async (request) => {
+        columnCalls += 1;
+        return {
+          epoch: { generation: 1, token: "epoch-1" },
+          relations: [{
+            columns: [{
+              columnEntityId: "users:name",
+              dataType: "VARCHAR",
+              identifier: { quoted: false, value: "name" },
+              insertText: "name",
+              ordinal: 0,
+            }],
+            coverage: "complete",
+            relationEntityId: "users",
+            requestKey: request.relations[0]?.requestKey,
+            status: "ready",
+          }],
+        };
+      },
+    },
+    dialects: [duckdbDialect()],
+  });
+  const support = sqlEditor({
+    initialContext: {
+      catalog: { scope: "browser-columns" },
+      dialect: "duckdb",
+    },
+    service,
+  });
+  const documentText = "SELECT u.na FROM users u";
+  const view = new EditorView({
+    doc: documentText,
+    extensions: support.extension,
+    parent,
+    selection: { anchor: "SELECT u.na".length },
+  });
+
+  expect(startCompletion(view)).toBe(true);
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => ({
+      label: item.label,
+      type: item.type,
+    }))
+  ).toEqual([{ label: "name", type: "property" }]);
+  expect(columnCalls).toBe(1);
+
+  view.destroy();
+  service.dispose();
+  parent.remove();
+});

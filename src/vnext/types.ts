@@ -162,6 +162,7 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
 
 export interface SqlLanguageServiceOptions {
   readonly catalog?: SqlRelationCatalogProvider | undefined;
+  readonly columns?: SqlColumnCatalogProvider | undefined;
   readonly completion?: {
     readonly catalogResponseBudgetMs?: number | undefined;
   } | undefined;
@@ -192,6 +193,9 @@ export class SqlSessionError extends Error {
     this.code = code;
   }
 }
+import type {
+  SqlColumnCatalogProvider,
+} from "./column-catalog-types.js";
 import type {
   SqlCompletionRequest,
   SqlCompletionTask,
