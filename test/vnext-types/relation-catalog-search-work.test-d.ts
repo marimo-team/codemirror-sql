@@ -5,6 +5,9 @@ import type {
 import type {
   SqlCatalogRevisionTarget,
 } from "../../src/vnext/relation-catalog-epoch-coordinator.js";
+import {
+  createSqlCatalogEpochCoordinator,
+} from "../../src/vnext/relation-catalog-epoch-coordinator.js";
 import type {
   SqlCatalogSearchWorkCoordinator,
   SqlCatalogSearchWorkInput,
@@ -94,7 +97,6 @@ const invalidRequestReceiver: SqlCatalogSearchWorkOwner["request"] =
 const receiverDependentPrepareOwner = function (
   this: { readonly active: boolean },
   _scope: unknown,
-  _dialectId: unknown,
   _dialect: unknown,
   _target: SqlCatalogRevisionTarget,
 ): SqlCatalogSearchWorkOwnerResult {
@@ -104,6 +106,15 @@ const receiverDependentPrepareOwner = function (
 // @ts-expect-error owner preparation cannot depend on a receiver
 const invalidPrepareOwnerReceiver: SqlCatalogSearchWorkCoordinator["prepareOwner"] =
   receiverDependentPrepareOwner;
+
+const asyncDisposalTarget = async (): Promise<void> => {};
+type EpochDisposalTarget = NonNullable<
+  Parameters<typeof createSqlCatalogEpochCoordinator>[2]
+>;
+// @ts-expect-error package disposal targets are synchronously exact-undefined
+const invalidAsyncDisposalTarget: EpochDisposalTarget =
+  asyncDisposalTarget;
+void invalidAsyncDisposalTarget;
 
 const receiverDependentActivate = function (
   this: { readonly active: boolean },

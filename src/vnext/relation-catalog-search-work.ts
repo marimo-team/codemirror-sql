@@ -1835,8 +1835,9 @@ export function createSqlCatalogSearchWorkCoordinator(
     provider,
     (scope): (() => undefined) | null =>
       state ? prepareTransition(state, scope) : null,
-    (): void => {
+    (): undefined => {
       if (state) disposeCoordinatorState(state);
+      return undefined;
     },
   );
   if (epochResult.status !== "created") {

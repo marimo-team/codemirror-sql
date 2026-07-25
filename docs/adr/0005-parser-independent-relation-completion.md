@@ -488,7 +488,8 @@ The combined search coordinator also installs one package-owned disposal
 target. Epoch self-quarantine makes the outer coordinator inert before
 subscription cleanup continues, so search work cannot outlive its epoch
 authority. The target is receiver-free, invoked at most once, and its failure
-cannot reopen disposal.
+cannot reopen disposal. It is synchronously exact-return and must return
+`undefined`; any other runtime result is detached and rejection-drained.
 
 A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different

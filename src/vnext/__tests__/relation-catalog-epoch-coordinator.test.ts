@@ -236,7 +236,7 @@ describe("catalog epoch coordinator construction and membership", () => {
     expect(reads).toBe(0);
   });
 
-  it("validates and invokes the package disposal target exactly once", () => {
+  it("validates, drains, and invokes the package disposal target exactly once", async () => {
     expect(
       Reflect.apply(createSqlCatalogEpochCoordinator, undefined, [
         capturedProvider(),
@@ -266,6 +266,26 @@ describe("catalog epoch coordinator construction and membership", () => {
       created.coordinator.dispose();
     }).not.toThrow();
     expect(disposalCalls).toBe(1);
+
+    const invalidReturn = Promise.reject(
+      new Error("invalid async package disposal"),
+    );
+    const withInvalidReturn = Reflect.apply(
+      createSqlCatalogEpochCoordinator,
+      undefined,
+      [
+        capturedProvider(),
+        undefined,
+        () => invalidReturn,
+      ],
+    );
+    expect(withInvalidReturn.status).toBe("created");
+    if (withInvalidReturn.status !== "created") {
+      throw new Error("Expected a coordinator fixture");
+    }
+    withInvalidReturn.coordinator.dispose();
+    await Promise.resolve();
+    await Promise.resolve();
   });
 
   it("validates exact bounded well-formed scopes without raw errors", () => {

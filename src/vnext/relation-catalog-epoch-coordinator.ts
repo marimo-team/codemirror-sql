@@ -158,7 +158,7 @@ interface CoordinatorState {
   readonly commands: EpochCommand[];
   readonly deferredCleanup: Set<SubscriptionState>;
   readonly memberships: Set<MembershipState>;
-  onDispose: ((this: void) => void) | null;
+  onDispose: ((this: void) => undefined) | null;
   prepareEpochTransition: Function | null;
   readonly providerId: string;
   readonly scopes: Map<string, ScopeEntry>;
@@ -1277,7 +1277,10 @@ function disposeCoordinator(state: CoordinatorState): void {
   }
   if (onDispose) {
     try {
-      Reflect.apply(onDispose, undefined, []);
+      const result = Reflect.apply(onDispose, undefined, []);
+      if (result !== undefined) {
+        drainDetachedSettlement(result);
+      }
     } catch {
       // Disposal remains authoritative if its package owner fails.
     }
@@ -1316,7 +1319,7 @@ function createCoordinatorHandle(
 export function createSqlCatalogEpochCoordinator(
   capturedProvider: unknown,
   prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
-  onDispose?: (this: void) => void,
+  onDispose?: (this: void) => undefined,
 ): SqlCatalogEpochCoordinatorResult {
   const provider = resolveSqlRelationCatalogProvider(
     capturedProvider,
