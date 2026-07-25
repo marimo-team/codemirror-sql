@@ -1,14 +1,10 @@
 import {
-  hasEscapeStringPrefix,
-  isBigQueryRawString,
-  isSqlWhitespace,
-  scanSqlBlockComment,
-  scanSqlDollarQuote,
-  scanSqlQuoted,
-  sqlIdentifierContinueLengthAt,
-  sqlIdentifierStartLengthAt,
-  type SqlLexicalProfile,
-} from "./lexical.js";
+  BoundedSqlLexer,
+  MAX_BOUNDED_SQL_LEXEMES,
+  type BoundedSqlLexeme as Lexeme,
+  type BoundedSqlLexerResource,
+} from "./bounded-sql-lexer.js";
+import type { SqlLexicalProfile } from "./lexical.js";
 import type { SqlSourceSnapshot } from "./source.js";
 import type {
   ExactSqlStatementSlot,
@@ -22,7 +18,7 @@ import type {
 const querySiteRangeBrand: unique symbol = Symbol("SqlQuerySiteRange");
 
 export const MAX_QUERY_SITE_STATEMENT_LENGTH = 65_536;
-export const MAX_QUERY_SITE_LEXEMES = 16_384;
+export const MAX_QUERY_SITE_LEXEMES = MAX_BOUNDED_SQL_LEXEMES;
 export const MAX_QUERY_SITE_DEPTH = 128;
 export const MAX_QUERY_SITE_PATH_COMPONENTS = 32;
 export const MAX_QUERY_SITE_IDENTIFIER_LENGTH = 256;
@@ -129,23 +125,6 @@ export interface SqlQuerySiteDialect {
   ) => SqlDecodedQueryPath;
 }
 
-type LexemeKind =
-  | "barrier"
-  | "comment"
-  | "line-comment"
-  | "other"
-  | "punctuation"
-  | "quoted-identifier"
-  | "string"
-  | "word";
-
-interface Lexeme {
-  readonly closed: boolean;
-  readonly from: number;
-  readonly kind: LexemeKind;
-  readonly to: number;
-}
-
 type FrameState =
   | "after-alias"
   | "after-relation"
@@ -221,7 +200,10 @@ function createRange(from: number, to: number): SqlQuerySiteRange {
   return Object.freeze(range);
 }
 
-function findRegionAtOrAfter(source: SqlSourceSnapshot, position: number): number {
+function findRegionAtOrAfter(
+  source: SqlSourceSnapshot,
+  position: number,
+): number {
   let low = 0;
   let high = source.embeddedRegions.length;
   while (low < high) {
@@ -236,241 +218,22 @@ function findRegionAtOrAfter(source: SqlSourceSnapshot, position: number): numbe
   return low;
 }
 
-function regionContains(source: SqlSourceSnapshot, position: number): boolean {
-  const region = source.embeddedRegions[
-    findRegionAtOrAfter(source, position)
-  ];
-  return Boolean(region && region.from <= position && position < region.to);
+function regionContains(
+  source: SqlSourceSnapshot,
+  position: number,
+): boolean {
+  const region =
+    source.embeddedRegions[findRegionAtOrAfter(source, position)];
+  return Boolean(
+    region && region.from <= position && position < region.to,
+  );
 }
 
-class QueryLexer {
-  readonly #profile: SqlLexicalProfile;
-  readonly #source: SqlSourceSnapshot;
-  readonly #to: number;
-  #cursor: number;
-  #lexemeCount = 0;
-  #pushed: Lexeme | null = null;
-  #regionIndex: number;
-  resource: SqlQuerySiteResource | null = null;
-
-  constructor(
-    source: SqlSourceSnapshot,
-    from: number,
-    to: number,
-    profile: SqlLexicalProfile,
-  ) {
-    this.#source = source;
-    this.#cursor = from;
-    this.#to = to;
-    this.#profile = profile;
-    this.#regionIndex = findRegionAtOrAfter(source, from);
-  }
-
-  next(): Lexeme | null {
-    if (this.#pushed) {
-      const lexeme = this.#pushed;
-      this.#pushed = null;
-      return lexeme;
-    }
-    const text = this.#source.analysisText;
-    while (this.#cursor < this.#to) {
-      const region = this.#source.embeddedRegions[this.#regionIndex];
-      if (region && region.from <= this.#cursor) {
-        const from = this.#cursor;
-        this.#cursor = Math.min(region.to, this.#to);
-        this.#regionIndex += 1;
-        return this.#record({
-          closed: true,
-          from,
-          kind: "barrier",
-          to: this.#cursor,
-        });
-      }
-      const lexicalLimit = Math.min(region?.from ?? this.#to, this.#to);
-      const code = text.charCodeAt(this.#cursor);
-      if (isSqlWhitespace(code)) {
-        this.#cursor += 1;
-        continue;
-      }
-      const from = this.#cursor;
-      const next = text.charCodeAt(from + 1);
-      if (code === 45 && next === 45) {
-        this.#cursor += 2;
-        while (
-          this.#cursor < this.#to &&
-          text.charCodeAt(this.#cursor) !== 10 &&
-          text.charCodeAt(this.#cursor) !== 13
-        ) {
-          this.#cursor += 1;
-        }
-        this.#advanceCoveredRegions();
-        return this.#record({
-          closed: true,
-          from,
-          kind: "line-comment",
-          to: this.#cursor,
-        });
-      }
-      if (this.#profile.hashLineComments && code === 35) {
-        this.#cursor += 1;
-        while (
-          this.#cursor < this.#to &&
-          text.charCodeAt(this.#cursor) !== 10 &&
-          text.charCodeAt(this.#cursor) !== 13
-        ) {
-          this.#cursor += 1;
-        }
-        this.#advanceCoveredRegions();
-        return this.#record({
-          closed: true,
-          from,
-          kind: "line-comment",
-          to: this.#cursor,
-        });
-      }
-      if (code === 47 && next === 42) {
-        const result = scanSqlBlockComment(
-          text,
-          from,
-          lexicalLimit,
-          this.#profile.nestedBlockComments,
-        );
-        this.#cursor = result.to;
-        return this.#record({
-          closed: result.closed,
-          from,
-          kind: "comment",
-          to: result.to,
-        });
-      }
-      if (this.#profile.dollarQuotedStrings && code === 36) {
-        const result = scanSqlDollarQuote(text, from, lexicalLimit);
-        if (result) {
-          this.#cursor = result.to;
-          if (result.delimiterTooLong) {
-            this.resource = "identifier-segment";
-            return null;
-          }
-          return this.#record({
-            closed: result.closed,
-            from,
-            kind: "string",
-            to: result.to,
-          });
-        }
-      }
-      if (code === 96 && this.#profile.backtickQuotedIdentifiers) {
-        const result = scanSqlQuoted(
-          text,
-          from,
-          lexicalLimit,
-          code,
-          1,
-          true,
-          false,
-          false,
-        );
-        this.#cursor = result.to;
-        return this.#record({
-          closed: result.closed,
-          from,
-          kind: "quoted-identifier",
-          to: result.to,
-        });
-      }
-      if (code === 39 || code === 34) {
-        const triple =
-          this.#profile.bigQueryStrings &&
-          text.charCodeAt(from + 1) === code &&
-          text.charCodeAt(from + 2) === code;
-        const quotedIdentifier = code === 34 && !this.#profile.bigQueryStrings;
-        const rawBigQueryString =
-          this.#profile.bigQueryStrings &&
-          isBigQueryRawString(text, from);
-        const backslashEscapes =
-          !rawBigQueryString &&
-          (this.#profile.bigQueryStrings ||
-          (code === 39 &&
-            (this.#profile.singleQuoteBackslash === "always" ||
-              (this.#profile.singleQuoteBackslash === "e-prefix" &&
-                hasEscapeStringPrefix(text, from)))));
-        const result = scanSqlQuoted(
-          text,
-          from,
-          lexicalLimit,
-          code,
-          triple ? 3 : 1,
-          backslashEscapes,
-          !this.#profile.bigQueryStrings,
-          this.#profile.bigQueryStrings && !triple,
-        );
-        this.#cursor = result.to;
-        return this.#record({
-          closed: result.closed,
-          from,
-          kind: quotedIdentifier ? "quoted-identifier" : "string",
-          to: result.to,
-        });
-      }
-      const startLength = sqlIdentifierStartLengthAt(text, from);
-      if (startLength > 0) {
-        this.#cursor += startLength;
-        while (this.#cursor < lexicalLimit) {
-          const length = sqlIdentifierContinueLengthAt(text, this.#cursor);
-          if (length === 0) {
-            break;
-          }
-          this.#cursor += length;
-        }
-        return this.#record({
-          closed: true,
-          from,
-          kind: "word",
-          to: this.#cursor,
-        });
-      }
-      this.#cursor += 1;
-      return this.#record({
-        closed: true,
-        from,
-        kind:
-          code === 40 ||
-          code === 41 ||
-          code === 44 ||
-          code === 46 ||
-          code === 59
-            ? "punctuation"
-            : "other",
-        to: this.#cursor,
-      });
-    }
-    return null;
-  }
-
-  pushBack(lexeme: Lexeme): void {
-    this.#pushed = lexeme;
-  }
-
-  #advanceCoveredRegions(): void {
-    while (
-      (this.#source.embeddedRegions[this.#regionIndex]?.to ?? Infinity) <=
-      this.#cursor
-    ) {
-      this.#regionIndex += 1;
-    }
-  }
-
-  #record(lexeme: Lexeme): Lexeme | null {
-    this.#lexemeCount += 1;
-    if (this.#lexemeCount > MAX_QUERY_SITE_LEXEMES) {
-      this.resource = "lexical-token";
-      return null;
-    }
-    return lexeme;
-  }
-}
-
-function wordEquals(text: string, token: Lexeme, expected: string): boolean {
+function wordEquals(
+  text: string,
+  token: Lexeme,
+  expected: string,
+): boolean {
   if (token.to - token.from !== expected.length) {
     return false;
   }
@@ -491,6 +254,19 @@ function wordValue(text: string, token: Lexeme): string {
     : "";
 }
 
+const QUERY_SITE_LEXER_RESOURCES: Readonly<
+  Record<BoundedSqlLexerResource, SqlQuerySiteResource>
+> = Object.freeze({
+  "dollar-quote-delimiter": "identifier-segment",
+  "lexical-token": "lexical-token",
+});
+
+function querySiteLexerResource(
+  resource: BoundedSqlLexerResource,
+): SqlQuerySiteResource {
+  return QUERY_SITE_LEXER_RESOURCES[resource];
+}
+
 function topFrame(frames: readonly QueryFrame[]): QueryFrame | null {
   return frames[frames.length - 1] ?? null;
 }
@@ -499,7 +275,10 @@ function isCommentLexeme(token: Lexeme): boolean {
   return token.kind === "comment" || token.kind === "line-comment";
 }
 
-function cursorIsInComment(token: Lexeme, position: number): boolean {
+function cursorIsInComment(
+  token: Lexeme,
+  position: number,
+): boolean {
   return (
     token.from <= position &&
     (position < token.to ||
@@ -1155,7 +934,7 @@ function decodeReadyPath(
 }
 
 function recognizePath(
-  lexer: QueryLexer,
+  lexer: BoundedSqlLexer,
   source: SqlSourceSnapshot,
   slot: ExactSqlStatementSlot,
   frame: QueryFrame,
@@ -1172,7 +951,10 @@ function recognizePath(
   while (true) {
     const next = lexer.next();
     if (lexer.resource) {
-      return unavailable("resource-limit", lexer.resource);
+      return unavailable(
+        "resource-limit",
+        querySiteLexerResource(lexer.resource),
+      );
     }
     if (next?.from === rawTo) {
       if (expectingSegment) {
@@ -1232,7 +1014,10 @@ function recognizePath(
         separated = true;
         terminator = lexer.next();
         if (lexer.resource) {
-          return unavailable("resource-limit", lexer.resource);
+          return unavailable(
+            "resource-limit",
+            querySiteLexerResource(lexer.resource),
+          );
         }
       }
       if (terminator?.kind === "barrier") {
@@ -1337,7 +1122,7 @@ export function recognizeSqlRelationQuerySite(
   ) {
     return unavailable("ambiguous-query-site");
   }
-  const lexer = new QueryLexer(
+  const lexer = new BoundedSqlLexer(
     source,
     slot.source.from,
     slot.source.to,
@@ -1352,7 +1137,10 @@ export function recognizeSqlRelationQuerySite(
   while (true) {
     const token = lexer.next();
     if (lexer.resource) {
-      return unavailable("resource-limit", lexer.resource);
+      return unavailable(
+        "resource-limit",
+        querySiteLexerResource(lexer.resource),
+      );
     }
     const frame = topFrame(frames);
     if (!token || token.from > position) {
