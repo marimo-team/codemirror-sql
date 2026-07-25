@@ -26,6 +26,7 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:worker-placement": "node ./scripts/worker-placement.mjs",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
+    "bench:catalog-boundary": "vitest bench --run src/vnext/__tests__/relation-catalog-boundary.bench.ts",
     "bench:local-relation-site": "vitest bench --run src/vnext/__tests__/local-relation-site.bench.ts",
     "bench:parser-adapter": "vitest bench --run src/vnext/__tests__/node-sql-parser-adapter.bench.ts",
     "bench:query-site": "vitest bench --run src/vnext/__tests__/query-site.bench.ts",

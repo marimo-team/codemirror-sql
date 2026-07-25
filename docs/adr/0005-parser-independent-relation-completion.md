@@ -347,7 +347,14 @@ search request contains only copied, recursively frozen plain data:
 The `AbortSignal` is passed separately. Providers never receive a session,
 revision, `EditorState`, DOM object, credential object, or arbitrary live host
 context. Connection identity belongs in the catalog scope; live resources stay
-inside the provider closure.
+inside the provider closure. The provider object is caller-owned. The service
+captures its own-data callbacks once and owns searches, subscriptions, and
+their cleanup, but does not imply provider-wide disposal. Provider callbacks
+are closure functions with a declared `this: void` contract and are invoked
+with `this === undefined`; mutable receiver state is not part of the provider
+API. Unrelated own configuration fields are ignored, while inherited callbacks
+and accessors are rejected. An own optional subscription value of `undefined`
+is normalized as omitted.
 
 A returned relation contains:
 
@@ -363,7 +370,10 @@ A returned relation contains:
 
 The initial closed component roles are `catalog`, `schema`, `project`,
 `dataset`, and `relation`. Each dialect accepts only its documented role
-sequences, and the final component is always `relation`.
+sequences, and the final component is always `relation`. The provider's
+`quoted` bit is positive catalog evidence that the canonical decoded spelling
+is quoted; it is never insertion SQL. The dialect still owns delimiters,
+escaping, reserved-word quoting, and rendering.
 
 The service never invents an unqualified candidate from an absolute path. The
 provider proves matching and addressability through `matchQuality` and
@@ -397,7 +407,25 @@ as an unknown-object diagnostic.
 Provider responses are decoded from `unknown` using bounded own enumerable
 data properties and copied into fresh frozen current-realm objects. Accessors,
 throwing proxies, unexpected keys, oversized strings or arrays, and malformed
-closed values fail without exposing raw errors.
+closed values fail without exposing raw errors. One malformed relation rejects
+the whole page: silently retaining other entities while preserving the
+provider's coverage claim would create false authority. Entity IDs must be
+unique within a page. Their stability across searches and epochs is a provider
+promise used for provenance, not authority the service can infer by generic
+deduplication. Shared input identities are allowed, but each occurrence is
+decoded, budgeted, and copied independently, so aliasing cannot retain mutable
+provider state or bypass aggregate limits.
+
+Both the complete canonical role sequence and the suffix selected by
+`completionPathStart` must be legal for the registered dialect. The boundary
+pre-renders the selected suffix from fresh decoded data so later scheduling and
+composition never touch raw provider objects or provider-supplied SQL.
+
+The initial vertical slice validates one bounded page and reports paginated
+coverage as incomplete; it does not automatically follow or merge continuation
+tokens. Continuation tokens are opaque provider state. They are bounded,
+retained only with their page/work state, and never included in completion
+items, logs, errors, or revision events.
 
 The core also provides a provisional `createInMemoryRelationCatalog` helper for
 bounded readonly relation data. It indexes stable IDs, kinds, role-bearing
@@ -439,8 +467,20 @@ A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different
 epochs are never merged.
 
+Any successfully decoded response status (`ready`, `loading`, or `failed`) may
+establish the first epoch baseline. Equal-epoch responses for different exact
+searches remain usable; only the epoch observation is a duplicate. A terminal
+`loading` response requires a higher epoch before that exact search can become
+ready. Providers without subscriptions may return `loading`, but they cannot
+cause automatic refresh; a later explicit request must observe the higher
+epoch. Failed responses are attempt evidence: `next-request` may recover at
+the same epoch, while `after-invalidation` and `never` create bounded retry
+gates rather than cached search results.
+
 The service reference-counts one provider subscription per provider
 configuration and scope, then fans invalidation out to subscribed sessions.
+The installed callback closure supplies authenticated provider and scope
+identity; the untrusted invalidation payload therefore contains only an epoch.
 Subscription membership is installed atomically before a provider can call
 back synchronously. A newly joining session captures an already-observed epoch
 without a synthetic revision bump. Disposal removes membership before
@@ -639,7 +679,7 @@ The initial checked limits are:
 | Plain-text detail | 1,024 UTF-16 units |
 | Continuation token | 2,048 UTF-16 units |
 | Decoded response aggregate | 65,536 UTF-16 units |
-| Decoded response own keys | 1,024 |
+| Decoded response own keys | 16,384 aggregate traversal occurrences |
 | Decoded response nesting depth | 8 |
 | Service catalog cache | 256 entries and 2 MiB estimated retained bytes |
 | Service-wide active catalog searches | 8 |

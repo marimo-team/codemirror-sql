@@ -130,6 +130,24 @@ const provider: SqlRelationCatalogProvider = {
 };
 void provider;
 
+const receiverDependentSearch = async function (
+  this: { readonly id: string },
+  _request: SqlCatalogSearchRequest,
+  _signal: AbortSignal,
+): Promise<SqlCatalogSearchResponse> {
+  return {
+    coverage: { kind: "complete" },
+    epoch: { generation: 0, token: this.id },
+    relations: [],
+    status: "ready",
+  };
+};
+const receiverDependentProvider: SqlRelationCatalogProvider = {
+  id: "receiver-dependent",
+  // @ts-expect-error provider callbacks are this-free closures
+  search: receiverDependentSearch,
+};
+
 const relationPath = [
   { quoted: false, role: "catalog", value: "memory" },
   { quoted: false, role: "schema", value: "main" },
@@ -309,5 +327,6 @@ void mismatchedItem;
 void openWithRegions;
 void openWithoutRegions;
 void providerRenderedSql;
+void receiverDependentProvider;
 void synchronousProvider;
 void undefinedContext;
