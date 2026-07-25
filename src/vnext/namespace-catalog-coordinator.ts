@@ -356,18 +356,20 @@ function request(
       status: "usable",
     }));
   }
-  let resolveResult:
-    (value: SqlNamespaceCatalogSearchOutcome) => void =
-      (): void => {};
+  const resolver: {
+    value:
+      | ((value: SqlNamespaceCatalogSearchOutcome) => void)
+      | null;
+  } = { value: null };
   const result = new Promise<SqlNamespaceCatalogSearchOutcome>(
     (resolve) => {
-      resolveResult = resolve;
+      resolver.value = resolve;
     },
   );
   const consumer: ConsumerState = {
     controller: new AbortController(),
     owner,
-    resolve: resolveResult,
+    resolve: resolver.value,
     settled: false,
   };
   owner.active = consumer;

@@ -8,6 +8,7 @@ import {
   prepareSqlNamespaceCatalogSearch,
 } from "../namespace-completion.js";
 import type {
+  SqlNamespaceCatalogResolvedContainer,
   SqlNamespaceCatalogSearchRequest,
 } from "../namespace-catalog-types.js";
 import type { SqlCatalogEpoch } from "../relation-completion-types.js";
@@ -91,12 +92,15 @@ describe("namespace catalog coordinator", () => {
       searches.push(request);
       return response(request);
     });
-    const outcome = await owner.request(input()).result;
+    const outcome = await owner.request({
+      ...input(),
+      prefix: { quoted: true, value: "ma" },
+    }).result;
     expect(searches).toHaveLength(1);
     expect(searches[0]).toMatchObject({
       dialectId: "duckdb",
       limit: 10,
-      prefix: { value: "ma" },
+      prefix: { quoted: true, value: "ma" },
       qualifier: [{ value: "memory" }],
       scope: "connection",
     });
@@ -169,7 +173,7 @@ describe("namespace catalog coordinator", () => {
     });
     expect(signals[1]?.aborted).toBe(true);
     pending[0]?.resolve({});
-    pending[1]?.resolve({});
+    pending[1]?.reject(new Error("late"));
     await Promise.resolve();
   });
 
@@ -188,6 +192,7 @@ describe("namespace catalog coordinator", () => {
     const first = owner.request(input("first"));
     const second = other.owner.request(input("second"));
     owner.dispose();
+    owner.dispose();
     await expect(first.result).resolves.toEqual({
       reason: "disposed",
       status: "unavailable",
@@ -198,6 +203,7 @@ describe("namespace catalog coordinator", () => {
     });
     await Promise.resolve();
     expect(secondSettled).toBe(false);
+    coordinator.dispose();
     coordinator.dispose();
     await expect(second.result).resolves.toEqual({
       reason: "disposed",
@@ -276,10 +282,12 @@ describe("namespace catalog coordinator", () => {
       scope: "scope",
     });
     if (prepared.status !== "prepared") throw new Error("prepared");
-    expect(await prepared.owner.request({
+    const invalidTicket = prepared.owner.request({
       ...input(),
       limit: 0,
-    }).result).toMatchObject({
+    });
+    invalidTicket.cancel();
+    expect(await invalidTicket.result).toMatchObject({
       reason: "invalid-request",
       status: "unavailable",
     });
@@ -372,6 +380,29 @@ describe("namespace completion composer", () => {
     const catalog = catalogResponse();
     const main = catalog.containers[0];
     if (!main) throw new Error("main");
+    const parent = main.canonicalPath[0];
+    const child = main.canonicalPath[1];
+    if (!child) throw new Error("child");
+    const copied: SqlNamespaceCatalogResolvedContainer = {
+      ...main,
+      canonicalPath: [
+        parent,
+        { ...child, quoted: true },
+      ],
+      containerEntityId: "main-copy",
+      provenance: {
+        ...main.provenance,
+        containerEntityId: "main-copy",
+      },
+    };
+    const tied: SqlNamespaceCatalogResolvedContainer = {
+      ...main,
+      containerEntityId: "aaa",
+      provenance: {
+        ...main.provenance,
+        containerEntityId: "aaa",
+      },
+    };
     const duplicated = {
       ...readyOutcome,
       response: {
@@ -379,14 +410,8 @@ describe("namespace completion composer", () => {
         containers: [
           ...catalog.containers,
           main,
-          {
-            ...main,
-            containerEntityId: "main-copy",
-            provenance: {
-              ...main.provenance,
-              containerEntityId: "main-copy",
-            },
-          },
+          copied,
+          tied,
         ],
       },
     };
@@ -398,7 +423,7 @@ describe("namespace completion composer", () => {
       replacementRange: { from: 10, to: 12 },
     });
     expect(all?.value.items.map((value) => value.label))
-      .toEqual(["main", "main", "metrics"]);
+      .toEqual(["main", "main", "main", "metrics"]);
     const composition = composeSqlNamespaceCompletion({
       matchPrefix: (candidate, prefix) =>
         candidate.value.startsWith(prefix.value)
@@ -414,6 +439,10 @@ describe("namespace completion composer", () => {
       value: {
         isIncomplete: false,
         items: [{
+          edit: { from: 10, insert: "main", to: 12 },
+          label: "main",
+          role: "schema",
+        }, {
           edit: { from: 10, insert: "main", to: 12 },
           label: "main",
           role: "schema",

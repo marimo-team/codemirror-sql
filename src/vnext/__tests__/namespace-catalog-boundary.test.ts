@@ -61,6 +61,11 @@ describe("namespace catalog boundary", () => {
     expect(context?.id).toBe("namespaces");
     context?.search(request(), new AbortController().signal);
     expect(receivers).toEqual([undefined]);
+    expect(Reflect.apply(
+      resolveSqlNamespaceCatalogProvider,
+      undefined,
+      [{}],
+    )).toBeNull();
     expect(Object.isFrozen(handle)).toBe(true);
   });
 
@@ -136,6 +141,24 @@ describe("namespace catalog boundary", () => {
     const accessor = { ...valid };
     Object.defineProperty(accessor, "prefix", { get: vi.fn() });
     cases.push(accessor);
+    cases.push({
+      ...valid,
+      qualifier: new Proxy([], {
+        getOwnPropertyDescriptor: (_target, key) => {
+          if (key === "length") throw new Error("length trap");
+          return undefined;
+        },
+      }),
+    });
+    cases.push({
+      ...valid,
+      qualifier: new Proxy([{ quoted: false, value: "x" }], {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === "0") throw new Error("element trap");
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      }),
+    });
     for (const value of cases) {
       expect(createSqlNamespaceCatalogSearchRequest(value).status)
         .toBe("malformed");
@@ -208,6 +231,41 @@ describe("namespace catalog boundary", () => {
     });
   });
 
+  it("orders tied identities and accepts quoted paths without detail", () => {
+    const provider = captured();
+    const base = {
+      canonicalPath: [{
+        quoted: true,
+        role: "schema",
+        value: "Main",
+      }],
+      insertText: "\"Main\"",
+      matchQuality: "exact",
+    };
+    const decoded = decodeSqlNamespaceCatalogSearchResponse(
+      provider,
+      request(),
+      {
+        containers: [
+          { ...base, containerEntityId: "z" },
+          { ...base, containerEntityId: "a" },
+        ],
+        coverage: "complete",
+        epoch,
+        status: "ready",
+      },
+    );
+    expect(decoded).toMatchObject({
+      status: "accepted",
+      value: {
+        containers: [
+          { containerEntityId: "a" },
+          { containerEntityId: "z" },
+        ],
+      },
+    });
+  });
+
   it("rejects malformed, conflicting, stale, and oversized responses", () => {
     const provider = captured();
     const valid = {
@@ -245,6 +303,7 @@ describe("namespace catalog boundary", () => {
         (_, index) => container(String(index), "schema", String(index)),
       ) },
       conflicting,
+      { ...valid, containers: [null] },
       { epoch, extra: true, status: "loading" },
       { code: "bad", epoch, retry: "never", status: "failed" },
       { code: "unknown", epoch, retry: "bad", status: "failed" },
@@ -261,5 +320,10 @@ describe("namespace catalog boundary", () => {
         value,
       ).status).toBe("malformed");
     }
+    expect(Reflect.apply(
+      decodeSqlNamespaceCatalogSearchResponse,
+      undefined,
+      [{}, request(), valid],
+    )).toMatchObject({ status: "malformed" });
   });
 });
