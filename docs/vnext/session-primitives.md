@@ -8,6 +8,9 @@ opaque revisions, dialect registration, lifecycle management, and
 parser-independent relation completion. Diagnostics, hover, navigation, and
 general expression completion are not yet available.
 
+CodeMirror consumers should use the separate
+[vNext CodeMirror adapter](./codemirror-adapter.md).
+
 See [source coordinates](./source-coordinates.md) for the shared UTF-16 range
 contract and the internal immutable source-snapshot model.
 

@@ -231,6 +231,7 @@ import {
   type SqlEmbeddedRegion,
   type SqlTextRange,
 } from "@marimo-team/codemirror-sql/vnext";
+import { sqlEditor } from "@marimo-team/codemirror-sql/vnext/codemirror";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
 import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
 
@@ -245,6 +246,10 @@ const extensions: Extension[] = [
 const parser = new NodeSqlParser();
 const service = createSqlLanguageService<HostContext>({
   dialects: [duckdbDialect()],
+});
+const editorSupport = sqlEditor({
+  initialContext: { dialect: "duckdb", engine: "local" },
+  service,
 });
 const embeddedRegions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
@@ -262,6 +267,7 @@ session.update({
 });
 
 void extensions;
+void editorSupport.extension;
 void parser;
 void range;
 void session;
@@ -278,6 +284,7 @@ void duckdbKeywords;
 import * as api from "@marimo-team/codemirror-sql";
 import * as dialects from "@marimo-team/codemirror-sql/dialects";
 import * as vnext from "@marimo-team/codemirror-sql/vnext";
+import * as vnextCodeMirror from "@marimo-team/codemirror-sql/vnext/codemirror";
 import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
 import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
 
@@ -295,6 +302,9 @@ if (
   typeof vnext.postgresDialect !== "function"
 ) {
   throw new Error("vNext package exports are incomplete");
+}
+if (typeof vnextCodeMirror.sqlEditor !== "function") {
+  throw new Error("vNext CodeMirror package exports are incomplete");
 }
 for (const dialect of [
   vnext.bigQueryDialect(),
