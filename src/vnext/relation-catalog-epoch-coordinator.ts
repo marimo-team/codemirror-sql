@@ -226,6 +226,7 @@ const ACTIVE_RESULT: SqlCatalogMembershipActivationResult =
 const SUBMITTED_RESULT: SqlCatalogResponseEpochSubmissionResult =
   Object.freeze({ status: "submitted" });
 const NO_PREPARE_CATALOG_CHANGE = (): null => null;
+const IGNORE_CLEANUP_REJECTION = (): void => {};
 
 function unavailableActivation(
   reason: Exclude<
@@ -375,7 +376,8 @@ function cleanupSubscription(subscription: SubscriptionState): void {
   subscription.cleanupCalled = true;
   subscription.cleanup = null;
   try {
-    Reflect.apply(cleanup, undefined, []);
+    const result = Reflect.apply(cleanup, undefined, []);
+    void Promise.resolve(result).catch(IGNORE_CLEANUP_REJECTION);
   } catch {
     // Provider cleanup is isolated after state is inert.
   }

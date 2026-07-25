@@ -12,7 +12,9 @@ export interface SqlDisposable {
   readonly dispose: (this: void) => void;
 }
 
-export type SqlCatalogSubscriptionCleanup = (this: void) => void;
+export type SqlCatalogSubscriptionCleanup = (
+  this: void,
+) => void | PromiseLike<void>;
 
 export type SqlCatalogContainerRole =
   | "catalog"

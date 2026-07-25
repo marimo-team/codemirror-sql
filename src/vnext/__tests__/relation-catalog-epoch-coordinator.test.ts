@@ -1332,6 +1332,74 @@ describe("hostile subscription lifecycle", () => {
     expect(failedTarget.dispatched).toBe(0);
   });
 
+  it("drains rejected and hostile cleanup results after making state inert", async () => {
+    let asyncCleanupCalls = 0;
+    const rejectingOwner = coordinator(
+      () => async () => {
+        asyncCleanupCalls += 1;
+        throw new Error("async cleanup failed");
+      },
+    );
+    const rejectingMembership = active(rejectingOwner, "scope");
+    rejectingMembership.dispose();
+    rejectingMembership.dispose();
+
+    let applyCalls = 0;
+    let thenReads = 0;
+    const thenProperty = ["th", "en"].join("");
+    const hostileResult = Object.defineProperty({}, thenProperty, {
+      get() {
+        thenReads += 1;
+        throw new Error("hostile then getter");
+      },
+    });
+    const hostileCleanup = new Proxy(() => hostileResult, {
+      apply(target, receiver, argumentsList) {
+        applyCalls += 1;
+        expect(receiver).toBeUndefined();
+        return Reflect.apply(target, receiver, argumentsList);
+      },
+    });
+    const hostileOwner = coordinator(() => hostileCleanup);
+    const hostileMembership = active(hostileOwner, "scope");
+    hostileMembership.dispose();
+    hostileMembership.dispose();
+
+    let thenCalls = 0;
+    let reentrantOwner: SqlCatalogEpochCoordinator;
+    const reentrantResult = Object.defineProperty(
+      {},
+      thenProperty,
+      {
+        value: (resolve: () => void): void => {
+          thenCalls += 1;
+          const replacement = active(
+            reentrantOwner,
+            "replacement",
+          );
+          replacement.dispose();
+          resolve();
+        },
+      },
+    );
+    const reentrantCleanup = () => reentrantResult;
+    let reentrantSubscriptions = 0;
+    reentrantOwner = coordinator(() => {
+      reentrantSubscriptions += 1;
+      return reentrantSubscriptions === 1
+        ? reentrantCleanup
+        : () => {};
+    });
+    active(reentrantOwner, "scope").dispose();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(asyncCleanupCalls).toBe(1);
+    expect(applyCalls).toBe(1);
+    expect(thenReads).toBe(1);
+    expect(thenCalls).toBe(1);
+  });
+
   it("retries a failed subscription only in a new last-owner incarnation", () => {
     const listeners: RawInvalidationListener[] = [];
     let attempts = 0;

@@ -524,11 +524,12 @@ and disables automatic invalidation for the live scope; explicit search
 remains available.
 The returned cleanup closure is itself untrusted: the service captures only a
 function, calls it with `this === undefined` at most once, and isolates
-malformed values and thrown cleanup. A closure avoids a structural TypeScript
-contract that would accept class instances or inherited methods which the
-hostile runtime boundary could not safely validate. Dropping the last owner
-removes the complete scope incarnation before cleanup. A later join creates a
-new unobserved incarnation and may attempt a fresh subscription.
+malformed values, thrown cleanup, and rejected or hostile thenable results.
+Detached cleanup settlement retains no coordinator state. A closure avoids a
+structural TypeScript contract that would accept class instances or inherited
+methods which the hostile runtime boundary could not safely validate. Dropping
+the last owner removes the complete scope incarnation before cleanup. A later
+join creates a new unobserved incarnation and may attempt a fresh subscription.
 
 Malformed, duplicate, stale, or token-conflicting invalidations do not mutate
 state and do not tear down an otherwise valid subscription. Every raw callback
