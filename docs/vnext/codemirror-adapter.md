@@ -47,6 +47,29 @@ The adapter installs one coherent `autocompletion` configuration. Additional
 sources belong in `autocomplete.externalSources`; consumers should not install
 a second independently configured `autocompletion` extension.
 
+Rich completion details are opt-in through
+`autocomplete.infoResolver`. The resolver receives the immutable core item and
+an `AbortSignal`, and returns a DOM resource with an explicit `destroy`
+callback. The adapter aborts pending work and destroys resolved resources when
+the selected option, document input, context, regions, or view lifetime
+changes. Resolver failures are contained and simply omit the detail panel.
+
+```ts
+const support = sqlEditor({
+  autocomplete: {
+    infoResolver: async (item, { signal }) => {
+      const metadata = await loadMetadata(item, { signal });
+      const dom = document.createElement("div");
+      const root = createRoot(dom);
+      root.render(renderMetadata(metadata));
+      return { dom, destroy: () => root.unmount() };
+    },
+  },
+  initialContext,
+  service,
+});
+```
+
 ## Atomic inputs
 
 Context and document changes can share one CodeMirror transaction:

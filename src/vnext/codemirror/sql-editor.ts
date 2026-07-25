@@ -3,6 +3,8 @@ import {
   closeCompletion,
   completionStatus,
   pickedCompletion,
+  selectedCompletion,
+  selectedCompletionIndex,
   startCompletion,
   type Completion,
   type CompletionContext,
@@ -25,6 +27,10 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import type {
+  SqlCompletionInfoResolver,
+  SqlDisposableCompletionInfo,
+} from "./relation-completion-types.js";
+import type {
   SqlCompletionItem,
   SqlCompletionRefreshToken,
   SqlCompletionResult,
@@ -46,6 +52,7 @@ export interface SqlEditorAutocompleteOptions {
   readonly closeOnBlur?: boolean;
   readonly defaultKeymap?: boolean;
   readonly externalSources?: readonly CompletionSource[];
+  readonly infoResolver?: SqlCompletionInfoResolver;
   readonly maxRenderedOptions?: number;
   readonly selectOnOpen?: boolean;
   readonly updateSyncTime?: number;
@@ -110,6 +117,12 @@ interface CompletionIntent {
   readonly capture: CompletionCapture;
   readonly sequence: number;
   readonly token: SqlCompletionRefreshToken;
+}
+
+interface ActiveCompletionInfo {
+  readonly controller: AbortController;
+  disposed: boolean;
+  resource: SqlDisposableCompletionInfo | null;
 }
 
 const defaultRuntime: SqlEditorRuntime = Object.freeze({
@@ -222,6 +235,12 @@ export function createSqlEditorInternal<
       return next;
     },
   });
+  const autocomplete = options.autocomplete ?? {};
+  const {
+    externalSources = [],
+    infoResolver,
+    ...autocompleteOptions
+  } = autocomplete;
 
   let plugin: ViewPlugin<SqlEditorPlugin>;
   let completionSource: CompletionSource;
@@ -232,10 +251,14 @@ export function createSqlEditorInternal<
     #active: ActiveCompletion | null = null;
     #contextGeneration = 0;
     #destroyed = false;
+    #disposingInfo = false;
     #hasEmbeddedRegions: boolean;
+    #info: ActiveCompletionInfo | null = null;
     #intent: CompletionIntent | null = null;
     #intentTimer: ReturnType<typeof setTimeout> | null = null;
     #lastCompletionStatus: ReturnType<typeof completionStatus>;
+    #lastSelectedCompletion: Completion | null;
+    #lastSelectedCompletionIndex: number | null;
     #refreshScheduled = false;
     #sequence = 0;
     readonly #subscription;
@@ -251,6 +274,10 @@ export function createSqlEditorInternal<
       });
       this.#hasEmbeddedRegions = initialRegions.length > 0;
       this.#lastCompletionStatus = completionStatus(view.state);
+      this.#lastSelectedCompletion = selectedCompletion(view.state);
+      this.#lastSelectedCompletionIndex = selectedCompletionIndex(
+        view.state,
+      );
       this.#subscription = this.#session.onDidChange((event) => {
         if (event.refreshToken === null) {
           this.#clearCompletionState();
@@ -279,6 +306,32 @@ export function createSqlEditorInternal<
       this.#active = null;
     }
 
+    #disposeInfo(info: ActiveCompletionInfo): void {
+      if (info.disposed) return;
+      info.disposed = true;
+      if (this.#info === info) this.#info = null;
+      const resource = info.resource;
+      info.resource = null;
+      const wasDisposingInfo = this.#disposingInfo;
+      this.#disposingInfo = true;
+      try {
+        try {
+          info.controller.abort();
+        } catch {
+          // Continue to resource cleanup.
+        }
+        resource?.destroy();
+      } catch {
+        // Host cleanup must not escape into CodeMirror lifecycle hooks.
+      } finally {
+        this.#disposingInfo = wasDisposingInfo;
+      }
+    }
+
+    #clearInfo(): void {
+      if (this.#info !== null) this.#disposeInfo(this.#info);
+    }
+
     #clearIntent(): void {
       if (this.#intentTimer !== null) {
         runtime.clearTimeout(this.#intentTimer);
@@ -290,6 +343,7 @@ export function createSqlEditorInternal<
     #clearCompletionState(): void {
       this.#sequence += 1;
       this.#abortActive();
+      this.#clearInfo();
       this.#clearIntent();
       this.#refreshScheduled = false;
     }
@@ -402,6 +456,59 @@ export function createSqlEditorInternal<
         label: item.label,
         type: completionType(item),
       };
+      if (infoResolver !== undefined) {
+        completion.info = async () => {
+          if (this.#disposingInfo) return null;
+          this.#clearInfo();
+          if (
+            !this.#captureIsCurrent(capture) ||
+            !this.#session.isCurrent(revision)
+          ) {
+            return null;
+          }
+          const info: ActiveCompletionInfo = {
+            controller: new AbortController(),
+            disposed: false,
+            resource: null,
+          };
+          this.#info = info;
+          let resource: SqlDisposableCompletionInfo | null;
+          try {
+            resource = await infoResolver(item, {
+              signal: info.controller.signal,
+            });
+          } catch {
+            this.#disposeInfo(info);
+            return null;
+          }
+          if (
+            info.disposed ||
+            this.#info !== info ||
+            !this.#captureIsCurrent(capture) ||
+            !this.#session.isCurrent(revision)
+          ) {
+            const wasDisposingInfo = this.#disposingInfo;
+            this.#disposingInfo = true;
+            try {
+              resource?.destroy();
+            } catch {
+              // Host cleanup must not escape from a stale resolver.
+            } finally {
+              this.#disposingInfo = wasDisposingInfo;
+            }
+            return null;
+          }
+          if (resource === null) {
+            this.#disposeInfo(info);
+            return null;
+          }
+          info.resource = resource;
+          return {
+            dom: resource.dom,
+            destroy: () => this.#disposeInfo(info),
+          };
+        };
+      }
       return item.detail === undefined
         ? completion
         : { ...completion, detail: item.detail };
@@ -584,6 +691,19 @@ export function createSqlEditorInternal<
         this.#clearCompletionState();
       }
       const nextCompletionStatus = completionStatus(update.state);
+      const nextSelectedCompletion = selectedCompletion(update.state);
+      const nextSelectedCompletionIndex = selectedCompletionIndex(
+        update.state,
+      );
+      if (
+        nextSelectedCompletion !== this.#lastSelectedCompletion ||
+        nextSelectedCompletionIndex !==
+          this.#lastSelectedCompletionIndex
+      ) {
+        this.#clearInfo();
+      }
+      this.#lastSelectedCompletion = nextSelectedCompletion;
+      this.#lastSelectedCompletionIndex = nextSelectedCompletionIndex;
       if (
         nextCompletionStatus === null &&
         (this.#lastCompletionStatus === "active" ||
@@ -615,11 +735,6 @@ export function createSqlEditorInternal<
     const instance = context.view?.plugin(plugin);
     return instance?.complete(context) ?? null;
   };
-  const autocomplete = options.autocomplete ?? {};
-  const {
-    externalSources = [],
-    ...autocompleteOptions
-  } = autocomplete;
   const escapeKeymap = Prec.high(
     keymap.of([{
       key: "Escape",

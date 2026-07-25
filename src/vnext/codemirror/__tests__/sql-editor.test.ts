@@ -2,7 +2,10 @@ import {
   closeCompletion,
   completionStatus,
   currentCompletions,
+  setSelectedCompletion,
   startCompletion,
+  type Completion,
+  type CompletionInfo,
 } from "@codemirror/autocomplete";
 import { EditorSelection, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -283,6 +286,15 @@ async function waitForActiveCompletion(view: EditorView): Promise<void> {
   });
 }
 
+async function resolveCompletionInfo(
+  completion: Completion,
+): Promise<CompletionInfo> {
+  if (typeof completion.info !== "function") {
+    throw new Error("Expected a completion info resolver");
+  }
+  return completion.info(completion);
+}
+
 describe("sqlEditor", () => {
   it("maps current service completions and applies the exact core edit", async () => {
     const service = createSqlLanguageService<TestContext>({
@@ -322,6 +334,349 @@ describe("sqlEditor", () => {
 
     view.destroy();
     service.dispose();
+  });
+
+  it("owns rich completion info until CodeMirror destroys it", async () => {
+    const item = completionItem();
+    const destroys: Array<ReturnType<typeof vi.fn>> = [];
+    const resolver = vi.fn((resolvedItem, { signal }) => {
+      const dom = document.createElement("div");
+      const index = destroys.length;
+      const destroy = vi.fn();
+      destroys.push(destroy);
+      dom.dataset.resolverIndex = String(index);
+      return { dom, destroy, signal };
+    });
+    const harness = fakeService((revision) =>
+      readyResult(revision, [item])
+    );
+    const support = sqlEditor({
+      autocomplete: { infoResolver: resolver },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    const info = await resolveCompletionInfo(completion);
+
+    expect(resolver).toHaveBeenCalledWith(
+      item,
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(info).toMatchObject({ dom: expect.any(Node) });
+    if (info === null || info instanceof Node) {
+      throw new Error("Expected disposable completion info");
+    }
+    const index = Number(
+      (info.dom as HTMLElement).dataset.resolverIndex,
+    );
+    info.destroy?.();
+    info.destroy?.();
+    expect(destroys[index]).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects info requests reentered during host cleanup", async () => {
+    let reenter = () => undefined;
+    const resolver = vi.fn(() => ({
+      dom: document.createElement("div"),
+      destroy: () => reenter(),
+    }));
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: { infoResolver: resolver },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    await resolveCompletionInfo(completion);
+    const callsBeforeReplacement = resolver.mock.calls.length;
+    reenter = () => {
+      void resolveCompletionInfo(completion);
+    };
+
+    await resolveCompletionInfo(completion);
+    expect(resolver).toHaveBeenCalledTimes(
+      callsBeforeReplacement + 1,
+    );
+  });
+
+  it("aborts superseded info and destroys its late resource", async () => {
+    let resolveFirst:
+      | ((value: {
+          readonly dom: Node;
+          readonly destroy: () => void;
+        }) => void)
+      | undefined;
+    const firstDestroy = vi.fn();
+    const signals: AbortSignal[] = [];
+    const resolver = vi.fn((_item, { signal }) => {
+      signals.push(signal);
+      if (signals.length === 1) {
+        return new Promise<{
+          readonly dom: Node;
+          readonly destroy: () => void;
+        }>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve({
+        dom: document.createElement("div"),
+        destroy: vi.fn(),
+      });
+    });
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: { infoResolver: resolver },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    const first = resolveCompletionInfo(completion);
+    const second = resolveCompletionInfo(completion);
+    expect(signals[0]?.aborted).toBe(true);
+
+    resolveFirst?.({
+      dom: document.createElement("div"),
+      destroy: firstDestroy,
+    });
+    expect(await first).toBeNull();
+    expect(firstDestroy).toHaveBeenCalledTimes(1);
+    expect(await second).toMatchObject({ dom: expect.any(Node) });
+  });
+
+  it("disposes info when selection moves to an external option", async () => {
+    let resolveInfo:
+      | ((value: {
+          readonly dom: Node;
+          readonly destroy: () => void;
+        }) => void)
+      | undefined;
+    const destroy = vi.fn();
+    let signal: AbortSignal | undefined;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 14,
+          options: [{ label: "users_external" }],
+        })],
+        infoResolver: (_item, context) => {
+          signal = context.signal;
+          return new Promise((resolve) => {
+            resolveInfo = resolve;
+          });
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    await vi.waitFor(() => {
+      expect(
+        currentCompletions(view.state).map((item) => item.label),
+      ).toContain("users_external");
+    });
+    const completions = currentCompletions(view.state);
+    const coreIndex = completions.findIndex(
+      (completion) => completion.label === "users",
+    );
+    const externalIndex = completions.findIndex(
+      (completion) => completion.label === "users_external",
+    );
+    const core = completions[coreIndex];
+    if (!core || coreIndex < 0 || externalIndex < 0) {
+      throw new Error("Expected core and external completions");
+    }
+    view.dispatch({ effects: setSelectedCompletion(coreIndex) });
+    const pending = resolveCompletionInfo(core);
+    view.dispatch({ effects: setSelectedCompletion(externalIndex) });
+
+    expect(signal?.aborted).toBe(true);
+    resolveInfo?.({ dom: document.createElement("div"), destroy });
+    await expect(pending).resolves.toBeNull();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys resolved info when selection moves away", async () => {
+    const destroys: Array<ReturnType<typeof vi.fn>> = [];
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 14,
+          options: [{ label: "users_external" }],
+        })],
+        infoResolver: () => {
+          const dom = document.createElement("div");
+          const destroy = vi.fn();
+          const index = destroys.push(destroy) - 1;
+          dom.dataset.resolverIndex = String(index);
+          return { dom, destroy };
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    await vi.waitFor(() => {
+      expect(
+        currentCompletions(view.state).map((item) => item.label),
+      ).toContain("users_external");
+    });
+    const completions = currentCompletions(view.state);
+    const coreIndex = completions.findIndex(
+      (completion) => completion.label === "users",
+    );
+    const externalIndex = completions.findIndex(
+      (completion) => completion.label === "users_external",
+    );
+    const core = completions[coreIndex];
+    if (!core || coreIndex < 0 || externalIndex < 0) {
+      throw new Error("Expected core and external completions");
+    }
+    view.dispatch({ effects: setSelectedCompletion(coreIndex) });
+    const info = await resolveCompletionInfo(core);
+    if (info === null || info instanceof Node) {
+      throw new Error("Expected disposable completion info");
+    }
+    const index = Number(
+      (info.dom as HTMLElement).dataset.resolverIndex,
+    );
+    view.dispatch({ effects: setSelectedCompletion(externalIndex) });
+
+    expect(destroys[index]).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts pending info when editor input changes", async () => {
+    let resolveInfo:
+      | ((value: {
+          readonly dom: Node;
+          readonly destroy: () => void;
+        }) => void)
+      | undefined;
+    const destroy = vi.fn();
+    let signal: AbortSignal | undefined;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        infoResolver: (_item, context) => {
+          signal = context.signal;
+          return new Promise((resolve) => {
+            resolveInfo = resolve;
+          });
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    const pending = resolveCompletionInfo(completion);
+    view.dispatch({ selection: { anchor: 0 } });
+    expect(signal?.aborted).toBe(true);
+
+    resolveInfo?.({ dom: document.createElement("div"), destroy });
+    expect(await pending).toBeNull();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    await expect(resolveCompletionInfo(completion)).resolves.toBeNull();
+  });
+
+  it("omits null completion info", async () => {
+    const resolver = vi.fn(() => null);
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: { infoResolver: resolver },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    await expect(resolveCompletionInfo(completion)).resolves.toBeNull();
+  });
+
+  it("contains info resolver and cleanup failures", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        infoResolver: () => {
+          throw new Error("resolver failed");
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    startCompletion(view);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion) throw new Error("Expected a completion");
+    await expect(resolveCompletionInfo(completion)).resolves.toBeNull();
+
+    const cleanupSupport = sqlEditor({
+      autocomplete: {
+        infoResolver: () => ({
+          dom: document.createElement("div"),
+          destroy: () => {
+            throw new Error("cleanup failed");
+          },
+        }),
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const cleanupView = createView(cleanupSupport.extension);
+    startCompletion(cleanupView);
+    await waitForActiveCompletion(cleanupView);
+    const cleanupCompletion = currentCompletions(cleanupView.state)[0];
+    if (!cleanupCompletion) throw new Error("Expected a completion");
+    const info = await resolveCompletionInfo(cleanupCompletion);
+    if (info === null || info instanceof Node) {
+      throw new Error("Expected disposable completion info");
+    }
+    expect(() => info.destroy?.()).not.toThrow();
   });
 
   it("maps embedded regions through its own non-overlapping apply edit", async () => {
