@@ -16,6 +16,7 @@ import type {
   SqlCatalogSearchResponse,
   SqlCompletionCancellationReason,
   SqlCompletionIssue,
+  SqlDisposable,
   SqlRelationCompletionItem,
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
@@ -146,6 +147,16 @@ const receiverDependentProvider: SqlRelationCatalogProvider = {
   id: "receiver-dependent",
   // @ts-expect-error provider callbacks are this-free closures
   search: receiverDependentSearch,
+};
+
+const receiverDependentDispose = function (
+  this: { readonly id: string },
+): void {
+  void this.id;
+};
+const receiverDependentDisposable: SqlDisposable = {
+  // @ts-expect-error disposable callbacks are this-free closures
+  dispose: receiverDependentDispose,
 };
 
 const relationPath = [
@@ -328,5 +339,6 @@ void openWithRegions;
 void openWithoutRegions;
 void providerRenderedSql;
 void receiverDependentProvider;
+void receiverDependentDisposable;
 void synchronousProvider;
 void undefinedContext;

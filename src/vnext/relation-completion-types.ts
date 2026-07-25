@@ -9,7 +9,7 @@ import type {
 
 // Provisional package-private declarations until the vertical slice is proven.
 export interface SqlDisposable {
-  readonly dispose: () => void;
+  readonly dispose: (this: void) => void;
 }
 
 export type SqlCatalogContainerRole =
