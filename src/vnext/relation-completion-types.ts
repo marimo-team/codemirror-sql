@@ -187,10 +187,40 @@ export type SqlSessionChangeReason =
   | "catalog-availability"
   | "provider-configuration";
 
-export interface SqlSessionChangeEvent {
-  readonly revision: SqlRevision;
-  readonly reason: SqlSessionChangeReason;
+const completionRefreshTokenBrand: unique symbol = Symbol(
+  "SqlCompletionRefreshToken",
+);
+
+/** Opaque, in-process identity for one completion refresh intent. */
+export interface SqlCompletionRefreshToken {
+  readonly [completionRefreshTokenBrand]: "SqlCompletionRefreshToken";
 }
+
+/** @internal */
+export function createSqlCompletionRefreshToken(): SqlCompletionRefreshToken {
+  const token: SqlCompletionRefreshToken = {
+    [completionRefreshTokenBrand]: "SqlCompletionRefreshToken",
+  };
+  Object.freeze(token);
+  return token;
+}
+
+export type SqlSessionChangeEvent =
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "catalog-availability";
+      readonly refreshToken: SqlCompletionRefreshToken;
+    }
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "catalog";
+      readonly refreshToken: SqlCompletionRefreshToken | null;
+    }
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "provider-configuration";
+      readonly refreshToken: null;
+    };
 
 export type SqlCompletionTrigger =
   | {
@@ -324,6 +354,7 @@ export type SqlCompletionResult =
   | {
       readonly status: "ready";
       readonly revision: SqlRevision;
+      readonly refreshToken: SqlCompletionRefreshToken | null;
       readonly value: SqlCompletionList;
       readonly sources: readonly SqlCatalogProviderReport[];
     }
@@ -343,3 +374,12 @@ export type SqlCompletionResult =
       readonly revision: SqlRevision;
       readonly failure: SqlServiceFailure;
     };
+
+/**
+ * A completion invocation whose identity is available before provider work
+ * starts.
+ */
+export interface SqlCompletionTask
+  extends Promise<SqlCompletionResult> {
+  readonly refreshToken: SqlCompletionRefreshToken;
+}

@@ -88,18 +88,25 @@ const session = service.openDocument({
   text: "SELECT * FROM ",
 });
 
-const subscription = session.onDidChange(({ reason }) => {
-  if (reason === "catalog" || reason === "catalog-availability") {
+let completionRefreshToken: SqlCompletionRefreshToken | null = null;
+const subscription = session.onDidChange(({ refreshToken }) => {
+  if (
+    refreshToken !== null &&
+    refreshToken === completionRefreshToken
+  ) {
     // Ask the editor adapter to request completion again.
   }
 });
 
-const result = await session.complete({
+const completionTask = session.complete({
   position: 14,
   trigger: { kind: "invoked" },
 });
+completionRefreshToken = completionTask.refreshToken;
+const result = await completionTask;
 
 if (result.status === "ready" && session.isCurrent(result.revision)) {
+  completionRefreshToken = result.refreshToken;
   for (const item of result.value.items) {
     // Apply item.edit in the original document's UTF-16 coordinates.
   }
@@ -118,10 +125,21 @@ exposing provider errors or internal epochs.
 
 The interactive catalog wait is bounded from the start of `complete()`. When
 the budget expires, the session returns local evidence with a
-`catalog-loading` issue and a checked remaining intent lease. Compatible
-readiness advances the session revision and emits `catalog-availability`;
-higher provider epochs emit `catalog`. Consumers must request completion again
-and apply only results whose revision remains current.
+`catalog-loading` issue, a checked remaining intent lease, and an opaque
+`refreshToken`. Compatible readiness advances the session revision and emits
+`catalog-availability` with that exact token. A higher provider epoch emits
+`catalog` with the token only while the same soft or terminal loading intent
+remains leased; otherwise its token is `null`.
+
+Consumers compare refresh tokens by identity. A matching token is necessary,
+not sufficient, to request completion again: the document, selection, context,
+and adapter-owned intent must also remain unchanged. Tokens are in-process,
+non-serializable control identities; they expose no provider epoch, query, or
+work identity. The completion task exposes its token synchronously before
+provider work starts, so consumers can latch a matching catalog event that
+races the result. Ready results retain that token only while
+`catalog-loading` has an unexpired lease; all other ready results use `null`.
+Consumers apply only results whose revision remains current.
 
 ## Dialect registration
 

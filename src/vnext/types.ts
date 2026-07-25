@@ -138,7 +138,7 @@ export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
   readonly complete: (
     request: SqlCompletionRequest,
-  ) => Promise<SqlCompletionResult>;
+  ) => SqlCompletionTask;
   readonly onDidChange: (
     listener: (event: SqlSessionChangeEvent) => void,
   ) => SqlDisposable;
@@ -187,8 +187,8 @@ export class SqlSessionError extends Error {
 }
 import type {
   SqlCompletionRequest,
+  SqlCompletionTask,
   SqlDisposable,
   SqlRelationCatalogProvider,
-  SqlCompletionResult,
   SqlSessionChangeEvent,
 } from "./relation-completion-types.js";
