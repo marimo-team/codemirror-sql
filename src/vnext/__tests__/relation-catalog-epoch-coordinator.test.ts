@@ -236,6 +236,108 @@ describe("catalog epoch coordinator construction and membership", () => {
     expect(reads).toBe(0);
   });
 
+  it("validates, drains, and invokes the package disposal target exactly once", async () => {
+    expect(
+      Reflect.apply(createSqlCatalogEpochCoordinator, undefined, [
+        capturedProvider(),
+        undefined,
+        1,
+      ]),
+    ).toEqual({
+      reason: "invalid-disposal-target",
+      status: "unavailable",
+    });
+
+    let disposalCalls = 0;
+    const created = createSqlCatalogEpochCoordinator(
+      capturedProvider(),
+      undefined,
+      () => {
+        disposalCalls += 1;
+        throw new Error("package disposal target failed");
+      },
+    );
+    expect(created.status).toBe("created");
+    if (created.status !== "created") {
+      throw new Error("Expected a coordinator fixture");
+    }
+    expect(() => {
+      created.coordinator.dispose();
+      created.coordinator.dispose();
+    }).not.toThrow();
+    expect(disposalCalls).toBe(1);
+
+    const invalidReturn = Promise.reject(
+      new Error("invalid async package disposal"),
+    );
+    const withInvalidReturn = Reflect.apply(
+      createSqlCatalogEpochCoordinator,
+      undefined,
+      [
+        capturedProvider(),
+        undefined,
+        () => invalidReturn,
+      ],
+    );
+    expect(withInvalidReturn.status).toBe("created");
+    if (withInvalidReturn.status !== "created") {
+      throw new Error("Expected a coordinator fixture");
+    }
+    withInvalidReturn.coordinator.dispose();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("drains a plain thenable with captured Promise intrinsics after the global constructor is replaced", async () => {
+    const intrinsicPromise = Promise;
+    let thenCalls = 0;
+    const thenable = new Proxy(
+      {},
+      {
+        get(target, property, receiver): unknown {
+          if (property === "then") {
+            return (
+              _resolve: (value: unknown) => void,
+              reject: (reason?: unknown) => void,
+            ): void => {
+              thenCalls += 1;
+              reject(new Error("detached plain thenable"));
+            };
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    function HostilePromise(): never {
+      throw new Error("mutable global Promise was used");
+    }
+    expect(
+      Reflect.set(globalThis, "Promise", HostilePromise),
+    ).toBe(true);
+    try {
+      const created = Reflect.apply(
+        createSqlCatalogEpochCoordinator,
+        undefined,
+        [
+          capturedProvider(),
+          undefined,
+          () => thenable,
+        ],
+      );
+      expect(created.status).toBe("created");
+      if (created.status !== "created") {
+        throw new Error("Expected a coordinator fixture");
+      }
+      const createdCoordinator = created.coordinator;
+      expect(() => createdCoordinator.dispose()).not.toThrow();
+    } finally {
+      Reflect.set(globalThis, "Promise", intrinsicPromise);
+    }
+    await intrinsicPromise.resolve();
+    await intrinsicPromise.resolve();
+    expect(thenCalls).toBe(1);
+  });
+
   it("validates exact bounded well-formed scopes without raw errors", () => {
     const owner = coordinator();
     expect(

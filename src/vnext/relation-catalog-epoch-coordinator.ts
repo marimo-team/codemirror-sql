@@ -1,7 +1,7 @@
 import {
-  MAX_CATALOG_SCOPE_LENGTH,
   compareSqlCatalogEpoch,
   decodeSqlCatalogInvalidation,
+  isValidSqlCatalogScope,
   resolveSqlRelationCatalogProvider,
 } from "./relation-catalog-boundary.js";
 import type { SqlCapturedRelationCatalogProviderContext } from "./relation-catalog-boundary.js";
@@ -143,6 +143,7 @@ export type SqlCatalogEpochCoordinatorResult =
   | {
       readonly status: "unavailable";
       readonly reason:
+        | "invalid-disposal-target"
         | "invalid-provider"
         | "invalid-transition-target";
     };
@@ -157,6 +158,7 @@ interface CoordinatorState {
   readonly commands: EpochCommand[];
   readonly deferredCleanup: Set<SubscriptionState>;
   readonly memberships: Set<MembershipState>;
+  onDispose: ((this: void) => undefined) | null;
   prepareEpochTransition: Function | null;
   readonly providerId: string;
   readonly scopes: Map<string, ScopeEntry>;
@@ -238,6 +240,8 @@ const SUBMITTED_RESULT: SqlCatalogResponseEpochSubmissionResult =
   Object.freeze({ status: "submitted" });
 const NO_PREPARE_CATALOG_CHANGE = (): null => null;
 const IGNORE_DETACHED_REJECTION = (): void => {};
+const INTRINSIC_PROMISE = Promise;
+const INTRINSIC_PROMISE_RESOLVE = Promise.resolve;
 const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
 const FAILED_EPOCH_TRANSITION: unique symbol = Symbol(
   "FailedSqlCatalogEpochTransition",
@@ -285,29 +289,6 @@ function settleDecision(
   } catch {
     // Consumers cannot break the serialized epoch gate.
   }
-}
-
-function isValidScope(candidate: unknown): candidate is string {
-  if (
-    typeof candidate !== "string" ||
-    candidate.length < 1 ||
-    candidate.length > MAX_CATALOG_SCOPE_LENGTH
-  ) {
-    return false;
-  }
-  for (let index = 0; index < candidate.length; index += 1) {
-    const code = candidate.charCodeAt(index);
-    if (code === 0) return false;
-    if (code >= 0xd800 && code <= 0xdbff) {
-      if (index + 1 >= candidate.length) return false;
-      const next = candidate.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function snapshotAudience(
@@ -390,21 +371,18 @@ function drainDetachedSettlement(result: unknown): void {
     return;
   }
   try {
-    Reflect.apply(INTRINSIC_PROMISE_THEN, result, [
+    const settlement = Reflect.apply(
+      INTRINSIC_PROMISE_RESOLVE,
+      INTRINSIC_PROMISE,
+      [result],
+    );
+    Reflect.apply(INTRINSIC_PROMISE_THEN, settlement, [
       undefined,
       IGNORE_DETACHED_REJECTION,
     ]);
-    return;
   } catch {
-    // Non-native thenables are assimilated through a fresh wrapper.
+    // The detached value is hostile and cannot be observed safely.
   }
-  const settlement = new Promise<unknown>((resolve) => {
-    resolve(result);
-  });
-  Reflect.apply(INTRINSIC_PROMISE_THEN, settlement, [
-    undefined,
-    IGNORE_DETACHED_REJECTION,
-  ]);
 }
 
 function cleanupSubscription(
@@ -1148,7 +1126,7 @@ function prepareMembership(
       status: "unavailable",
     });
   }
-  if (!isValidScope(scope)) {
+  if (!isValidSqlCatalogScope(scope)) {
     return Object.freeze({
       reason: "invalid-scope",
       status: "unavailable",
@@ -1248,6 +1226,8 @@ function submitResponse(
 function disposeCoordinator(state: CoordinatorState): void {
   if (state.disposed) return;
   state.disposed = true;
+  const onDispose = state.onDispose;
+  state.onDispose = null;
   state.prepareEpochTransition = null;
   state.subscribe = null;
   const subscriptions: SubscriptionState[] = [];
@@ -1270,6 +1250,16 @@ function disposeCoordinator(state: CoordinatorState): void {
   state.memberships.clear();
   for (const subscription of subscriptions) {
     retireCallbackCell(subscription.cell);
+  }
+  if (onDispose) {
+    try {
+      const result = Reflect.apply(onDispose, undefined, []);
+      if (result !== undefined) {
+        drainDetachedSettlement(result);
+      }
+    } catch {
+      // Disposal remains authoritative if its package owner fails.
+    }
   }
   for (const subscription of subscriptions) {
     scheduleSubscriptionCleanup(state, subscription);
@@ -1305,6 +1295,7 @@ function createCoordinatorHandle(
 export function createSqlCatalogEpochCoordinator(
   capturedProvider: unknown,
   prepareEpochTransition?: SqlCatalogEpochTransitionTarget,
+  onDispose?: (this: void) => undefined,
 ): SqlCatalogEpochCoordinatorResult {
   const provider = resolveSqlRelationCatalogProvider(
     capturedProvider,
@@ -1324,6 +1315,15 @@ export function createSqlCatalogEpochCoordinator(
       status: "unavailable",
     });
   }
+  if (
+    onDispose !== undefined &&
+    typeof onDispose !== "function"
+  ) {
+    return Object.freeze({
+      reason: "invalid-disposal-target",
+      status: "unavailable",
+    });
+  }
   const providerId = provider.id;
   const subscribe = provider.subscribe;
   const state: CoordinatorState = {
@@ -1336,6 +1336,7 @@ export function createSqlCatalogEpochCoordinator(
     disposed: false,
     draining: false,
     memberships: new Set(),
+    onDispose: onDispose ?? null,
     prepareEpochTransition:
       prepareEpochTransition ?? null,
     providerId,

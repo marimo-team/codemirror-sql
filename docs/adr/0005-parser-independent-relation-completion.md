@@ -484,6 +484,12 @@ state preparation and suppresses later revision listeners; an accidental
 Promise result receives best-effort detached rejection draining. Coordinator
 disposal revokes the preparation closure before external cleanup. The hook
 remains package-private and is not a provider or session extension point.
+The combined search coordinator also installs one package-owned disposal
+target. Epoch self-quarantine makes the outer coordinator inert before
+subscription cleanup continues, so search work cannot outlive its epoch
+authority. The target is receiver-free, invoked at most once, and its failure
+cannot reopen disposal. It is synchronously exact-return and must return
+`undefined`; any other runtime result is detached and rejection-drained.
 
 A search that discovers a higher epoch supersedes itself instead of publishing
 against its older captured revision. Pages and cache entries from different
@@ -555,7 +561,9 @@ callback can always create a poisoned or independent unhandled rejection that
 no JavaScript library can retroactively contain. Legitimate asynchronous
 teardown must consume or report its own failure before the cleanup closure
 returns `undefined`. The valid `undefined` path returns without Promise
-allocation or a microtask. A closure avoids a structural TypeScript
+allocation or a microtask. Detached assimilation uses module-captured Promise
+intrinsics, so replacing the global Promise constructor cannot disable the
+drain. A closure avoids a structural TypeScript
 contract that would accept class instances or inherited methods which the
 hostile runtime boundary could not safely validate. Dropping the last owner
 removes the complete scope incarnation before cleanup. A later join creates a
@@ -654,6 +662,8 @@ outcomes settle through a discriminated request result.
 Completion is latest-wins per session:
 
 - a new completion request supersedes the previous request;
+- a new request that cannot capture an active epoch still supersedes and
+  detaches the previous request before reporting its unavailable outcome;
 - same-key supersession atomically attaches the new request consumer, or
   retags the existing observer as that consumer, before removing old request
   ownership; different-key supersession revokes the old observer first;
@@ -743,6 +753,25 @@ invalidation. Hard queue or execution expiry removes observers without a
 refresh notification and leaves the already-returned incomplete result valid.
 No optional catalog promise can keep `complete()` pending indefinitely or
 block the local baseline past its product response budget.
+
+The first implementation increment of this section is intentionally
+package-private. It combines an authenticated provider with the epoch
+coordinator and owns the fixed 8-active/64-queued scheduler, exact-key
+in-flight sharing, one latest-wins consumer per owner, independent
+cancellation, absolute queue and execution deadlines, response decoding, and
+epoch publication. An owner captures its scope and dialect when prepared, so
+individual requests cannot substitute provider, scope, dialect, or epoch
+authority. The authenticated dialect runtime owns its canonical provider ID;
+callers cannot pair an unrelated ID and runtime. Establishing the first
+baseline re-keys other joinable unobserved work in that scope, allowing
+newly-observed consumers to join it without duplicating a provider call.
+
+Cache entries, loading/retry policy, refresh observers and their leases, the
+40 ms completion-response budget, pagination composition, ranking, session
+composition, and CodeMirror integration do not belong to that increment. They
+remain explicit follow-up increments; the coordinator must not expose a
+premature public surface that makes those deferred semantics difficult to add
+or test.
 
 The exact structural cache and shared-work key contains:
 

@@ -341,6 +341,18 @@ function isWellFormed(value: string): boolean {
   return true;
 }
 
+export function isValidSqlCatalogScope(
+  candidate: unknown,
+): candidate is string {
+  return (
+    typeof candidate === "string" &&
+    candidate.length > 0 &&
+    candidate.length <= MAX_CATALOG_SCOPE_LENGTH &&
+    !candidate.includes("\0") &&
+    isWellFormed(candidate)
+  );
+}
+
 function readRecord(
   state: DecodeState,
   value: unknown,

@@ -110,8 +110,9 @@ describe("built-in relation dialect runtime", () => {
   });
 
   it("owns stable, deeply frozen, coherent views", () => {
-    for (const runtime of Object.values(RUNTIMES)) {
+    for (const [id, runtime] of Object.entries(RUNTIMES)) {
       expectDeepFrozenRuntime(runtime);
+      expect(runtime.id).toBe(id);
       expect(runtime.cteLayout.lexicalProfile).toBe(
         runtime.querySite.lexicalProfile,
       );

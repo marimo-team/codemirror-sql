@@ -35,10 +35,11 @@ import type { SqlIdentifierComponent } from "./types.js";
 export interface SqlRelationDialectRuntime {
   readonly completion: SqlRelationCompletionDialectRuntime;
   readonly cteLayout: SqlCteLayoutDialect;
+  readonly id: SqlRelationDialectId;
   readonly querySite: SqlQuerySiteDialect;
 }
 
-type DialectKind =
+export type SqlRelationDialectId =
   | "bigquery"
   | "dremio"
   | "duckdb"
@@ -46,7 +47,7 @@ type DialectKind =
 
 interface RelationDialectSpec {
   readonly cteGrammar: SqlCteLayoutDialect["grammar"];
-  readonly kind: DialectKind;
+  readonly kind: SqlRelationDialectId;
   readonly lexicalProfile: SqlLexicalProfile;
   readonly maximumPathDepth: number;
   readonly supportsNaturalJoin: boolean;
@@ -245,7 +246,7 @@ function decodedIdentifier(
 function decodeDoubleQuoted(
   token: string,
   mode: "complete" | "completion-prefix",
-  kind: Exclude<DialectKind, "bigquery">,
+  kind: Exclude<SqlRelationDialectId, "bigquery">,
 ): SqlIdentifierDecodeResult {
   if (token.length > MAX_STANDARD_QUOTED_IDENTIFIER_RAW_LENGTH) {
     return INVALID_IDENTIFIER;
@@ -598,7 +599,7 @@ function decodeSegmentedPath(
   maximumPathDepth: number,
   quote: "\"" | "`",
   decodeIdentifier: SqlRelationCompletionDialectRuntime["decodeIdentifier"],
-  kind: DialectKind,
+  kind: SqlRelationDialectId,
 ): SqlDecodedQueryPath {
   if (
     typeof rawPath !== "string" ||
@@ -883,7 +884,7 @@ function createPathDecoder(
 }
 
 function createQueryClassifier(
-  kind: DialectKind,
+  kind: SqlRelationDialectId,
   decodeIdentifier: SqlRelationCompletionDialectRuntime["decodeIdentifier"],
 ): SqlQuerySiteDialect["classifyIdentifierToken"] {
   return (rawIdentifier, quoted, role) => {
@@ -1167,7 +1168,7 @@ function quoteBigQuery(value: string): string {
 }
 
 function legalRoleSequence(
-  kind: DialectKind,
+  kind: SqlRelationDialectId,
   roles: readonly string[],
 ): boolean {
   if (roles.length === 0 || roles.at(-1) !== "relation") {
@@ -1420,6 +1421,7 @@ function createRuntime(spec: RelationDialectSpec): SqlRelationDialectRuntime {
     Object.freeze({
       completion,
       cteLayout,
+      id: spec.kind,
       querySite,
     }),
   );
