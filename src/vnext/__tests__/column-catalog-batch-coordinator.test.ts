@@ -458,14 +458,24 @@ describe("column catalog batch coordinator", () => {
       },
     });
 
-    await expect(owner.request(hostile).result).resolves.toEqual({
+    const hostileTicket = Reflect.apply(
+      owner.request,
+      undefined,
+      [hostile],
+    );
+    await expect(hostileTicket.result).resolves.toEqual({
       reason: "invalid-request",
       status: "unavailable",
     });
-    await expect(owner.request({
-      expectedEpoch: epoch,
-      relations: [reference("users")],
-    }).result).resolves.toEqual({
+    const missingTicket = Reflect.apply(
+      owner.request,
+      undefined,
+      [{
+        expectedEpoch: epoch,
+        relations: [reference("users")],
+      }],
+    );
+    await expect(missingTicket.result).resolves.toEqual({
       reason: "invalid-request",
       status: "unavailable",
     });
