@@ -167,6 +167,7 @@ export interface SqlLanguageServiceOptions {
     readonly catalogResponseBudgetMs?: number | undefined;
   } | undefined;
   readonly dialects: readonly SqlDialect[];
+  readonly namespaces?: SqlNamespaceCatalogProvider | undefined;
 }
 
 export type SqlSessionErrorCode =
@@ -196,6 +197,9 @@ export class SqlSessionError extends Error {
 import type {
   SqlColumnCatalogProvider,
 } from "./column-catalog-types.js";
+import type {
+  SqlNamespaceCatalogProvider,
+} from "./namespace-catalog-types.js";
 import type {
   SqlCompletionRequest,
   SqlCompletionTask,

@@ -258,6 +258,14 @@ export interface SqlColumnCompletionProvenance {
   readonly columnEntityId: string;
 }
 
+export interface SqlNamespaceCompletionProvenance {
+  readonly containerEntityId: string;
+  readonly epoch: SqlCatalogEpoch;
+  readonly kind: "namespace-catalog";
+  readonly providerId: string;
+  readonly scope: string;
+}
+
 interface SqlCompletionItemBase {
   readonly label: string;
   readonly edit: SqlTextChange;
@@ -280,6 +288,11 @@ export type SqlCompletionItem =
       readonly kind: "column";
       readonly provenance: SqlColumnCompletionProvenance;
       readonly relationRequestKey: string;
+    })
+  | (SqlCompletionItemBase & {
+      readonly kind: "namespace";
+      readonly provenance: SqlNamespaceCompletionProvenance;
+      readonly role: SqlCatalogContainerRole;
     });
 
 export type SqlCompletionIssue =
@@ -301,6 +314,11 @@ export type SqlCompletionIssue =
         | "column-catalog-malformed"
         | "column-catalog-partial"
         | "cte-scope-uncertainty"
+        | "namespace-catalog-failed"
+        | "namespace-catalog-loading"
+        | "namespace-catalog-malformed"
+        | "namespace-catalog-partial"
+        | "namespace-prefix-uncertain"
         | "query-binding-partial"
         | "query-site-recovery"
         | "opaque-template-context"
@@ -393,9 +411,38 @@ export type SqlColumnCatalogProviderReport =
         | "provider-failed";
     };
 
+export type SqlNamespaceCatalogProviderReport =
+  | {
+      readonly coverage: "complete" | "partial";
+      readonly feature: "namespace-catalog";
+      readonly outcome: "ready";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "loading";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "failed";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "unavailable";
+      readonly providerId: string;
+      readonly reason:
+        | "disposed"
+        | "invalid-request"
+        | "malformed-response"
+        | "provider-failed";
+    };
+
 export type SqlCompletionProviderReport =
   | SqlCatalogProviderReport
-  | SqlColumnCatalogProviderReport;
+  | SqlColumnCatalogProviderReport
+  | SqlNamespaceCatalogProviderReport;
 
 export interface SqlServiceFailure {
   readonly code: "internal";

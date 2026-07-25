@@ -17,6 +17,18 @@ export type {
   SqlColumnCatalogResolvedColumn,
 } from "./column-catalog-types.js";
 export type {
+  SqlCanonicalNamespacePath,
+  SqlNamespaceCatalogContainer,
+  SqlNamespaceCatalogProvider,
+  SqlNamespaceCatalogProvenance,
+  SqlNamespaceCatalogResolvedContainer,
+  SqlNamespaceCatalogSearchRequest,
+  SqlNamespaceCatalogSearchResponse,
+  SqlNamespaceContainerRole,
+  SqlNamespacePathComponent,
+  SqlNamespaceQuerySite,
+} from "./namespace-catalog-types.js";
+export type {
   OpenSqlDocument,
   SqlCatalogContext,
   SqlContextInput,
@@ -70,6 +82,8 @@ export type {
   SqlCompletionIssue,
   SqlCompletionRequest,
   SqlCompletionRefreshToken,
+  SqlNamespaceCatalogProviderReport,
+  SqlNamespaceCompletionProvenance,
   SqlCompletionTrigger,
   SqlDisposable,
   SqlRelationCatalogProvider,

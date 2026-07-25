@@ -218,3 +218,60 @@ test("vNext editor applies a batched column completion", async () => {
   service.dispose();
   parent.remove();
 });
+
+test("vNext editor exposes namespace containers at relation sites", async () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  let namespaceCalls = 0;
+  const service = createSqlLanguageService({
+    dialects: [duckdbDialect()],
+    namespaces: {
+      id: "browser-namespaces",
+      search: async () => {
+        namespaceCalls += 1;
+        return {
+          containers: [{
+            canonicalPath: [{
+              quoted: false,
+              role: "schema",
+              value: "main",
+            }],
+            containerEntityId: "schema:main",
+            insertText: "main",
+            matchQuality: "exact",
+          }],
+          coverage: "complete",
+          epoch: { generation: 1, token: "epoch-1" },
+          status: "ready",
+        };
+      },
+    },
+  });
+  const support = sqlEditor({
+    initialContext: {
+      catalog: { scope: "browser-namespaces" },
+      dialect: "duckdb",
+    },
+    service,
+  });
+  const documentText = "SELECT * FROM ma";
+  const view = new EditorView({
+    doc: documentText,
+    extensions: support.extension,
+    parent,
+    selection: { anchor: documentText.length },
+  });
+
+  expect(startCompletion(view)).toBe(true);
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => ({
+      label: item.label,
+      type: item.type,
+    }))
+  ).toEqual([{ label: "main", type: "namespace" }]);
+  expect(namespaceCalls).toBe(1);
+
+  view.destroy();
+  service.dispose();
+  parent.remove();
+});

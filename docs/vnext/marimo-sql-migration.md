@@ -1,6 +1,6 @@
 # Marimo SQL Completion Migration
 
-Status: implementation fixture; relation and column completion
+Status: implementation fixture; relation, column, and namespace completion
 
 The compile-only fixture
 [`marimo-sql-migration.test-d.ts`](../../test/vnext-types/marimo-sql-migration.test-d.ts)
@@ -121,20 +121,17 @@ explicit, tested generic-dialect policy.
 
 Marimo's current `tablesCompletionSource()` is broader than its name. The
 CodeMirror SQL schema source provides relations, namespace navigation, and
-columns. vNext now provides the relation and lazy batched column portions,
+columns. vNext now provides all three through separate bounded providers,
 including qualified and unqualified query-site completion, ambiguity handling,
-stable provenance, cancellation, and bounded provider work.
+stable provenance, cancellation, and batched column work.
 
 The remaining feature gaps are:
 
-- namespace/container completion for database, schema, project, and dataset
-  navigation; and
 - the dialect coverage described above.
 
-The fixture defines marimo's immutable namespace projection—stable entity ID,
-scope, canonical identifier path, and namespace kind—but deliberately does
-not invent a provider import. Once a public namespace provider lands, that
-projection should feed one scoped provider on the shared service.
+The fixture feeds marimo's immutable namespace projection—stable entity ID,
+scope, canonical identifier path, and namespace kind—through one public,
+scoped namespace provider on the shared service.
 
 ## Migration sequence
 
@@ -148,11 +145,9 @@ projection should feed one scoped provider on the shared service.
 4. Compare relation and column results with the golden corpus, including
    quoted insert text, aliases, ambiguity, partial/loading/failure states, and
    cold epoch behavior.
-5. Add the public namespace provider and connect the prepared marimo namespace
-   projection.
-6. Cut over the four supported dialects as one source replacement, preserving
+5. Cut over the four supported dialects as one source replacement, preserving
    variable and keyword external sources.
-7. Add dialect coverage, expand the router, and remove completion-only legacy
+6. Add dialect coverage, expand the router, and remove completion-only legacy
    schema code. Keep legacy schema data while hover or diagnostics still use
    it.
 
@@ -160,8 +155,8 @@ projection should feed one scoped provider on the shared service.
 
 The compile-only marimo fixture proves:
 
-- one shared service configured with one relation provider and one batched
-  column provider;
+- one shared service configured with one relation provider, one batched
+  column provider, and one namespace provider;
 - a two-relation cold column request with `expectedEpoch: null`;
 - stable relation and column IDs, canonical identifiers, and distinct
   provider-rendered insert text;

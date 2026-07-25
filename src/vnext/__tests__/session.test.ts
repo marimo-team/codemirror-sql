@@ -7,6 +7,7 @@ import {
   postgresDialect,
   SqlSessionError,
   type SqlColumnCatalogProvider,
+  type SqlNamespaceCatalogProvider,
 } from "../index.js";
 import {
   DefaultSqlLanguageService,
@@ -1419,6 +1420,149 @@ describe("column completion session integration", () => {
           isIncomplete: true,
           issues: [{ reason: "column-catalog-loading" }],
           items: [],
+        },
+      });
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("namespace completion session integration", () => {
+  const relationCatalog: SqlRelationCatalogProvider = {
+    id: "relations",
+    search: async () => ({
+      coverage: { kind: "complete" },
+      epoch: { generation: 1, token: "epoch-1" },
+      relations: [],
+      status: "ready",
+    }),
+  };
+
+  function serviceWithNamespaces(
+    search: SqlNamespaceCatalogProvider["search"],
+    budget = 40,
+  ) {
+    return createSqlLanguageService<TestContext>({
+      catalog: relationCatalog,
+      completion: { catalogResponseBudgetMs: budget },
+      dialects: [duckdb],
+      namespaces: { id: "namespaces", search },
+    });
+  }
+
+  it("merges namespace containers into relation-site completion", async () => {
+    const requests: Parameters<
+      SqlNamespaceCatalogProvider["search"]
+    >[0][] = [];
+    const service = serviceWithNamespaces(async (request) => {
+      requests.push(request);
+      return {
+        containers: [{
+          canonicalPath: [{
+            quoted: false,
+            role: "schema",
+            value: "main",
+          }],
+          containerEntityId: "schema:main",
+          detail: "DuckDB schema",
+          insertText: "main",
+          matchQuality: "exact",
+        }],
+        coverage: "complete",
+        epoch: { generation: 1, token: "epoch-1" },
+        status: "ready",
+      };
+    });
+    const text = "SELECT * FROM ma";
+    const session = service.openDocument({
+      context: {
+        catalog: {
+          scope: "connection:1",
+          searchPath: [[{ quoted: false, value: "main" }]],
+        },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [
+        { feature: "relation-catalog" },
+        {
+          feature: "namespace-catalog",
+          outcome: "ready",
+          providerId: "namespaces",
+        },
+      ],
+      status: "ready",
+      value: {
+        isIncomplete: false,
+        items: [{
+          detail: "DuckDB schema",
+          edit: { from: 14, insert: "main", to: 16 },
+          kind: "namespace",
+          label: "main",
+          provenance: {
+            containerEntityId: "schema:main",
+            kind: "namespace-catalog",
+            providerId: "namespaces",
+            scope: "connection:1",
+          },
+          role: "schema",
+        }],
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      dialectId: "duckdb",
+      expectedEpoch: null,
+      limit: 128,
+      prefix: { quoted: false, value: "ma" },
+      qualifier: [],
+      scope: "connection:1",
+    });
+    service.dispose();
+  });
+
+  it("keeps slow namespace providers inside the shared budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = serviceWithNamespaces(
+        () => new Promise(() => {}),
+        0,
+      );
+      const text = "SELECT * FROM ";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:1" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const completion = session.complete({
+        position: text.length,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(completion).resolves.toMatchObject({
+        sources: [
+          { feature: "relation-catalog" },
+          {
+            feature: "namespace-catalog",
+            outcome: "loading",
+          },
+        ],
+        status: "ready",
+        value: {
+          isIncomplete: true,
+          issues: [{ reason: "namespace-catalog-loading" }],
         },
       });
       service.dispose();

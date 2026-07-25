@@ -21,6 +21,21 @@ import {
   prepareSqlColumnCatalogRelations,
 } from "./column-completion.js";
 import {
+  createSqlNamespaceCatalogCoordinator,
+  type SqlNamespaceCatalogCoordinator,
+  type SqlNamespaceCatalogOwner,
+  type SqlNamespaceCatalogSearchOutcome,
+  type SqlNamespaceCatalogSearchTicket,
+} from "./namespace-catalog-coordinator.js";
+import {
+  composeSqlNamespaceCompletion,
+  prepareSqlNamespaceCatalogSearch,
+  type SqlNamespaceCompletionComposition,
+} from "./namespace-completion.js";
+import {
+  MAX_NAMESPACE_RESULTS,
+} from "./namespace-catalog-boundary.js";
+import {
   buildSqlStatementIndex,
   findSqlStatementSlot,
   findSqlStatementSlotsIntersecting,
@@ -59,6 +74,9 @@ import {
   createSqlCompletionRefreshToken,
   type SqlCompletionRequest,
   type SqlCompletionRefreshToken,
+  type SqlCompletionIssue,
+  type SqlCompletionItem,
+  type SqlCompletionList,
   type SqlDisposable,
   type SqlCompletionResult,
   type SqlCompletionTask,
@@ -118,6 +136,7 @@ interface CompletionRequestState {
   ticket:
     | SqlCatalogSearchWorkTicket
     | SqlColumnCatalogBatchTicket
+    | SqlNamespaceCatalogSearchTicket
     | null;
   readonly token: SqlCompletionRefreshToken;
 }
@@ -545,6 +564,68 @@ function completionCancellationReason(
   return request.cancelReason ?? "superseded";
 }
 
+function namespaceCompletionList(
+  composition: SqlNamespaceCompletionComposition,
+): SqlCompletionList {
+  const items: readonly SqlCompletionItem[] =
+    composition.value.items.map((item) =>
+      Object.freeze({
+        ...(item.detail === undefined ? {} : { detail: item.detail }),
+        edit: item.edit,
+        kind: "namespace" as const,
+        label: item.label,
+        provenance: item.provenance,
+        role: item.role,
+      })
+    );
+  const issues: readonly SqlCompletionIssue[] =
+    composition.value.issues.map((reason) =>
+      Object.freeze({ reason })
+    );
+  const first = issues[0];
+  if (first === undefined) {
+    return Object.freeze({
+      isIncomplete: false,
+      issues: Object.freeze([] as const),
+      items: Object.freeze(items),
+    });
+  }
+  const incompleteIssues: [
+    SqlCompletionIssue,
+    ...SqlCompletionIssue[],
+  ] = [first, ...issues.slice(1)];
+  return Object.freeze({
+    isIncomplete: true,
+    issues: Object.freeze(incompleteIssues),
+    items: Object.freeze(items),
+  });
+}
+
+function mergeCompletionLists(
+  left: SqlCompletionList,
+  right: SqlCompletionList,
+): SqlCompletionList {
+  const items = Object.freeze([...left.items, ...right.items]);
+  const issues = Object.freeze([...left.issues, ...right.issues]);
+  const first = issues[0];
+  if (first === undefined) {
+    return Object.freeze({
+      isIncomplete: false,
+      issues: Object.freeze([] as const),
+      items,
+    });
+  }
+  const incompleteIssues: [
+    SqlCompletionIssue,
+    ...SqlCompletionIssue[],
+  ] = [first, ...issues.slice(1)];
+  return Object.freeze({
+    isIncomplete: true,
+    issues: Object.freeze(incompleteIssues),
+    items,
+  });
+}
+
 interface MissingDataProperty {
   readonly found: false;
 }
@@ -952,6 +1033,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
   readonly #catalogResponseBudgetMs: number;
   readonly #columnCoordinator: SqlColumnCatalogBatchCoordinator | null;
+  readonly #namespaceCoordinator: SqlNamespaceCatalogCoordinator | null;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #onDispose: () => void;
   readonly #listeners = new Set<SessionChangeSubscription>();
@@ -962,6 +1044,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   #columnOwner: SqlColumnCatalogBatchOwner | null = null;
   #columnOwnerDialect: SqlRelationDialectRuntime | null = null;
   #columnOwnerScope: string | null = null;
+  #namespaceOwner: SqlNamespaceCatalogOwner | null = null;
+  #namespaceOwnerDialect: SqlRelationDialectRuntime | null = null;
+  #namespaceOwnerScope: string | null = null;
   #disposed = false;
   #localRelationStatementCache:
     | LocalRelationStatementCache
@@ -979,11 +1064,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     dialects: ReadonlyMap<string, SqlDialectRuntime>,
     catalogCoordinator: SqlCatalogSearchWorkCoordinator | null,
     columnCoordinator: SqlColumnCatalogBatchCoordinator | null,
+    namespaceCoordinator: SqlNamespaceCatalogCoordinator | null,
     completion: CompletionConfiguration,
     onDispose: () => void,
   ) {
     this.#catalogCoordinator = catalogCoordinator;
     this.#columnCoordinator = columnCoordinator;
+    this.#namespaceCoordinator = namespaceCoordinator;
     this.#catalogResponseBudgetMs =
       completion.catalogResponseBudgetMs;
     this.#dialects = dialects;
@@ -1005,6 +1092,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     });
     this.#replaceCatalogOwner();
     this.#replaceColumnOwner();
+    this.#replaceNamespaceOwner();
   }
 
   get revision(): SqlRevision {
@@ -1287,6 +1375,34 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     this.#columnOwner = prepared.owner;
     this.#columnOwnerDialect = dialect;
     this.#columnOwnerScope = catalog.scope;
+  }
+
+  #replaceNamespaceOwner(): void {
+    const catalog = resolveCatalogContext(this.#snapshot.context);
+    const dialect = this.#snapshot.dialect.relationDialect;
+    if (
+      this.#namespaceOwner &&
+      catalog &&
+      this.#namespaceOwnerScope === catalog.scope &&
+      this.#namespaceOwnerDialect === dialect
+    ) {
+      return;
+    }
+    this.#namespaceOwner?.dispose();
+    this.#namespaceOwner = null;
+    this.#namespaceOwnerDialect = null;
+    this.#namespaceOwnerScope = null;
+    if (!catalog || !this.#namespaceCoordinator || this.#disposed) {
+      return;
+    }
+    const prepared = this.#namespaceCoordinator.prepareOwner({
+      dialectId: dialect.id,
+      scope: catalog.scope,
+    });
+    if (prepared.status !== "prepared") return;
+    this.#namespaceOwner = prepared.owner;
+    this.#namespaceOwnerDialect = dialect;
+    this.#namespaceOwnerScope = catalog.scope;
   }
 
   readonly onDidChange = (
@@ -1942,6 +2058,98 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         cancelPrevious();
       }
 
+      let namespaceComposition: SqlNamespaceCompletionComposition | null =
+        null;
+      const namespaceOwner = this.#namespaceOwner;
+      const namespaceCoordinator = this.#namespaceCoordinator;
+      if (catalog && namespaceOwner && namespaceCoordinator) {
+        const ticket = namespaceOwner.request(
+          prepareSqlNamespaceCatalogSearch(
+            {
+              prefix: querySite.prefix,
+              qualifier: querySite.qualifier,
+              replacementRange,
+            },
+            null,
+            catalog.searchPaths,
+            MAX_NAMESPACE_RESULTS,
+          ),
+        );
+        active.ticket = ticket;
+        const elapsed = Math.max(
+          0,
+          performance.now() - completionStartedAt,
+        );
+        const remaining = Math.max(
+          0,
+          this.#catalogResponseBudgetMs - elapsed,
+        );
+        let responseTimer:
+          | ReturnType<typeof setTimeout>
+          | undefined;
+        const raced = await Promise.race([
+          ticket.result.then((outcome) =>
+            Object.freeze({
+              kind: "outcome" as const,
+              outcome,
+            }),
+          ),
+          new Promise<{ readonly kind: "timeout" }>((resolve) => {
+            responseTimer = setTimeout(
+              () => resolve(Object.freeze({ kind: "timeout" })),
+              remaining,
+            );
+          }),
+        ]);
+        clearTimeout(responseTimer);
+        if (
+          this.#activeCompletion !== active ||
+          active.cancelReason !== null ||
+          snapshot.revision !== this.#snapshot.revision
+        ) {
+          ticket.cancel();
+          return completionCancellation(
+            snapshot.revision,
+            completionCancellationReason(active),
+          );
+        }
+        if (raced.kind === "timeout") {
+          ticket.cancel();
+          namespaceComposition = Object.freeze({
+            source: Object.freeze({
+              feature: "namespace-catalog",
+              outcome: "loading",
+              providerId: namespaceCoordinator.providerId,
+            }),
+            value: Object.freeze({
+              isIncomplete: true,
+              issues: Object.freeze([
+                "namespace-catalog-loading" as const,
+              ] as const),
+              items: Object.freeze([]),
+            }),
+          });
+        } else {
+          const outcome: SqlNamespaceCatalogSearchOutcome =
+            raced.outcome;
+          namespaceComposition = composeSqlNamespaceCompletion({
+            matchPrefix:
+              snapshot.dialect.relationDialect.completion
+                .cteIdentifierMatchesPrefix,
+            outcome,
+            prefix: querySite.prefix,
+            providerId: namespaceCoordinator.providerId,
+            replacementRange,
+          });
+          if (!namespaceComposition) {
+            return completionCancellation(
+              snapshot.revision,
+              completionCancellationReason(active),
+            );
+          }
+        }
+      }
+
       const composition = composeSqlRelationCompletion({
         catalogOutcome,
         dialect: snapshot.dialect.relationDialect,
@@ -1964,6 +2172,18 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           completionCancellationReason(active),
         );
       }
+      const value = namespaceComposition
+        ? mergeCompletionLists(
+            composition.value,
+            namespaceCompletionList(namespaceComposition),
+          )
+        : composition.value;
+      const sources = namespaceComposition
+        ? Object.freeze([
+            ...composition.sources,
+            namespaceComposition.source,
+          ])
+        : composition.sources;
       return Object.freeze({
         refreshToken:
           (catalogOutcome?.status === "loading" ||
@@ -1974,9 +2194,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             ? active.token
             : null,
         revision: snapshot.revision,
-        sources: composition.sources,
+        sources,
         status: "ready",
-        value: composition.value,
+        value,
       });
     } finally {
       if (this.#activeCompletion === active) {
@@ -2197,7 +2417,12 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       this.#dialects,
     );
     const nextCatalog = resolveCatalogContext(nextContext);
-    if (nextCatalog && !this.#catalogCoordinator) {
+    if (
+      nextCatalog &&
+      !this.#catalogCoordinator &&
+      !this.#columnCoordinator &&
+      !this.#namespaceCoordinator
+    ) {
       throw new SqlSessionError(
         "invalid-context",
         "SQL catalog context requires a configured catalog provider",
@@ -2290,6 +2515,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     }
     this.#replaceCatalogOwner();
     this.#replaceColumnOwner();
+    this.#replaceNamespaceOwner();
     return this.#snapshot.revision;
   }
 
@@ -2306,10 +2532,12 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const refreshIntent = this.#refreshIntent;
     const catalogOwner = this.#catalogOwner;
     const columnOwner = this.#columnOwner;
+    const namespaceOwner = this.#namespaceOwner;
     this.#activeCompletion = null;
     this.#refreshIntent = null;
     this.#catalogOwner = null;
     this.#columnOwner = null;
+    this.#namespaceOwner = null;
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     this.#listeners.clear();
@@ -2334,6 +2562,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     }
     catalogOwner?.dispose();
     columnOwner?.dispose();
+    namespaceOwner?.dispose();
     this.#onDispose();
   };
 }
@@ -2343,6 +2572,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
 {
   readonly #catalogCoordinator: SqlCatalogSearchWorkCoordinator | null;
   readonly #columnCoordinator: SqlColumnCatalogBatchCoordinator | null;
+  readonly #namespaceCoordinator: SqlNamespaceCatalogCoordinator | null;
   readonly #completion: CompletionConfiguration;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
   readonly #sessions = new Set<DefaultSqlDocumentSession<Context>>();
@@ -2497,6 +2727,27 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         }
         this.#columnCoordinator = coordinator.coordinator;
       }
+
+      const namespaces = readOwnDataProperty(
+        options,
+        "namespaces",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      if (!namespaces.found || namespaces.value === undefined) {
+        this.#namespaceCoordinator = null;
+      } else {
+        const coordinator = createSqlNamespaceCatalogCoordinator({
+          provider: namespaces.value,
+        });
+        if (coordinator.status !== "created") {
+          throw new SqlSessionError(
+            "invalid-service-options",
+            "SQL namespace catalog provider is invalid",
+          );
+        }
+        this.#namespaceCoordinator = coordinator.coordinator;
+      }
     } catch (error) {
       if (error instanceof SqlSessionError) {
         throw error;
@@ -2559,7 +2810,12 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
       const context = cloneContext<Context>(candidateContext);
       resolveDialectRuntime(context, this.#dialects);
       const catalogContext = resolveCatalogContext(context);
-      if (catalogContext && !this.#catalogCoordinator) {
+      if (
+        catalogContext &&
+        !this.#catalogCoordinator &&
+        !this.#columnCoordinator &&
+        !this.#namespaceCoordinator
+      ) {
         throw new SqlSessionError(
           "invalid-context",
           "SQL catalog context requires a configured catalog provider",
@@ -2573,6 +2829,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         this.#dialects,
         this.#catalogCoordinator,
         this.#columnCoordinator,
+        this.#namespaceCoordinator,
         this.#completion,
         () => {
           this.#sessions.delete(session);
@@ -2615,6 +2872,7 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
     this.#sessions.clear();
     this.#catalogCoordinator?.dispose();
     this.#columnCoordinator?.dispose();
+    this.#namespaceCoordinator?.dispose();
   };
 }
 

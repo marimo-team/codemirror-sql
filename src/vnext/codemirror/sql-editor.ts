@@ -204,6 +204,7 @@ function haveOneEditRange(items: readonly SqlCompletionItem[]): boolean {
 
 function completionType(item: SqlCompletionItem): string {
   if (item.kind === "column") return "property";
+  if (item.kind === "namespace") return "namespace";
   return item.relationKind === "cte" ? "type" : "table";
 }
 

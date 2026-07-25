@@ -1,6 +1,6 @@
 # vNext Namespace Catalog Authority
 
-Status: integration-ready internal vertical slice
+Status: public provider and session integration
 
 Namespace completion searches catalog, schema, project, and dataset containers.
 One query site produces one bounded provider request containing its qualifier,
@@ -30,8 +30,9 @@ A newer request supersedes and aborts prior work for the same owner. Explicit
 cancellation and owner/coordinator disposal abort pending work. Provider throws,
 rejections, malformed data, and late settlements are contained.
 
-Session integration should prepare one owner for each live scope/dialect and
-dispose it when catalog authority changes. Query-site integration calls
+Session integration prepares one owner for each live scope/dialect and
+disposes it when catalog authority changes. Query-site integration calls
 `prepareSqlNamespaceCatalogSearch`, submits the result through the owner, and
 passes the outcome plus the site's replacement range and dialect prefix matcher
-to `composeSqlNamespaceCompletion`.
+to `composeSqlNamespaceCompletion`. Namespace items are merged with local and
+relation-catalog items under the same bounded completion response budget.

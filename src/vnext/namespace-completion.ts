@@ -9,20 +9,14 @@ import type {
 } from "./namespace-catalog-types.js";
 import type {
   SqlCatalogEpoch,
+  SqlNamespaceCatalogProviderReport,
+  SqlNamespaceCompletionProvenance,
 } from "./relation-completion-types.js";
 import type {
   SqlIdentifierComponent,
   SqlIdentifierPath,
   SqlTextRange,
 } from "./types.js";
-
-export interface SqlNamespaceCompletionProvenance {
-  readonly containerEntityId: string;
-  readonly epoch: SqlCatalogEpoch;
-  readonly kind: "namespace-catalog";
-  readonly providerId: string;
-  readonly scope: string;
-}
 
 export interface SqlNamespaceCompletionItem {
   readonly detail?: string;
@@ -49,30 +43,6 @@ export interface SqlNamespaceCompletionList {
   readonly issues: readonly SqlNamespaceCompletionIssue[];
   readonly items: readonly SqlNamespaceCompletionItem[];
 }
-
-export type SqlNamespaceCatalogProviderReport =
-  | {
-      readonly coverage: "complete" | "partial";
-      readonly outcome: "ready";
-      readonly providerId: string;
-    }
-  | {
-      readonly outcome: "loading";
-      readonly providerId: string;
-    }
-  | {
-      readonly outcome: "failed";
-      readonly providerId: string;
-    }
-  | {
-      readonly outcome: "unavailable";
-      readonly providerId: string;
-      readonly reason:
-        | "disposed"
-        | "invalid-request"
-        | "malformed-response"
-        | "provider-failed";
-    };
 
 export interface SqlNamespaceCompletionComposition {
   readonly source: SqlNamespaceCatalogProviderReport;
@@ -171,6 +141,7 @@ function unavailable(
 ): SqlNamespaceCompletionComposition {
   return Object.freeze({
     source: Object.freeze({
+      feature: "namespace-catalog",
       outcome: "unavailable",
       providerId,
       reason,
@@ -233,6 +204,7 @@ export function composeSqlNamespaceCompletion(
   if (response.status === "loading") {
     return Object.freeze({
       source: Object.freeze({
+        feature: "namespace-catalog",
         outcome: "loading",
         providerId: input.outcome.providerId,
       }),
@@ -242,6 +214,7 @@ export function composeSqlNamespaceCompletion(
   if (response.status === "failed") {
     return Object.freeze({
       source: Object.freeze({
+        feature: "namespace-catalog",
         outcome: "failed",
         providerId: input.outcome.providerId,
       }),
@@ -285,6 +258,7 @@ export function composeSqlNamespaceCompletion(
   return Object.freeze({
     source: Object.freeze({
       coverage: response.coverage,
+      feature: "namespace-catalog",
       outcome: "ready",
       providerId: input.outcome.providerId,
     }),

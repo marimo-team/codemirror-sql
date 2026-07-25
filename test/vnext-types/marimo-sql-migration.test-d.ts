@@ -27,6 +27,7 @@ import {
   type SqlEmbeddedRegion,
   type SqlIdentifierComponent,
   type SqlIdentifierPath,
+  type SqlNamespaceCatalogProvider,
   type SqlRelationCatalogProvider,
 } from "../../src/vnext/index.js";
 import {
@@ -263,6 +264,44 @@ const marimoColumnProvider: SqlColumnCatalogProvider = {
   },
 };
 
+const marimoNamespaceProvider: SqlNamespaceCatalogProvider = {
+  id: "marimo-namespaces",
+  search: async (request, signal) => {
+    signal.throwIfAborted();
+    const projections =
+      namespaceProjectionByScope.get(request.scope) ?? [];
+    return {
+      containers: projections.flatMap((projection) => {
+        const first = projection.path[0];
+        if (first === undefined) return [];
+        const canonicalPath = [
+          {
+            ...first,
+            role: projection.kind,
+          },
+          ...projection.path.slice(1).map((component) => ({
+            ...component,
+            role: projection.kind,
+          })),
+        ] as const;
+        return [{
+          canonicalPath,
+          containerEntityId: projection.entityId,
+          insertText:
+            (canonicalPath[canonicalPath.length - 1] ?? first).value,
+          matchQuality: "exact" as const,
+        }];
+      }),
+      coverage: "complete",
+      epoch: catalogByScope.get(request.scope)?.epoch ?? {
+        generation: 0,
+        token: "missing-scope",
+      },
+      status: "ready",
+    };
+  },
+};
+
 // One caller-owned service is shared by every SQL editor support/view.
 const sharedSqlService =
   createSqlLanguageService<MarimoSqlContext>({
@@ -274,6 +313,7 @@ const sharedSqlService =
       duckdbDialect(),
       postgresDialect(),
     ],
+    namespaces: marimoNamespaceProvider,
   });
 
 const infoResolver: SqlCompletionInfoResolver = (
