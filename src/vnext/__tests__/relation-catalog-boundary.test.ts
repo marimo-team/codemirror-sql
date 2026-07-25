@@ -5,6 +5,7 @@ import {
   createSqlCatalogSearchRequest,
   decodeSqlCatalogInvalidation,
   decodeSqlCatalogSearchResponse,
+  isValidSqlCatalogScope,
   MAX_CATALOG_CONTINUATION_TOKEN_LENGTH,
   MAX_CATALOG_DETAIL_LENGTH,
   MAX_CATALOG_ENTITY_ID_LENGTH,
@@ -342,6 +343,29 @@ describe("relation catalog provider capture", () => {
         search,
       }).status,
     ).toBe("accepted");
+  });
+});
+
+describe("catalog scope validation", () => {
+  it("accepts only bounded, non-NUL, well-formed text", () => {
+    expect(isValidSqlCatalogScope("connection:primary")).toBe(true);
+    expect(
+      isValidSqlCatalogScope(
+        `\ud83d\ude80${"x".repeat(MAX_CATALOG_SCOPE_LENGTH - 2)}`,
+      ),
+    ).toBe(true);
+    for (const candidate of [
+      null,
+      1,
+      "",
+      "bad\0scope",
+      "\ud800",
+      "\ud800x",
+      "\udc00",
+      "x".repeat(MAX_CATALOG_SCOPE_LENGTH + 1),
+    ]) {
+      expect(isValidSqlCatalogScope(candidate)).toBe(false);
+    }
   });
 });
 

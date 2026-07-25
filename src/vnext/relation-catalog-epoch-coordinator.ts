@@ -1,7 +1,7 @@
 import {
-  MAX_CATALOG_SCOPE_LENGTH,
   compareSqlCatalogEpoch,
   decodeSqlCatalogInvalidation,
+  isValidSqlCatalogScope,
   resolveSqlRelationCatalogProvider,
 } from "./relation-catalog-boundary.js";
 import type { SqlCapturedRelationCatalogProviderContext } from "./relation-catalog-boundary.js";
@@ -289,29 +289,6 @@ function settleDecision(
   } catch {
     // Consumers cannot break the serialized epoch gate.
   }
-}
-
-function isValidScope(candidate: unknown): candidate is string {
-  if (
-    typeof candidate !== "string" ||
-    candidate.length < 1 ||
-    candidate.length > MAX_CATALOG_SCOPE_LENGTH
-  ) {
-    return false;
-  }
-  for (let index = 0; index < candidate.length; index += 1) {
-    const code = candidate.charCodeAt(index);
-    if (code === 0) return false;
-    if (code >= 0xd800 && code <= 0xdbff) {
-      if (index + 1 >= candidate.length) return false;
-      const next = candidate.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function snapshotAudience(
@@ -1149,7 +1126,7 @@ function prepareMembership(
       status: "unavailable",
     });
   }
-  if (!isValidScope(scope)) {
+  if (!isValidSqlCatalogScope(scope)) {
     return Object.freeze({
       reason: "invalid-scope",
       status: "unavailable",

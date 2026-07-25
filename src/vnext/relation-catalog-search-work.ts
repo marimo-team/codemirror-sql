@@ -1,7 +1,7 @@
 import {
   createSqlCatalogSearchRequest,
   decodeSqlCatalogSearchResponse,
-  MAX_CATALOG_SCOPE_LENGTH,
+  isValidSqlCatalogScope,
   resolveSqlRelationCatalogProvider,
 } from "./relation-catalog-boundary.js";
 import type {
@@ -1678,33 +1678,6 @@ function prepareTransition(
   };
 }
 
-function isValidText(
-  candidate: unknown,
-  maximumLength: number,
-): candidate is string {
-  if (
-    typeof candidate !== "string" ||
-    candidate.length === 0 ||
-    candidate.length > maximumLength
-  ) {
-    return false;
-  }
-  for (let index = 0; index < candidate.length; index += 1) {
-    const code = candidate.charCodeAt(index);
-    if (code === 0) return false;
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const trailing = candidate.charCodeAt(index + 1);
-      if (!(trailing >= 0xdc00 && trailing <= 0xdfff)) {
-        return false;
-      }
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function unavailableOwner(
   reason: Exclude<
     SqlCatalogSearchWorkOwnerResult,
@@ -1760,9 +1733,7 @@ function prepareOwner(
   target: SqlCatalogRevisionTarget,
 ): SqlCatalogSearchWorkOwnerResult {
   if (state.disposed) return unavailableOwner("disposed");
-  if (
-    !isValidText(scope, MAX_CATALOG_SCOPE_LENGTH)
-  ) {
+  if (!isValidSqlCatalogScope(scope)) {
     return unavailableOwner("invalid-scope");
   }
   if (!isSqlRelationDialectRuntime(dialect)) {

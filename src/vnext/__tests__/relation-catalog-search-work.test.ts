@@ -2753,9 +2753,12 @@ describe("catalog search epoch dependency failures", () => {
     let decision: Decision = "disposed";
     let captureFailure = false;
     let captureHook: (() => void) | undefined;
+    let capturedExpectedEpoch: ReturnType<typeof epoch> | null =
+      null;
     let disposeCandidate: (() => void) | undefined;
     let factoryFailure = false;
     let membershipFailure = false;
+    let searchCalls = 0;
     let submissions = 0;
     vi.resetModules();
     vi.doMock(
@@ -2800,7 +2803,9 @@ describe("catalog search epoch dependency failures", () => {
                           };
                         }
                         return {
-                          capture: { expectedEpoch: null },
+                          capture: {
+                            expectedEpoch: capturedExpectedEpoch,
+                          },
                           status: "captured",
                         };
                       },
@@ -2871,6 +2876,7 @@ describe("catalog search epoch dependency failures", () => {
       isolatedBoundary.captureSqlRelationCatalogProvider({
         id: "catalog",
         search() {
+          searchCalls += 1;
           return readyResponse();
         },
       }),
@@ -2971,6 +2977,37 @@ describe("catalog search epoch dependency failures", () => {
       expect(submissions).toBe(1);
       exhausted.coordinator.dispose();
     }
+
+    decision = "disposed";
+    capturedExpectedEpoch = null;
+    searchCalls = 0;
+    const epochMismatch =
+      isolated.createSqlCatalogSearchWorkCoordinator(captured);
+    expect(epochMismatch.status).toBe("created");
+    if (epochMismatch.status === "created") {
+      const first = owner(
+        epochMismatch.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      ).request(input("epoch-key"));
+      capturedExpectedEpoch = epoch(7);
+      const second = owner(
+        epochMismatch.coordinator,
+        "connection:primary",
+        isolatedDialect.POSTGRESQL_SQL_RELATION_DIALECT,
+      ).request(input("epoch-key"));
+      expect(searchCalls).toBe(2);
+      epochMismatch.coordinator.dispose();
+      await expect(first.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      await expect(second.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+    }
+    capturedExpectedEpoch = null;
 
     decision = "retired-then-usable";
     captureFailure = true;
