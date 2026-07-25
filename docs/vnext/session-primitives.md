@@ -3,10 +3,10 @@
 Status: experimental walking skeleton  
 Import: `@marimo-team/codemirror-sql/vnext`
 
-This entry point currently provides document ownership, atomic text/context
-updates, opaque revisions, dialect registration, and lifecycle management. It
-does not yet provide parsing, completion, diagnostics, hover, or navigation.
-Those methods will be added only with working vertical slices.
+This entry point provides document ownership, atomic text/context updates,
+opaque revisions, dialect registration, lifecycle management, and
+parser-independent relation completion. Diagnostics, hover, navigation, and
+general expression completion are not yet available.
 
 See [source coordinates](./source-coordinates.md) for the shared UTF-16 range
 contract and the internal immutable source-snapshot model.
@@ -55,6 +55,73 @@ Use `{ kind: "replace", text }` for full replacement and
 `{ baseRevision, context }` for a context-only update. Every document mutation
 also supplies the complete embedded-region set for its resulting text. A
 region-only transaction can replace or clear that set without a fake text edit.
+
+## Relation completion
+
+Completion works without a catalog for visible CTEs. A service can also own one
+shared asynchronous relation-catalog provider:
+
+```ts
+const service = createSqlLanguageService<AppSqlContext>({
+  catalog: {
+    id: "app-catalog",
+    search: async (request, signal) => {
+      signal.throwIfAborted();
+      return {
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "initial" },
+        relations: [],
+        status: "ready",
+      };
+    },
+  },
+  completion: { catalogResponseBudgetMs: 40 },
+  dialects: [duckdbDialect()],
+});
+
+const session = service.openDocument({
+  context: {
+    dialect: "duckdb",
+    engine: "local",
+    catalog: { scope: "connection-incarnation:1" },
+  },
+  text: "SELECT * FROM ",
+});
+
+const subscription = session.onDidChange(({ reason }) => {
+  if (reason === "catalog" || reason === "catalog-availability") {
+    // Ask the editor adapter to request completion again.
+  }
+});
+
+const result = await session.complete({
+  position: 14,
+  trigger: { kind: "invoked" },
+});
+
+if (result.status === "ready" && session.isCurrent(result.revision)) {
+  for (const item of result.value.items) {
+    // Apply item.edit in the original document's UTF-16 coordinates.
+  }
+}
+
+subscription.dispose();
+session.dispose();
+service.dispose();
+```
+
+The catalog `scope` identifies a live connection incarnation, not a reusable
+display name. Search responses distinguish complete, partial, paginated,
+loading, and failed evidence. A ready result can therefore be incomplete; its
+closed `issues` explain why, while `sources` reports catalog outcomes without
+exposing provider errors or internal epochs.
+
+The interactive catalog wait is bounded from the start of `complete()`. When
+the budget expires, the session returns local evidence with a
+`catalog-loading` issue and a checked remaining intent lease. Compatible
+readiness advances the session revision and emits `catalog-availability`;
+higher provider epochs emit `catalog`. Consumers must request completion again
+and apply only results whose revision remains current.
 
 ## Dialect registration
 

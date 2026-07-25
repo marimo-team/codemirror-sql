@@ -136,6 +136,12 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
   readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
+  readonly complete: (
+    request: SqlCompletionRequest,
+  ) => Promise<SqlCompletionResult>;
+  readonly onDidChange: (
+    listener: (event: SqlSessionChangeEvent) => void,
+  ) => SqlDisposable;
   readonly isCurrent: (revision: SqlRevision) => boolean;
   readonly dispose: () => void;
 }
@@ -149,6 +155,10 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
 }
 
 export interface SqlLanguageServiceOptions {
+  readonly catalog?: SqlRelationCatalogProvider | undefined;
+  readonly completion?: {
+    readonly catalogResponseBudgetMs?: number | undefined;
+  } | undefined;
   readonly dialects: readonly SqlDialect[];
 }
 
@@ -156,6 +166,7 @@ export type SqlSessionErrorCode =
   | "duplicate-dialect"
   | "invalid-change"
   | "invalid-context"
+  | "invalid-completion-request"
   | "invalid-dialect"
   | "invalid-document"
   | "invalid-service-options"
@@ -174,3 +185,10 @@ export class SqlSessionError extends Error {
     this.code = code;
   }
 }
+import type {
+  SqlCompletionRequest,
+  SqlDisposable,
+  SqlRelationCatalogProvider,
+  SqlCompletionResult,
+  SqlSessionChangeEvent,
+} from "./relation-completion-types.js";

@@ -1,6 +1,7 @@
 import type {
   SqlCatalogContext,
   SqlDocumentContext,
+  SqlDocumentSession,
   SqlDocumentEdit,
   SqlDocumentUpdate,
   SqlEmbeddedRegion,
@@ -18,10 +19,9 @@ import type {
   SqlCompletionCancellationReason,
   SqlCompletionIssue,
   SqlDisposable,
-  SqlRelationCompletionItem,
-  SqlRelationCompletionList,
+  SqlCompletionItem,
+  SqlCompletionList,
   SqlRelationCatalogProvider,
-  SqlRelationCompletionSession,
 } from "../../src/vnext/relation-completion-types.js";
 import type {
   SqlCatalogEpochTransitionTarget,
@@ -60,7 +60,7 @@ const openWithRegions: OpenSqlDocument<MarimoSqlContext> = {
   text: "SELECT * FROM {df}",
 };
 
-declare const session: SqlRelationCompletionSession<MarimoSqlContext>;
+declare const session: SqlDocumentSession<MarimoSqlContext>;
 session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT * FROM {next_df}" },
@@ -325,19 +325,19 @@ const mismatchedItem = {
     providerId: "marimo",
   },
   relationKind: "cte",
-} satisfies SqlRelationCompletionItem;
+} satisfies SqlCompletionItem;
 const contradictoryCompleteList = {
   isIncomplete: false,
   // @ts-expect-error complete lists cannot carry incomplete issues
   issues: [{ reason: "catalog-partial" }],
   items: [],
-} satisfies SqlRelationCompletionList;
+} satisfies SqlCompletionList;
 const contradictoryIncompleteList = {
   isIncomplete: true,
   issues: [],
   items: [],
   // @ts-expect-error incomplete lists require at least one issue
-} satisfies SqlRelationCompletionList;
+} satisfies SqlCompletionList;
 // @ts-expect-error timeouts are unavailable evidence, not cancellation
 const invalidCancellation: SqlCompletionCancellationReason = "timeout";
 const undefinedContext: SqlDocumentUpdate<MarimoSqlContext> = {

@@ -1,6 +1,4 @@
 import type {
-  SqlDocumentContext,
-  SqlDocumentUpdate,
   SqlIdentifierComponent,
   SqlIdentifierPath,
   SqlRevision,
@@ -196,6 +194,7 @@ export interface SqlSessionChangeEvent {
 
 export type SqlCompletionTrigger =
   | {
+      readonly character?: never;
       readonly kind: "invoked";
     }
   | {
@@ -206,7 +205,7 @@ export type SqlCompletionTrigger =
 export interface SqlCompletionRequest {
   readonly position: number;
   readonly trigger: SqlCompletionTrigger;
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface SqlCteCompletionProvenance {
@@ -226,12 +225,14 @@ interface SqlCompletionItemBase {
   readonly detail?: string;
 }
 
-export type SqlRelationCompletionItem =
+export type SqlCompletionItem =
   | (SqlCompletionItemBase & {
+      readonly kind: "relation";
       readonly relationKind: "cte";
       readonly provenance: SqlCteCompletionProvenance;
     })
   | (SqlCompletionItemBase & {
+      readonly kind: "relation";
       readonly relationKind: SqlCatalogRelationKind;
       readonly provenance: SqlCatalogCompletionProvenance;
     });
@@ -257,14 +258,14 @@ export type SqlCompletionIssue =
         | "result-limit";
     };
 
-export type SqlRelationCompletionList =
+export type SqlCompletionList =
   | {
-      readonly items: readonly SqlRelationCompletionItem[];
+      readonly items: readonly SqlCompletionItem[];
       readonly isIncomplete: false;
       readonly issues: readonly [];
     }
   | {
-      readonly items: readonly SqlRelationCompletionItem[];
+      readonly items: readonly SqlCompletionItem[];
       readonly isIncomplete: true;
       readonly issues: readonly [
         SqlCompletionIssue,
@@ -288,7 +289,6 @@ export type SqlCatalogProviderUnavailableReason =
   | "queue-overloaded"
   | "queue-timeout"
   | "execution-timeout"
-  | "synchronous-timeout"
   | "provider-rejected"
   | "malformed-response";
 
@@ -320,11 +320,11 @@ export interface SqlServiceFailure {
   readonly retryable: boolean;
 }
 
-export type SqlRelationCompletionResult =
+export type SqlCompletionResult =
   | {
       readonly status: "ready";
       readonly revision: SqlRevision;
-      readonly value: SqlRelationCompletionList;
+      readonly value: SqlCompletionList;
       readonly sources: readonly SqlCatalogProviderReport[];
     }
   | {
@@ -343,20 +343,3 @@ export type SqlRelationCompletionResult =
       readonly revision: SqlRevision;
       readonly failure: SqlServiceFailure;
     };
-
-export interface SqlRelationCompletionSession<
-  Context extends SqlDocumentContext,
-> {
-  readonly revision: SqlRevision;
-  readonly update: (
-    transaction: SqlDocumentUpdate<Context>,
-  ) => SqlRevision;
-  readonly complete: (
-    request: SqlCompletionRequest,
-  ) => Promise<SqlRelationCompletionResult>;
-  readonly onDidChange: (
-    listener: (event: SqlSessionChangeEvent) => void,
-  ) => SqlDisposable;
-  readonly isCurrent: (revision: SqlRevision) => boolean;
-  readonly dispose: () => void;
-}
