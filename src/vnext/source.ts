@@ -38,6 +38,24 @@ export interface SqlSourceSnapshot {
   readonly originalText: string;
 }
 
+export function findSqlEmbeddedRegionAtOrAfter(
+  source: SqlSourceSnapshot,
+  position: number,
+): number {
+  let low = 0;
+  let high = source.embeddedRegions.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const region = source.embeddedRegions[middle];
+    if (!region || region.to <= position) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
 interface MissingDataProperty {
   readonly found: false;
 }
