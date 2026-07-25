@@ -151,6 +151,7 @@ test(
       expect(firstPostgresql).toStrictEqual({
         kind: "parsed",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
+        queryBindings: expect.any(Object),
         requestId: 1,
         statementKind: "query",
       });
@@ -166,6 +167,7 @@ test(
       ).resolves.toStrictEqual({
         kind: "parsed",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
+        queryBindings: expect.any(Object),
         requestId: 2,
         statementKind: "query",
       });
@@ -180,6 +182,7 @@ test(
       ).resolves.toStrictEqual({
         kind: "parsed",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
+        queryBindings: expect.any(Object),
         requestId: 3,
         statementKind: "query",
       });
