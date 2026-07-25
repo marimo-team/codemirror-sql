@@ -18,7 +18,14 @@ import type {
   SqlCatalogRevisionTarget,
   SqlCatalogScopeMembership,
 } from "./relation-catalog-epoch-coordinator.js";
+import {
+  createSqlCatalogSearchPolicyStore,
+} from "./relation-catalog-search-policy-store.js";
 import type {
+  SqlCatalogSearchPolicyStore,
+} from "./relation-catalog-search-policy-store.js";
+import type {
+  SqlCatalogEpoch,
   SqlCatalogSearchRequest,
 } from "./relation-completion-types.js";
 import type { SqlRelationDialectRuntime } from "./relation-dialect.js";
@@ -35,12 +42,15 @@ export const MAX_CATALOG_QUEUED_SEARCH_WORK = 64;
 export const DEFAULT_CATALOG_QUEUE_DEADLINE_MS = 100;
 export const DEFAULT_CATALOG_EXECUTION_DEADLINE_MS = 250;
 export const DEFAULT_CATALOG_SYNCHRONOUS_BUDGET_MS = 8;
+export const DEFAULT_CATALOG_REFRESH_LEASE_MS = 1_000;
 export const MIN_CATALOG_QUEUE_DEADLINE_MS = 10;
 export const MAX_CATALOG_QUEUE_DEADLINE_MS = 2_000;
 export const MIN_CATALOG_EXECUTION_DEADLINE_MS = 10;
 export const MAX_CATALOG_EXECUTION_DEADLINE_MS = 5_000;
 export const MIN_CATALOG_SYNCHRONOUS_BUDGET_MS = 1;
 export const MAX_CATALOG_SYNCHRONOUS_BUDGET_MS = 50;
+export const MIN_CATALOG_REFRESH_LEASE_MS = 1;
+export const MAX_CATALOG_REFRESH_LEASE_MS = 5_000;
 
 export interface SqlCatalogSearchDeadlineScheduler {
   readonly clearTimeout: (
@@ -59,6 +69,7 @@ export interface SqlCatalogSearchWorkOptions {
   readonly deadlineScheduler?: SqlCatalogSearchDeadlineScheduler;
   readonly executionDeadlineMs?: number;
   readonly queueDeadlineMs?: number;
+  readonly refreshLeaseMs?: number;
   readonly synchronousBudgetMs?: number;
 }
 
@@ -97,8 +108,33 @@ export type SqlCatalogSearchWorkOutcome =
       readonly reason: SqlCatalogSearchWorkUnavailableReason;
     };
 
+export type SqlCatalogSearchAvailabilityTarget = (
+  this: void,
+) =>
+  | ((this: void) => undefined)
+  | null;
+
+export type SqlCatalogSearchRefreshRetentionResult =
+  | {
+      readonly status: "retained";
+      readonly remainingLeaseMs: number;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason:
+        | "disposed"
+        | "expired"
+        | "invalid-target"
+        | "not-retainable"
+        | "superseded";
+    };
+
 export interface SqlCatalogSearchWorkTicket {
   readonly cancel: (this: void) => void;
+  readonly retainForRefresh: (
+    this: void,
+    prepareAvailability: SqlCatalogSearchAvailabilityTarget,
+  ) => SqlCatalogSearchRefreshRetentionResult;
   readonly result: Promise<SqlCatalogSearchWorkOutcome>;
 }
 
@@ -151,6 +187,7 @@ interface NormalizedOptions {
   readonly deadlineScheduler: SqlCatalogSearchDeadlineScheduler;
   readonly executionDeadlineMs: number;
   readonly queueDeadlineMs: number;
+  readonly refreshLeaseMs: number;
   readonly synchronousBudgetMs: number;
 }
 
@@ -160,6 +197,7 @@ interface OwnerState {
   disposed: boolean;
   readonly membership: SqlCatalogScopeMembership;
   owner: CoordinatorState | null;
+  refreshObserver: RefreshObserverState | null;
   requestToken: object | null;
   readonly scope: string;
 }
@@ -167,9 +205,26 @@ interface OwnerState {
 interface ConsumerState {
   readonly capture: SqlCatalogEpochCapture;
   cancelled: boolean;
+  readonly kind: "consumer";
   owner: OwnerState | null;
   resolve: (outcome: SqlCatalogSearchWorkOutcome) => void;
+  readonly retention: TicketRetentionState;
   settled: boolean;
+  work: WorkState | null;
+}
+
+interface TicketRetentionState {
+  consumer: ConsumerState | null;
+  observer: RefreshObserverState | null;
+}
+
+interface RefreshObserverState {
+  readonly capture: SqlCatalogEpochCapture;
+  readonly kind: "observer";
+  readonly prepareAvailability: SqlCatalogSearchAvailabilityTarget;
+  readonly owner: OwnerState;
+  readonly retention: TicketRetentionState;
+  timer: DeadlineCell | null;
   work: WorkState | null;
 }
 
@@ -181,6 +236,7 @@ interface WorkState {
   executionDeadline: number | null;
   executionTimer: DeadlineCell | null;
   joinable: boolean;
+  readonly observers: Set<RefreshObserverState>;
   readonly owners: Set<ConsumerState>;
   phase:
     | "active"
@@ -218,8 +274,10 @@ interface CoordinatorState {
   readonly epochs: SqlCatalogEpochCoordinator;
   readonly joinable: Set<WorkState>;
   lastNow: number;
+  readonly notifications: Set<AvailabilityNotificationState>;
   readonly options: NormalizedOptions;
   readonly owners: Set<OwnerState>;
+  readonly policyStore: SqlCatalogSearchPolicyStore;
   pumpRequested: boolean;
   pumping: boolean;
   readonly queue: WorkState[];
@@ -236,13 +294,17 @@ interface CoordinatorState {
 interface ResponseDecisionCell {
   active: boolean;
   advancing: boolean;
-  candidates: readonly ConsumerState[];
+  candidates: readonly ResponseCandidate[];
   index: number;
   pending: SqlCatalogResponseEpochDecision | null;
-  response: SqlValidatedCatalogSearchResponse | null;
-  state: CoordinatorState | null;
-  work: WorkState | null;
+  readonly dialect: SqlRelationDialectRuntime;
+  readonly request: SqlCatalogSearchRequest;
+  readonly response: SqlValidatedCatalogSearchResponse;
+  readonly state: CoordinatorState;
+  readonly work: WorkState;
 }
+
+type ResponseCandidate = ConsumerState | RefreshObserverState;
 
 interface DetachedSettlement {
   readonly outcome: SqlCatalogSearchWorkOutcome;
@@ -251,8 +313,26 @@ interface DetachedSettlement {
   ) => void;
 }
 
+interface AvailabilityNotificationState {
+  active: boolean;
+  readonly owner: OwnerState;
+  readonly requestToken: object | null;
+  readonly scope: string;
+}
+
+interface AvailabilityPreparation {
+  readonly notification: AvailabilityNotificationState;
+  readonly prepare: SqlCatalogSearchAvailabilityTarget;
+}
+
+interface AvailabilityDispatch {
+  readonly dispatch: Function;
+  readonly notification: AvailabilityNotificationState;
+}
+
 interface Effects {
   readonly aborts: AbortController[];
+  readonly availabilityPreparations: AvailabilityPreparation[];
   pump: boolean;
   readonly settlements: DetachedSettlement[];
   readonly timers: DeadlineCell[];
@@ -303,6 +383,7 @@ function unavailableOutcome(
 function effects(): Effects {
   return {
     aborts: [],
+    availabilityPreparations: [],
     pump: false,
     settlements: [],
     timers: [],
@@ -335,6 +416,9 @@ function normalizeOptions(
     const executionDeadlineMs =
       candidate?.executionDeadlineMs ??
       DEFAULT_CATALOG_EXECUTION_DEADLINE_MS;
+    const refreshLeaseMs =
+      candidate?.refreshLeaseMs ??
+      DEFAULT_CATALOG_REFRESH_LEASE_MS;
     const synchronousBudgetMs =
       candidate?.synchronousBudgetMs ??
       DEFAULT_CATALOG_SYNCHRONOUS_BUDGET_MS;
@@ -359,6 +443,11 @@ function normalizeOptions(
         synchronousBudgetMs,
         MIN_CATALOG_SYNCHRONOUS_BUDGET_MS,
         MAX_CATALOG_SYNCHRONOUS_BUDGET_MS,
+      ) ||
+      !isDuration(
+        refreshLeaseMs,
+        MIN_CATALOG_REFRESH_LEASE_MS,
+        MAX_CATALOG_REFRESH_LEASE_MS,
       ) ||
       typeof nowMethod !== "function" ||
       typeof setTimeoutMethod !== "function" ||
@@ -402,6 +491,7 @@ function normalizeOptions(
         deadlineScheduler: capturedScheduler,
         executionDeadlineMs,
         queueDeadlineMs,
+        refreshLeaseMs,
         synchronousBudgetMs,
       }),
     };
@@ -559,6 +649,7 @@ function settleDetached(
   outcome: SqlCatalogSearchWorkOutcome,
 ): void {
   consumer.settled = true;
+  consumer.retention.consumer = null;
   const resolve = consumer.resolve;
   consumer.resolve = IGNORE_DETACHED_REJECTION;
   consumer.work = null;
@@ -572,8 +663,37 @@ function runEffects(
   state: CoordinatorState,
   pending: Effects,
 ): void {
+  const availabilityDispatches: AvailabilityDispatch[] = [];
   for (const timer of pending.timers) {
     clearDeadline(state, timer);
+  }
+  for (const preparation of pending.availabilityPreparations) {
+    const { notification, prepare } = preparation;
+    if (!isCurrentNotification(state, notification)) {
+      retireNotification(state, notification);
+      continue;
+    }
+    let candidate: unknown;
+    try {
+      candidate = Reflect.apply(prepare, undefined, []);
+    } catch {
+      retireNotification(state, notification);
+      continue;
+    }
+    if (
+      typeof candidate === "function" &&
+      isCurrentNotification(state, notification)
+    ) {
+      availabilityDispatches.push({
+        dispatch: candidate,
+        notification,
+      });
+    } else if (candidate !== null) {
+      drainDetachedSettlement(candidate);
+      retireNotification(state, notification);
+    } else {
+      retireNotification(state, notification);
+    }
   }
   for (const settlement of pending.settlements) {
     settlement.resolve(settlement.outcome);
@@ -585,7 +705,63 @@ function runEffects(
       // Work was made inert before provider abort.
     }
   }
+  for (const item of availabilityDispatches) {
+    const { dispatch, notification } = item;
+    if (!isCurrentNotification(state, notification)) {
+      retireNotification(state, notification);
+      continue;
+    }
+    retireNotification(state, notification);
+    try {
+      const result = Reflect.apply(dispatch, undefined, []);
+      if (result !== undefined) {
+        drainDetachedSettlement(result);
+      }
+    } catch {
+      // Availability state was already detached and cannot reopen.
+    }
+  }
   if (pending.pump) pump(state);
+}
+
+function isCurrentNotification(
+  state: CoordinatorState,
+  notification: AvailabilityNotificationState,
+): boolean {
+  const owner = notification.owner;
+  return (
+    notification.active &&
+    !state.disposed &&
+    !owner.disposed &&
+    owner.owner === state &&
+    owner.requestToken === notification.requestToken
+  );
+}
+
+function retireNotification(
+  state: CoordinatorState,
+  notification: AvailabilityNotificationState,
+): void {
+  if (!notification.active) return;
+  notification.active = false;
+  state.notifications.delete(notification);
+}
+
+function retireNotifications(
+  state: CoordinatorState,
+  predicate: (
+    notification: AvailabilityNotificationState,
+  ) => boolean,
+): void {
+  for (const notification of state.notifications) {
+    if (predicate(notification)) {
+      retireNotification(state, notification);
+    }
+  }
+}
+
+function hasWorkOwners(work: WorkState): boolean {
+  return work.owners.size > 0 || work.observers.size > 0;
 }
 
 function sameComponent(
@@ -698,9 +874,6 @@ function revokeDecisionCell(work: WorkState): void {
   cell.active = false;
   cell.candidates = [];
   cell.pending = null;
-  cell.response = null;
-  cell.state = null;
-  cell.work = null;
 }
 
 function detachAbort(
@@ -724,6 +897,32 @@ function detachOwners(
   work.owners.clear();
   for (const consumer of consumers) {
     settleDetached(pending.settlements, consumer, outcome);
+  }
+}
+
+function detachObserverState(
+  observer: RefreshObserverState,
+  pending: Effects,
+): void {
+  const work = observer.work;
+  if (!work) return;
+  observer.work = null;
+  work.observers.delete(observer);
+  const owner = observer.owner;
+  owner.refreshObserver = null;
+  const timer = observer.timer;
+  observer.timer = null;
+  if (timer) pending.timers.push(timer);
+  observer.retention.observer = null;
+}
+
+function detachObservers(
+  work: WorkState,
+  pending: Effects,
+): void {
+  const observers = [...work.observers];
+  for (const observer of observers) {
+    detachObserverState(observer, pending);
   }
 }
 
@@ -756,6 +955,7 @@ function finishWork(
   revokeProviderCell(work);
   revokeDecisionCell(work);
   detachOwners(work, outcome, pending);
+  detachObservers(work, pending);
   if (abort) detachAbort(work, pending);
   else work.abortController = null;
   work.dialect = null;
@@ -772,10 +972,42 @@ function retireActiveOwners(
   removeJoinable(state, work);
   work.phase = "retired";
   detachOwners(work, outcome, pending);
+  detachObservers(work, pending);
   detachAbort(work, pending);
   work.dialect = null;
   work.request = null;
   work.scope = "";
+}
+
+function retireUnownedWork(
+  state: CoordinatorState,
+  work: WorkState,
+  pending: Effects,
+): void {
+  if (work.phase === "queued") {
+    finishWork(
+      state,
+      work,
+      CANCELLED_OUTCOME,
+      pending,
+      false,
+    );
+  } else if (work.phase === "active") {
+    retireActiveOwners(
+      state,
+      work,
+      CANCELLED_OUTCOME,
+      pending,
+    );
+  } else if (work.phase === "deciding") {
+    finishWork(
+      state,
+      work,
+      CANCELLED_OUTCOME,
+      pending,
+      false,
+    );
+  }
 }
 
 function detachConsumerInto(
@@ -789,31 +1021,8 @@ function detachConsumerInto(
     work.owners.delete(consumer);
   }
   settleDetached(pending.settlements, consumer, outcome);
-  if (work && work.owners.size === 0) {
-    if (work.phase === "queued") {
-      finishWork(
-        state,
-        work,
-        CANCELLED_OUTCOME,
-        pending,
-        false,
-      );
-    } else if (work.phase === "active") {
-      retireActiveOwners(
-        state,
-        work,
-        CANCELLED_OUTCOME,
-        pending,
-      );
-    } else if (work.phase === "deciding") {
-      finishWork(
-        state,
-        work,
-        CANCELLED_OUTCOME,
-        pending,
-        false,
-      );
-    }
+  if (work && !hasWorkOwners(work)) {
+    retireUnownedWork(state, work, pending);
   }
 }
 
@@ -829,6 +1038,26 @@ function detachConsumer(
     outcome,
     pending,
   );
+  runEffects(state, pending);
+}
+
+function detachRefreshObserverInto(
+  state: CoordinatorState,
+  observer: RefreshObserverState,
+  pending: Effects,
+): void {
+  const work = observer.work;
+  detachObserverState(observer, pending);
+  if (!work || hasWorkOwners(work)) return;
+  retireUnownedWork(state, work, pending);
+}
+
+function detachRefreshObserver(
+  state: CoordinatorState,
+  observer: RefreshObserverState,
+): void {
+  const pending = effects();
+  detachRefreshObserverInto(state, observer, pending);
   runEffects(state, pending);
 }
 
@@ -958,6 +1187,64 @@ function finishDecision(
   runEffects(state, pending);
 }
 
+function prepareAvailabilityObservers(
+  state: CoordinatorState,
+  work: WorkState,
+  pending: Effects,
+): void {
+  const observers = [...work.observers];
+  for (const observer of observers) {
+    const prepare = observer.prepareAvailability;
+    const notification: AvailabilityNotificationState = {
+      active: true,
+      owner: observer.owner,
+      requestToken: observer.owner.requestToken,
+      scope: observer.owner.scope,
+    };
+    state.notifications.add(notification);
+    detachObserverState(observer, pending);
+    pending.availabilityPreparations.push({
+      notification,
+      prepare,
+    });
+  }
+}
+
+function finishUsableDecision(
+  cell: ResponseDecisionCell,
+  state: CoordinatorState,
+  work: WorkState,
+  outcome: Extract<
+    SqlCatalogSearchWorkOutcome,
+    { readonly status: "usable" }
+  >,
+): void {
+  const recorded = state.policyStore.record(
+    cell.request,
+    cell.dialect,
+    outcome.response,
+  );
+  if (recorded.status !== "accepted") {
+    finishDecision(
+      cell,
+      state,
+      work,
+      recorded.status === "conflict" &&
+        recorded.reason === "capacity"
+          ? unavailableOutcome("overloaded")
+          : SUPERSEDED_OUTCOME,
+    );
+    return;
+  }
+  cell.active = false;
+  const pending = effects();
+  if (outcome.response.status === "ready") {
+    prepareAvailabilityObservers(state, work, pending);
+  }
+  finishWork(state, work, outcome, pending, false);
+  runEffects(state, pending);
+}
+
 function decisionOutcome(
   decision: Exclude<
     SqlCatalogResponseEpochDecision,
@@ -1011,7 +1298,6 @@ function advanceDecision(cell: ResponseDecisionCell): void {
       const state = cell.state;
       const work = cell.work;
       const response = cell.response;
-      if (!state || !work || !response) return;
       const pendingDecision = cell.pending;
       cell.pending = null;
       if (pendingDecision) {
@@ -1024,7 +1310,7 @@ function advanceDecision(cell: ResponseDecisionCell): void {
           if (pendingDecision.observation === "baseline") {
             rekeyUnobservedWork(state, work, response);
           }
-          finishDecision(
+          finishUsableDecision(
             cell,
             state,
             work,
@@ -1051,7 +1337,9 @@ function advanceDecision(cell: ResponseDecisionCell): void {
         cell.index += 1;
         if (
           candidate &&
-          !candidate.settled &&
+          (candidate.kind === "observer"
+            ? candidate.work !== null
+            : !candidate.settled) &&
           candidate.work === work
         ) {
           capture = candidate.capture;
@@ -1178,7 +1466,7 @@ function handleProviderResult(
   if (
     state.disposed ||
     work.phase !== "deciding" ||
-    work.owners.size === 0
+    !hasWorkOwners(work)
   ) {
     return;
   }
@@ -1186,7 +1474,7 @@ function handleProviderResult(
   if (
     state.disposed ||
     work.phase !== "deciding" ||
-    work.owners.size === 0 ||
+    !hasWorkOwners(work) ||
     afterDecode === null ||
     work.executionDeadline === null ||
     afterDecode >= work.executionDeadline
@@ -1209,9 +1497,14 @@ function handleProviderResult(
   const cell: ResponseDecisionCell = {
     active: true,
     advancing: false,
-    candidates: [...work.owners],
+    candidates: [
+      ...work.owners,
+      ...work.observers,
+    ],
+    dialect,
     index: 0,
     pending: null,
+    request,
     response: decoded.value,
     state,
     work,
@@ -1228,7 +1521,7 @@ function startWork(
   if (
     state.disposed ||
     work.phase !== "queued" ||
-    work.owners.size === 0
+    !hasWorkOwners(work)
   ) {
     return;
   }
@@ -1358,11 +1651,125 @@ function makeImmediateTicket(
 ): SqlCatalogSearchWorkTicket {
   return Object.freeze({
     cancel: (): void => {},
+    retainForRefresh:
+      (): SqlCatalogSearchRefreshRetentionResult =>
+        Object.freeze({
+          reason:
+            outcome.status === "unavailable" &&
+            outcome.reason === "disposed"
+              ? "disposed"
+              : "not-retainable",
+          status: "unavailable",
+        }),
     result: new INTRINSIC_PROMISE<SqlCatalogSearchWorkOutcome>(
       (resolve) => {
         resolve(outcome);
       },
     ),
+  });
+}
+
+function unavailableRetention(
+  reason: Extract<
+    SqlCatalogSearchRefreshRetentionResult,
+    { readonly status: "unavailable" }
+  >["reason"],
+): SqlCatalogSearchRefreshRetentionResult {
+  return Object.freeze({ reason, status: "unavailable" });
+}
+
+function retainConsumerForRefresh(
+  state: CoordinatorState,
+  consumer: ConsumerState,
+  owner: OwnerState,
+  work: WorkState,
+  prepareAvailability: SqlCatalogSearchAvailabilityTarget,
+): SqlCatalogSearchRefreshRetentionResult {
+  if (typeof prepareAvailability !== "function") {
+    return unavailableRetention("invalid-target");
+  }
+  const retention = consumer.retention;
+  const hardDeadline =
+    work.phase === "queued"
+      ? work.queueDeadline
+      : work.executionDeadline;
+  const requestToken = owner.requestToken;
+  const now = readNow(state);
+  if (
+    state.disposed ||
+    owner.disposed ||
+    owner.owner !== state
+  ) {
+    return unavailableRetention("disposed");
+  }
+  if (
+    owner.requestToken !== requestToken ||
+    consumer.settled ||
+    consumer.work !== work ||
+    owner.current !== consumer
+  ) {
+    return unavailableRetention("superseded");
+  }
+  if (
+    now === null ||
+    hardDeadline === null ||
+    now >= hardDeadline
+  ) {
+    return unavailableRetention("expired");
+  }
+  const leaseDeadline = deadlineFrom(
+    now,
+    state.options.refreshLeaseMs,
+  );
+  if (leaseDeadline === null) {
+    return unavailableRetention("expired");
+  }
+  const deadline = Math.min(
+    hardDeadline,
+    leaseDeadline,
+  );
+  const observer: RefreshObserverState = {
+    capture: consumer.capture,
+    kind: "observer",
+    owner,
+    prepareAvailability,
+    retention,
+    timer: null,
+    work,
+  };
+  work.observers.add(observer);
+  owner.refreshObserver = observer;
+  retention.observer = observer;
+  const pending = effects();
+  work.owners.delete(consumer);
+  settleDetached(
+    pending.settlements,
+    consumer,
+    CANCELLED_OUTCOME,
+  );
+  const timer = scheduleDeadline(
+    state,
+    deadline,
+    () => detachRefreshObserver(state, observer),
+  );
+  if (observer.work) {
+    observer.timer = timer;
+  } else {
+    clearDeadline(state, timer);
+  }
+  runEffects(state, pending);
+  if (!observer.work) {
+    return unavailableRetention(
+      state.disposed || owner.disposed
+        ? "disposed"
+        : owner.requestToken !== requestToken
+          ? "superseded"
+          : "expired",
+    );
+  }
+  return Object.freeze({
+    remainingLeaseMs: deadline - now,
+    status: "retained",
   });
 }
 
@@ -1381,20 +1788,37 @@ function makeConsumer(
         resolve = settle;
       },
     );
+  const retention: TicketRetentionState = {
+    consumer: null,
+    observer: null,
+  };
   const consumer: ConsumerState = {
     cancelled: false,
     capture,
+    kind: "consumer",
     owner,
     resolve,
+    retention,
     settled: false,
     work: null,
   };
+  retention.consumer = consumer;
   return {
     consumer,
     ticket: Object.freeze({
       cancel: (): void => {
-        if (consumer.cancelled || consumer.settled) return;
+        if (consumer.cancelled) return;
         consumer.cancelled = true;
+        const observer = retention.observer;
+        const observerState = observer?.owner?.owner;
+        if (observer && observerState) {
+          detachRefreshObserver(
+            observerState,
+            observer,
+          );
+          return;
+        }
+        if (consumer.settled) return;
         const state = consumer.owner?.owner;
         if (state) {
           detachConsumer(
@@ -1403,6 +1827,30 @@ function makeConsumer(
             CANCELLED_OUTCOME,
           );
         }
+      },
+      retainForRefresh: (
+        prepareAvailability:
+          SqlCatalogSearchAvailabilityTarget,
+      ): SqlCatalogSearchRefreshRetentionResult => {
+        const retainedConsumer = retention.consumer;
+        const retainedOwner = retainedConsumer?.owner;
+        const retainedWork = retainedConsumer?.work;
+        const state = retainedOwner?.owner;
+        if (
+          !retainedConsumer ||
+          !retainedOwner ||
+          !retainedWork ||
+          !state
+        ) {
+          return unavailableRetention("not-retainable");
+        }
+        return retainConsumerForRefresh(
+          state,
+          retainedConsumer,
+          retainedOwner,
+          retainedWork,
+          prepareAvailability,
+        );
       },
       result,
     }),
@@ -1428,6 +1876,7 @@ function replaceOwnerConsumer(
 ): void {
   const pending = effects();
   const previous = owner.current;
+  const previousObserver = owner.refreshObserver;
   work.owners.add(consumer);
   consumer.work = work;
   owner.current = consumer;
@@ -1439,7 +1888,54 @@ function replaceOwnerConsumer(
       pending,
     );
   }
+  if (previousObserver) {
+    detachRefreshObserverInto(
+      state,
+      previousObserver,
+      pending,
+    );
+  }
   runEffects(state, pending);
+}
+
+function replaceOwnerWithImmediate(
+  state: CoordinatorState,
+  owner: OwnerState,
+  requestToken: object,
+  outcome: SqlCatalogSearchWorkOutcome,
+): SqlCatalogSearchWorkTicket {
+  const pending = effects();
+  const previous = owner.current;
+  const previousObserver = owner.refreshObserver;
+  if (previous) {
+    detachConsumerInto(
+      state,
+      previous,
+      SUPERSEDED_OUTCOME,
+      pending,
+    );
+  }
+  if (previousObserver) {
+    detachRefreshObserverInto(
+      state,
+      previousObserver,
+      pending,
+    );
+  }
+  runEffects(state, pending);
+  if (
+    state.disposed ||
+    owner.disposed ||
+    owner.owner !== state
+  ) {
+    return makeImmediateTicket(
+      unavailableOutcome("disposed"),
+    );
+  }
+  if (owner.requestToken !== requestToken) {
+    return makeImmediateTicket(SUPERSEDED_OUTCOME);
+  }
+  return makeImmediateTicket(outcome);
 }
 
 function requestWork(
@@ -1470,6 +1966,13 @@ function requestWork(
         state,
         previous,
         SUPERSEDED_OUTCOME,
+        pending,
+      );
+    }
+    if (owner.refreshObserver) {
+      detachRefreshObserverInto(
+        state,
+        owner.refreshObserver,
         pending,
       );
     }
@@ -1513,19 +2016,71 @@ function requestWork(
     return makeImmediateTicket(SUPERSEDED_OUTCOME);
   }
   if (!request) {
-    const pending = effects();
-    const previous = owner.current;
-    if (previous) {
-      detachConsumerInto(
-        state,
-        previous,
-        SUPERSEDED_OUTCOME,
-        pending,
-      );
-    }
-    runEffects(state, pending);
-    return makeImmediateTicket(
+    return replaceOwnerWithImmediate(
+      state,
+      owner,
+      requestToken,
       unavailableOutcome("invalid-request"),
+    );
+  }
+  const policy = state.policyStore.probe(
+    request,
+    owner.dialect,
+  );
+  if (policy.status === "ready") {
+    return replaceOwnerWithImmediate(
+      state,
+      owner,
+      requestToken,
+      Object.freeze({
+        observation: "equal",
+        response: policy.response,
+        status: "usable",
+      }),
+    );
+  }
+  if (policy.status === "failed") {
+    return replaceOwnerWithImmediate(
+      state,
+      owner,
+      requestToken,
+      Object.freeze({
+        observation: "equal",
+        response: Object.freeze({
+          code: policy.code,
+          epoch: policy.epoch,
+          retry: policy.retry,
+          status: "failed",
+        }),
+        status: "usable",
+      }),
+    );
+  }
+  if (policy.status === "overloaded") {
+    return replaceOwnerWithImmediate(
+      state,
+      owner,
+      requestToken,
+      unavailableOutcome("overloaded"),
+    );
+  }
+  if (
+    policy.status === "miss" &&
+    policy.loadingEpoch !== null &&
+    state.epochs.hasLiveSubscription(owner.scope)
+  ) {
+    return replaceOwnerWithImmediate(
+      state,
+      owner,
+      requestToken,
+      Object.freeze({
+        observation: "equal",
+        response: Object.freeze({
+          epoch: policy.loadingEpoch,
+          status: "loading",
+        }),
+        status: "usable",
+      }),
     );
   }
   const created = makeConsumer(captured.capture, owner);
@@ -1545,11 +2100,19 @@ function requestWork(
   }
   const pending = effects();
   const previous = owner.current;
+  const previousObserver = owner.refreshObserver;
   if (previous) {
     detachConsumerInto(
       state,
       previous,
       SUPERSEDED_OUTCOME,
+      pending,
+    );
+  }
+  if (previousObserver) {
+    detachRefreshObserverInto(
+      state,
+      previousObserver,
       pending,
     );
   }
@@ -1602,6 +2165,7 @@ function requestWork(
     executionDeadline: null,
     executionTimer: null,
     joinable: true,
+    observers: new Set(),
     owners: new Set([created.consumer]),
     phase: "queued",
     providerCell: null,
@@ -1636,8 +2200,13 @@ function requestWork(
 function prepareTransition(
   state: CoordinatorState,
   scope: string,
+  epoch: SqlCatalogEpoch,
 ): (() => undefined) | null {
-  if (state.disposed) return null;
+  retireNotifications(
+    state,
+    (notification) => notification.scope === scope,
+  );
+  state.policyStore.advanceScope(scope, epoch);
   const pending = effects();
   for (const work of state.works) {
     if (
@@ -1693,11 +2262,35 @@ function disposeOwner(owner: OwnerState): void {
   owner.disposed = true;
   owner.owner = null;
   owner.requestToken = null;
-  state?.owners.delete(owner);
+  if (state) {
+    retireNotifications(
+      state,
+      (notification) => notification.owner === owner,
+    );
+    state.owners.delete(owner);
+  }
   const current = owner.current;
+  const observer = owner.refreshObserver;
   owner.current = null;
-  if (state && current) {
-    detachConsumer(state, current, CANCELLED_OUTCOME);
+  owner.refreshObserver = null;
+  if (state && (current || observer)) {
+    const pending = effects();
+    if (current) {
+      detachConsumerInto(
+        state,
+        current,
+        CANCELLED_OUTCOME,
+        pending,
+      );
+    }
+    if (observer) {
+      detachRefreshObserverInto(
+        state,
+        observer,
+        pending,
+      );
+    }
+    runEffects(state, pending);
   }
   owner.membership.dispose();
 }
@@ -1756,6 +2349,7 @@ function prepareOwner(
     disposed: false,
     membership: prepared.membership,
     owner: state,
+    refreshObserver: null,
     requestToken: null,
     scope,
   };
@@ -1773,6 +2367,7 @@ function disposeCoordinatorState(
   state.disposed = true;
   state.search = null;
   state.pumpRequested = false;
+  retireNotifications(state, () => true);
   const pending = effects();
   for (const work of state.works) {
     finishWork(
@@ -1787,9 +2382,11 @@ function disposeCoordinatorState(
     owner.disposed = true;
     owner.current = null;
     owner.owner = null;
+    owner.refreshObserver = null;
     owner.requestToken = null;
   }
   state.owners.clear();
+  state.policyStore.dispose();
   state.epochs.dispose();
   runEffects(state, pending);
 }
@@ -1815,8 +2412,8 @@ export function createSqlCatalogSearchWorkCoordinator(
   let state: CoordinatorState | null = null;
   const epochResult = createSqlCatalogEpochCoordinator(
     provider,
-    (scope): (() => undefined) | null =>
-      state ? prepareTransition(state, scope) : null,
+    (scope, epoch): (() => undefined) | null =>
+      state ? prepareTransition(state, scope, epoch) : null,
     (): undefined => {
       if (state) disposeCoordinatorState(state);
       return undefined;
@@ -1834,8 +2431,10 @@ export function createSqlCatalogSearchWorkCoordinator(
     epochs: epochResult.coordinator,
     joinable: new Set(),
     lastNow: normalized.initialNow,
+    notifications: new Set(),
     options: normalized.options,
     owners: new Set(),
+    policyStore: createSqlCatalogSearchPolicyStore(),
     pumpRequested: false,
     pumping: false,
     queue: [],

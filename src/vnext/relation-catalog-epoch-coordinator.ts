@@ -117,6 +117,10 @@ export type SqlCatalogResponseEpochSubmissionResult =
     };
 
 export interface SqlCatalogEpochCoordinator {
+  readonly hasLiveSubscription: (
+    this: void,
+    scope: string,
+  ) => boolean;
   readonly providerId: string;
   readonly prepareScopeMembership: (
     this: void,
@@ -1273,6 +1277,17 @@ function createCoordinatorHandle(
   return Object.freeze({
     dispose: (): void => {
       disposeCoordinator(state);
+    },
+    hasLiveSubscription: (scope: string): boolean => {
+      const subscription =
+        state.scopes.get(scope)?.subscription;
+      return Boolean(
+        !state.disposed &&
+          subscription &&
+          !subscription.failed &&
+          !subscription.installing &&
+          subscription.cell.active,
+      );
     },
     prepareScopeMembership: (
       scope: unknown,
