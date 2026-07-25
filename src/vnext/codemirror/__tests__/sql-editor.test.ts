@@ -1275,6 +1275,144 @@ describe("sqlEditor", () => {
     );
   });
 
+  it("denies SQL completion at an unmatched template EOF without removing external sources", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const gate = vi.fn((state, position) =>
+      !state.sliceDoc(0, position).endsWith("{")
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 15,
+          options: [{ label: "python_variable" }],
+        })],
+        isCompletionPositionAllowed: gate,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension, "SELECT * FROM {");
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(0);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "python_variable" }),
+    ]);
+    expect(gate).toHaveBeenCalledWith(view.state, 15);
+  });
+
+  it("allows normal SQL completion through the position gate", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const gate = vi.fn(() => true);
+    const support = sqlEditor({
+      autocomplete: {
+        isCompletionPositionAllowed: gate,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(1);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "users" }),
+    ]);
+    expect(gate).toHaveBeenCalledWith(view.state, 16);
+  });
+
+  it("fails a throwing position gate closed while retaining external sources", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 15,
+          options: [{ label: "python_variable" }],
+        })],
+        isCompletionPositionAllowed: () => {
+          throw new Error("host state unavailable");
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension, "SELECT * FROM {");
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(0);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "python_variable" }),
+    ]);
+  });
+
+  it("cancels pending SQL completion when the position gate flips false", async () => {
+    let allowed = true;
+    const harness = fakeService(
+      () => new Promise(() => undefined),
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await vi.waitFor(() => {
+      expect(harness.completeSignals).toHaveLength(1);
+    });
+    allowed = false;
+    view.dispatch({});
+    await vi.waitFor(() => {
+      expect(harness.completeSignals[0]?.aborted).toBe(true);
+    });
+  });
+
+  it("disposes rich info when the position gate flips false", async () => {
+    let allowed = true;
+    const destroys: Array<ReturnType<typeof vi.fn>> = [];
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        infoResolver: () => {
+          const destroy = vi.fn();
+          destroys.push(destroy);
+          return {
+            destroy,
+            dom: document.createElement("div"),
+          };
+        },
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    await vi.waitFor(() => expect(destroys.length).toBeGreaterThan(0));
+    const currentDestroy = destroys.at(-1);
+    if (!currentDestroy) throw new Error("Expected rich info");
+
+    allowed = false;
+    view.dispatch({});
+    expect(currentDestroy).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     "cancelled",
     "failed",

@@ -58,18 +58,19 @@ The region scanner recognizes single `{python}` expressions, ignores escaped
 set after every document change. SQL completion is unavailable inside those
 regions while the external variable source remains active.
 
-There is one unresolved insertion-point edge case. Embedded regions are
-non-empty half-open ranges. An unmatched `{` ending at the document boundary
-cannot contain the cursor position at `doc.length`, so regions alone cannot
-suppress SQL completion at that exact point. Before cutover, either:
+Embedded regions are non-empty half-open ranges, so an unmatched `{` ending at
+the document boundary cannot contain the insertion point at `doc.length`.
+Marimo closes that boundary with
+`autocomplete.isCompletionPositionAllowed`. Its synchronous scanner returns
+false while the insertion point is in an unmatched Python expression. The
+adapter then skips the SQL session source, while still running the installed
+variable and keyword sources. A false result or thrown gate is fail-closed,
+and a gate transition to false cancels owned SQL completion work and disposes
+owned rich-info resources.
 
-- add an adapter completion gate for host-owned embedded insertion points;
-- extend the core template contract with an explicit open-ended cursor
-  barrier; or
-- keep a routed completion source that returns only variable results for the
-  unmatched-expression site.
-
-Do not encode a range beyond the document or an empty region.
+The gate receives only the immutable CodeMirror `EditorState` and numeric
+position. It must remain synchronous and side-effect free. Do not encode a
+range beyond the document or an empty embedded region.
 
 The rich-info resolver uses catalog provenance IDs to look up current marimo
 metadata, mounts React into a new element, and returns
@@ -119,7 +120,8 @@ provider request per relation.
 1. Capture golden legacy results for labels, kinds, edit ranges, qualification,
    and details across representative connection shapes.
 2. Land the shared provider, incarnation scope, atomic transaction builder,
-   region scanner, and completion router behind a feature flag.
+   region scanner, insertion-point completion gate, and completion router
+   behind a feature flag.
 3. Run vNext relation completion in shadow mode while the legacy source remains
    visible.
 4. Add column and namespace completion to the library and compare the golden

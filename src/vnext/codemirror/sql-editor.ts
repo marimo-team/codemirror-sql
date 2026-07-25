@@ -15,6 +15,7 @@ import {
   Prec,
   StateEffect,
   StateField,
+  type EditorState,
   type EditorSelection,
   type Extension,
   type StateEffectType,
@@ -63,6 +64,10 @@ export interface SqlEditorAutocompleteOptions {
   readonly defaultKeymap?: boolean;
   readonly externalSources?: readonly CompletionSource[];
   readonly infoResolver?: SqlCompletionInfoResolver;
+  readonly isCompletionPositionAllowed?: (
+    state: EditorState,
+    position: number,
+  ) => boolean;
   readonly maxRenderedOptions?: number;
   readonly selectOnOpen?: boolean;
   readonly updateSyncTime?: number;
@@ -198,6 +203,7 @@ function haveOneEditRange(items: readonly SqlCompletionItem[]): boolean {
 }
 
 function completionType(item: SqlCompletionItem): string {
+  if (item.kind === "column") return "property";
   return item.relationKind === "cte" ? "type" : "table";
 }
 
@@ -260,6 +266,7 @@ export function createSqlEditorInternal<
   const {
     externalSources = [],
     infoResolver,
+    isCompletionPositionAllowed,
     ...autocompleteOptions
   } = autocomplete;
 
@@ -377,6 +384,17 @@ export function createSqlEditorInternal<
         capture.document === state.doc &&
         capture.selection.eq(state.selection)
       );
+    }
+
+    #completionPositionIsAllowed(
+      state: EditorState,
+      position: number,
+    ): boolean {
+      try {
+        return isCompletionPositionAllowed?.(state, position) ?? true;
+      } catch {
+        return false;
+      }
     }
 
     #scheduleClose(): void {
@@ -539,6 +557,14 @@ export function createSqlEditorInternal<
       context: CompletionContext,
     ): Promise<CompletionResult | null> => {
       this.#clearCompletionState();
+      if (
+        !this.#completionPositionIsAllowed(
+          context.state,
+          context.pos,
+        )
+      ) {
+        return null;
+      }
       const capture: CompletionCapture = {
         contextGeneration: this.#contextGeneration,
         document: this.#view.state.doc,
@@ -583,6 +609,17 @@ export function createSqlEditorInternal<
           !controller.signal.aborted
         ) {
           this.destroy();
+        }
+        return null;
+      }
+      if (
+        !this.#completionPositionIsAllowed(
+          this.#view.state,
+          context.pos,
+        )
+      ) {
+        if (this.#active === active) {
+          this.#clearCompletionState();
         }
         return null;
       }
@@ -651,6 +688,14 @@ export function createSqlEditorInternal<
     };
 
     readonly update = (update: ViewUpdate): void => {
+      if (
+        !this.#completionPositionIsAllowed(
+          update.state,
+          update.state.selection.main.head,
+        )
+      ) {
+        this.#clearCompletionState();
+      }
       let contextChanged = false;
       let regionsChanged = false;
       for (const transaction of update.transactions) {

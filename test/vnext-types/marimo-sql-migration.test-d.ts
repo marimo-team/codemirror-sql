@@ -3,6 +3,7 @@ import type {
 } from "@codemirror/autocomplete";
 import type {
   ChangeSpec,
+  EditorState,
   StateEffectType,
   TransactionSpec,
 } from "@codemirror/state";
@@ -228,6 +229,38 @@ function pythonTemplateRegions(
   return regions;
 }
 
+/**
+ * Embedded regions are half-open, so an unmatched expression ending at EOF
+ * also needs an insertion-point gate at `doc.length`.
+ */
+function sqlCompletionPositionAllowed(
+  state: EditorState,
+  position: number,
+): boolean {
+  const prefix = state.sliceDoc(0, position);
+  let inPython = false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (inPython) {
+      if (prefix[index] === "}") inPython = false;
+      continue;
+    }
+    if (
+      prefix[index] === "{" &&
+      prefix[index + 1] !== "{"
+    ) {
+      inPython = true;
+      continue;
+    }
+    if (
+      prefix[index] === "{" &&
+      prefix[index + 1] === "{"
+    ) {
+      index += 1;
+    }
+  }
+  return !inPython;
+}
+
 interface VnextCompletionRoute {
   readonly connection: MarimoConnection;
   readonly dialect: VnextDialectId;
@@ -274,6 +307,7 @@ function createVnextSupport(
         keywordCompletionSource,
       ],
       infoResolver,
+      isCompletionPositionAllowed: sqlCompletionPositionAllowed,
     },
     initialContext: contextFor(route),
     initialEmbeddedRegions: pythonTemplateRegions(initialText),
