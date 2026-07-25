@@ -185,7 +185,6 @@ function cacheKey(
     segment(request.dialectId),
     segment(String(epoch.generation)),
     segment(epoch.token),
-    segment(reference.relationEntityId ?? ""),
     segment(path),
     segment(searchPaths),
   ].join("");

@@ -536,7 +536,6 @@ const coldColumnBatch = {
         { quoted: false, value: "main" },
         { quoted: false, value: "users" },
       ],
-      relationEntityId: "connection:users",
       requestKey: "binding:users",
     },
     {
@@ -544,7 +543,6 @@ const coldColumnBatch = {
         { quoted: false, value: "main" },
         { quoted: false, value: "orders" },
       ],
-      relationEntityId: "connection:orders",
       requestKey: "binding:orders",
     },
   ],

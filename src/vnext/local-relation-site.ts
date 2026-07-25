@@ -216,10 +216,33 @@ export function analyzeSqlLocalColumnSite(
       status: "unavailable",
     });
   }
-  return recognizeSqlColumnQuerySite(
+  const result = recognizeSqlColumnQuerySite(
     context.source,
     context.slot,
     position,
     context.dialect,
   );
+  if (result.status !== "ready") return result;
+  const visibility = visibleSqlCtesAt(
+    context.layout,
+    position - context.slot.source.from,
+  );
+  const relations = result.relations.filter((relation) => {
+    const name = relation.path.length === 1
+      ? relation.path[0]
+      : undefined;
+    return name === undefined ||
+      !visibility.ctes.some((cte) =>
+        context.dialect.completion.compareCteIdentifiers(
+          name,
+          cte.name,
+        ) === "equal"
+      );
+  });
+  return relations.length === result.relations.length
+    ? result
+    : Object.freeze({
+        ...result,
+        relations: Object.freeze(relations),
+      });
 }

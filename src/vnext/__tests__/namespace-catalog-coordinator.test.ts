@@ -513,7 +513,11 @@ describe("namespace completion composer", () => {
         status: "usable",
       },
     })).toMatchObject({
-      source: { outcome: "failed" },
+      source: {
+        code: "unknown",
+        outcome: "failed",
+        retry: "never",
+      },
       value: { issues: ["namespace-catalog-failed"] },
     });
     expect(composeSqlNamespaceCompletion({

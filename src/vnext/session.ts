@@ -124,6 +124,7 @@ const MAX_DIALECTS = 1_000;
 const DEFAULT_CATALOG_RESPONSE_BUDGET_MS = 40;
 const MAX_CATALOG_RESPONSE_BUDGET_MS = 50;
 const TERMINAL_LOADING_INTENT_LEASE_MS = 1_000;
+const AUXILIARY_LOADING_RETRY_DELAY_MS = 100;
 
 interface ResolvedCatalogContext {
   readonly scope: string;
@@ -133,11 +134,11 @@ interface ResolvedCatalogContext {
 interface CompletionRequestState {
   cancelReason: "caller" | "disposed" | "superseded" | null;
   readonly revision: SqlRevision;
-  ticket:
+  readonly tickets: Set<
     | SqlCatalogSearchWorkTicket
     | SqlColumnCatalogBatchTicket
     | SqlNamespaceCatalogSearchTicket
-    | null;
+  >;
   readonly token: SqlCompletionRefreshToken;
 }
 
@@ -564,6 +565,13 @@ function completionCancellationReason(
   return request.cancelReason ?? "superseded";
 }
 
+function cancelCompletionTickets(
+  request: CompletionRequestState | null,
+): void {
+  if (!request) return;
+  for (const ticket of request.tickets) ticket.cancel();
+}
+
 function namespaceCompletionList(
   composition: SqlNamespaceCompletionComposition,
 ): SqlCompletionList {
@@ -623,6 +631,31 @@ function mergeCompletionLists(
     isIncomplete: true,
     issues: Object.freeze(incompleteIssues),
     items,
+  });
+}
+
+function completionListWithLoadingLease(
+  value: SqlCompletionList,
+  reason:
+    | "column-catalog-loading"
+    | "namespace-catalog-loading",
+  remainingIntentLeaseMs: number,
+): SqlCompletionList {
+  const issues = value.issues.map((issue) =>
+    issue.reason === reason
+      ? Object.freeze({ reason, remainingIntentLeaseMs })
+      : issue
+  );
+  const first = issues[0];
+  if (!first) return value;
+  const incompleteIssues: [
+    SqlCompletionIssue,
+    ...SqlCompletionIssue[],
+  ] = [first, ...issues.slice(1)];
+  return Object.freeze({
+    isIncomplete: true,
+    issues: Object.freeze(incompleteIssues),
+    items: value.items,
   });
 }
 
@@ -1209,6 +1242,49 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     clearTimeout(timer.handle);
   }
 
+  #retainAuxiliaryRefresh(
+    active: CompletionRequestState,
+    readiness: Promise<unknown>,
+  ): number {
+    this.#clearSoftRefreshIntentTimer();
+    this.#refreshIntent = active;
+    const cell: SessionTimerCell = {
+      active: true,
+      handle: undefined,
+    };
+    this.#softRefreshIntentTimer = cell;
+    const expire = setTimeout(() => {
+      cell.active = false;
+      this.#softRefreshIntentTimer = null;
+      this.#refreshIntent = null;
+      cancelCompletionTickets(active);
+    }, TERMINAL_LOADING_INTENT_LEASE_MS);
+    cell.handle = expire;
+    void readiness.then(
+      () => {
+        if (
+          !cell.active ||
+          this.#softRefreshIntentTimer !== cell
+        ) {
+          return;
+        }
+        const commit = this.#prepareServiceChange({
+          expected: active,
+          reason: "catalog-availability",
+        });
+        commit?.();
+      },
+      () => {
+        const commit = this.#prepareServiceChange({
+          expected: active,
+          reason: "catalog-availability",
+        });
+        commit?.();
+      },
+    );
+    return TERMINAL_LOADING_INTENT_LEASE_MS;
+  }
+
   #dispatchChange(event: SqlSessionChangeEvent): void {
     if (
       this.#disposed ||
@@ -1301,8 +1377,20 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       }
     }
     return (): undefined => {
-      active?.ticket?.cancel();
-      if (intent !== active) intent?.ticket?.cancel();
+      cancelCompletionTickets(active);
+      if (intent !== active) cancelCompletionTickets(intent);
+      if (change.reason === "catalog") {
+        this.#columnOwner?.dispose();
+        this.#columnOwner = null;
+        this.#columnOwnerDialect = null;
+        this.#columnOwnerScope = null;
+        this.#namespaceOwner?.dispose();
+        this.#namespaceOwner = null;
+        this.#namespaceOwnerDialect = null;
+        this.#namespaceOwnerScope = null;
+        this.#replaceColumnOwner();
+        this.#replaceNamespaceOwner();
+      }
       this.#dispatchChange(event);
       return undefined;
     };
@@ -1559,9 +1647,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       previousIntent.cancelReason = "superseded";
     }
     const cancelPrevious = (): void => {
-      previousActive?.ticket?.cancel();
+      cancelCompletionTickets(previousActive);
       if (previousIntent !== previousActive) {
-        previousIntent?.ticket?.cancel();
+        cancelCompletionTickets(previousIntent);
       }
       if (this.#refreshIntent === previousIntent) {
         this.#refreshIntent = null;
@@ -1574,7 +1662,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     const active: CompletionRequestState = {
       cancelReason: null,
       revision: snapshot.revision,
-      ticket: null,
+      tickets: new Set(),
       token: refreshToken,
     };
     this.#activeCompletion = active;
@@ -1602,7 +1690,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         active.cancelReason === null
       ) {
         active.cancelReason = "caller";
-        active.ticket?.cancel();
+        cancelCompletionTickets(active);
       }
     };
     const makeInvocationInert = (): void => {
@@ -1752,7 +1840,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             relations: preparedRelations.references,
             searchPaths: catalog.searchPaths,
           });
-          active.ticket = ticket;
+          active.tickets.add(ticket);
           let responseTimer:
             | ReturnType<typeof setTimeout>
             | undefined;
@@ -1783,12 +1871,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             );
           }
           if (raced.kind === "timeout") {
-            ticket.cancel();
+            const remainingIntentLeaseMs =
+              this.#retainAuxiliaryRefresh(active, ticket.result);
             return Object.freeze({
-              refreshToken: null,
+              refreshToken: active.token,
               revision: snapshot.revision,
               sources: Object.freeze([Object.freeze({
                 feature: "column-catalog" as const,
+                failures: Object.freeze([]),
                 outcome: "loading" as const,
                 providerId: columnCoordinator.providerId,
               })]),
@@ -1797,6 +1887,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
                 isIncomplete: true,
                 issues: Object.freeze([Object.freeze({
                   reason: "column-catalog-loading" as const,
+                  remainingIntentLeaseMs,
                 })] as const),
                 items: Object.freeze([]),
               }),
@@ -1815,12 +1906,31 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               completionCancellationReason(active),
             );
           }
+          const columnLoading =
+            composition.sources[0]?.outcome === "loading";
+          const remainingIntentLeaseMs = columnLoading
+            ? this.#retainAuxiliaryRefresh(
+                active,
+                new Promise((resolve) => {
+                  setTimeout(
+                    resolve,
+                    AUXILIARY_LOADING_RETRY_DELAY_MS,
+                  );
+                }),
+              )
+            : 0;
           return Object.freeze({
-            refreshToken: null,
+            refreshToken: columnLoading ? active.token : null,
             revision: snapshot.revision,
             sources: composition.sources,
             status: "ready",
-            value: composition.value,
+            value: columnLoading
+              ? completionListWithLoadingLease(
+                  composition.value,
+                  "column-catalog-loading",
+                  remainingIntentLeaseMs,
+                )
+              : composition.value,
           });
         }
         cancelPrevious();
@@ -1883,7 +1993,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           if (this.#refreshIntent === previousIntent) {
             this.#refreshIntent = null;
           }
-          active.ticket = ticket;
+          active.tickets.add(ticket);
           const elapsed = Math.max(
             0,
             performance.now() - completionStartedAt,
@@ -2060,6 +2170,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 
       let namespaceComposition: SqlNamespaceCompletionComposition | null =
         null;
+      let namespaceLoadingLeaseMs = 0;
       const namespaceOwner = this.#namespaceOwner;
       const namespaceCoordinator = this.#namespaceCoordinator;
       if (catalog && namespaceOwner && namespaceCoordinator) {
@@ -2075,7 +2186,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             MAX_NAMESPACE_RESULTS,
           ),
         );
-        active.ticket = ticket;
+        active.tickets.add(ticket);
         const elapsed = Math.max(
           0,
           performance.now() - completionStartedAt,
@@ -2114,7 +2225,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           );
         }
         if (raced.kind === "timeout") {
-          ticket.cancel();
+          namespaceLoadingLeaseMs =
+            this.#retainAuxiliaryRefresh(active, ticket.result);
           namespaceComposition = Object.freeze({
             source: Object.freeze({
               feature: "namespace-catalog",
@@ -2147,6 +2259,18 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               completionCancellationReason(active),
             );
           }
+          if (namespaceComposition.source.outcome === "loading") {
+            namespaceLoadingLeaseMs =
+              this.#retainAuxiliaryRefresh(
+                active,
+                new Promise((resolve) => {
+                  setTimeout(
+                    resolve,
+                    AUXILIARY_LOADING_RETRY_DELAY_MS,
+                  );
+                }),
+              );
+          }
         }
       }
 
@@ -2175,7 +2299,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       const value = namespaceComposition
         ? mergeCompletionLists(
             composition.value,
-            namespaceCompletionList(namespaceComposition),
+            namespaceLoadingLeaseMs > 0
+              ? completionListWithLoadingLease(
+                  namespaceCompletionList(namespaceComposition),
+                  "namespace-catalog-loading",
+                  namespaceLoadingLeaseMs,
+                )
+              : namespaceCompletionList(namespaceComposition),
           )
         : composition.value;
       const sources = namespaceComposition
@@ -2186,7 +2316,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         : composition.sources;
       return Object.freeze({
         refreshToken:
-          (catalogOutcome?.status === "loading" ||
+          (namespaceLoadingLeaseMs > 0 ||
+            catalogOutcome?.status === "loading" ||
             (catalogOutcome?.status === "usable" &&
               catalogOutcome.response.status === "loading")) &&
           (this.#refreshIntent === active ||
@@ -2509,9 +2640,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     ) {
       refreshIntent.cancelReason = "superseded";
     }
-    activeCompletion?.ticket?.cancel();
+    cancelCompletionTickets(activeCompletion);
     if (refreshIntent !== activeCompletion) {
-      refreshIntent?.ticket?.cancel();
+      cancelCompletionTickets(refreshIntent);
     }
     this.#replaceCatalogOwner();
     this.#replaceColumnOwner();
@@ -2556,9 +2687,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     ) {
       refreshIntent.cancelReason = "disposed";
     }
-    activeCompletion?.ticket?.cancel();
+    cancelCompletionTickets(activeCompletion);
     if (refreshIntent !== activeCompletion) {
-      refreshIntent?.ticket?.cancel();
+      cancelCompletionTickets(refreshIntent);
     }
     catalogOwner?.dispose();
     columnOwner?.dispose();

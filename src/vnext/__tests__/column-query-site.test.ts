@@ -111,6 +111,31 @@ describe("recognizeSqlColumnQuerySite", () => {
     );
   });
 
+  it("keeps set-operation arms and JOIN visibility isolated", () => {
+    const firstArm = ready(
+      analyze("SELECT | FROM users UNION SELECT x FROM secrets"),
+    );
+    expect(firstArm.relations.map((relation) =>
+      relation.path.at(-1)?.value
+    )).toEqual(["users"]);
+
+    const secondArm = ready(
+      analyze("SELECT x FROM users UNION SELECT | FROM secrets"),
+    );
+    expect(secondArm.relations.map((relation) =>
+      relation.path.at(-1)?.value
+    )).toEqual(["secrets"]);
+
+    const joinCondition = ready(
+      analyze(
+        "SELECT * FROM users u JOIN orders o ON o.user_id = u.| JOIN payments p ON true",
+      ),
+    );
+    expect(joinCondition.relations.map((relation) =>
+      relation.alias?.value
+    )).toEqual(["u", "o"]);
+  });
+
   it("supports BigQuery quoted multipart bindings", () => {
     const result = ready(
       analyze("SELECT t.| FROM `project.dataset.table` AS t", {

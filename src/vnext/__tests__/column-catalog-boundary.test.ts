@@ -22,7 +22,6 @@ function request() {
       { path, requestKey: "users" },
       {
         path: [{ quoted: false, value: "events" }],
-        relationEntityId: "relation-events",
         requestKey: "events",
       },
     ],
@@ -162,7 +161,7 @@ describe("column catalog batch request boundary", () => {
       expectedEpoch: epoch,
       relations: [
         { path, requestKey: "z" },
-        { path, relationEntityId: "stable-a", requestKey: "a" },
+        { path, requestKey: "a" },
       ],
       scope: "scope",
       searchPaths: [[{ quoted: true, value: "Main" }]],
@@ -171,7 +170,7 @@ describe("column catalog batch request boundary", () => {
       status: "accepted",
       value: {
         relations: [
-          { relationEntityId: "stable-a", requestKey: "a" },
+          { requestKey: "a" },
           { requestKey: "z" },
         ],
       },
@@ -473,22 +472,6 @@ describe("column catalog response boundary", () => {
         relations: [
           readyResponse().relations[0],
           readyResponse().relations[0],
-        ],
-      },
-    },
-    {
-      name: "conflicting known entity",
-      value: {
-        epoch,
-        relations: [
-          readyResponse().relations[0],
-          {
-            columns: [],
-            coverage: "complete",
-            relationEntityId: "wrong-events-id",
-            requestKey: "events",
-            status: "ready",
-          },
         ],
       },
     },

@@ -1269,6 +1269,8 @@ describe("column completion session integration", () => {
     >[0][] = [];
     const service = serviceWithColumns(async (request) => {
       requests.push(request);
+      const relation = request.relations[0];
+      if (!relation) throw new Error("Expected one relation");
       return {
         epoch: { generation: 1, token: "epoch-1" },
         relations: [{
@@ -1281,7 +1283,7 @@ describe("column completion session integration", () => {
           }],
           coverage: "complete",
           relationEntityId: "users",
-          requestKey: request.relations[0]?.requestKey,
+          requestKey: relation.requestKey,
           status: "ready",
         }],
       };
@@ -1392,6 +1394,37 @@ describe("column completion session integration", () => {
     service.dispose();
   });
 
+  it("never resolves a visible CTE as a physical relation", async () => {
+    let calls = 0;
+    const service = serviceWithColumns(async () => {
+      calls += 1;
+      return {
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [],
+      };
+    });
+    const text =
+      "WITH users AS (SELECT 1 AS local_id) SELECT users. FROM users";
+    const position = text.indexOf("users.") + "users.".length;
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:1" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    expect(calls).toBe(0);
+    service.dispose();
+  });
+
   it("keeps slow providers inside the completion response budget", async () => {
     vi.useFakeTimers();
     try {
@@ -1410,7 +1443,9 @@ describe("column completion session integration", () => {
         trigger: { kind: "invoked" },
       });
       await vi.advanceTimersByTimeAsync(40);
-      await expect(completion).resolves.toMatchObject({
+      const result = await completion;
+      expect(result).toMatchObject({
+        refreshToken: expect.anything(),
         sources: [{
           feature: "column-catalog",
           outcome: "loading",
@@ -1422,6 +1457,159 @@ describe("column completion session integration", () => {
           items: [],
         },
       });
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits readiness when a timed-out column batch settles", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveBatch:
+        | ((value: Awaited<
+            ReturnType<SqlColumnCatalogProvider["loadColumns"]>
+          >) => void)
+        | undefined;
+      const batch = new Promise<
+        Awaited<ReturnType<SqlColumnCatalogProvider["loadColumns"]>>
+      >((resolve) => {
+        resolveBatch = resolve;
+      });
+      const service = createSqlLanguageService<TestContext>({
+        columns: { id: "columns", loadColumns: () => batch },
+        completion: { catalogResponseBudgetMs: 0 },
+        dialects: [duckdb],
+      });
+      const text = "SELECT u. FROM users u";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:columns-ready" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const events: SqlSessionChangeEvent[] = [];
+      session.onDidChange((event) => events.push(event));
+      const pending = session.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await pending;
+      if (result.status !== "ready" || result.refreshToken === null) {
+        throw new Error("Expected retained column loading");
+      }
+
+      resolveBatch?.({
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(events).toMatchObject([{
+        reason: "catalog-availability",
+        refreshToken: result.refreshToken,
+      }]);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits readiness when a timed-out column batch rejects", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectBatch: ((reason: Error) => void) | undefined;
+      const batch = new Promise<
+        Awaited<ReturnType<SqlColumnCatalogProvider["loadColumns"]>>
+      >((_resolve, reject) => {
+        rejectBatch = reject;
+      });
+      const service = createSqlLanguageService<TestContext>({
+        columns: { id: "columns", loadColumns: () => batch },
+        completion: { catalogResponseBudgetMs: 0 },
+        dialects: [duckdb],
+      });
+      const text = "SELECT u. FROM users u";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:columns-reject" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const events: SqlSessionChangeEvent[] = [];
+      session.onDidChange((event) => events.push(event));
+      const pending = session.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await pending;
+      if (result.status !== "ready" || result.refreshToken === null) {
+        throw new Error("Expected retained column loading");
+      }
+
+      rejectBatch?.(new Error("offline"));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(events).toMatchObject([{
+        reason: "catalog-availability",
+        refreshToken: result.refreshToken,
+      }]);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires timed-out column readiness without a stale event", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveBatch:
+        | ((value: Awaited<
+            ReturnType<SqlColumnCatalogProvider["loadColumns"]>
+          >) => void)
+        | undefined;
+      const batch = new Promise<
+        Awaited<ReturnType<SqlColumnCatalogProvider["loadColumns"]>>
+      >((resolve) => {
+        resolveBatch = resolve;
+      });
+      const service = createSqlLanguageService<TestContext>({
+        columns: { id: "columns", loadColumns: () => batch },
+        completion: { catalogResponseBudgetMs: 0 },
+        dialects: [duckdb],
+      });
+      const text = "SELECT u. FROM users u";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:columns-expire" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const events: SqlSessionChangeEvent[] = [];
+      session.onDidChange((event) => events.push(event));
+      const completion = session.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await completion;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      resolveBatch?.({
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(events).toEqual([]);
       service.dispose();
     } finally {
       vi.useRealTimers();
@@ -1621,6 +1809,49 @@ describe("namespace completion session integration", () => {
     service.dispose();
   });
 
+  it("polls a provider-declared loading namespace with token correlation", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = serviceWithNamespaces(async () => ({
+        epoch: { generation: 1, token: "epoch-1" },
+        status: "loading",
+      }));
+      const text = "SELECT * FROM ma";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:namespaces-loading" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      const events: SqlSessionChangeEvent[] = [];
+      session.onDidChange((event) => events.push(event));
+      const result = await session.complete({
+        position: text.length,
+        trigger: { kind: "invoked" },
+      });
+      if (result.status !== "ready" || result.refreshToken === null) {
+        throw new Error("Expected retained namespace loading");
+      }
+      expect(result.value).toMatchObject({
+        issues: [{
+          reason: "namespace-catalog-loading",
+          remainingIntentLeaseMs: 1_000,
+        }],
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(events).toMatchObject([{
+        reason: "catalog-availability",
+        refreshToken: result.refreshToken,
+      }]);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retains auxiliary owners across unrelated context changes", () => {
     const service = createSqlLanguageService<TestContext>({
       columns: {
@@ -1659,6 +1890,101 @@ describe("namespace completion session integration", () => {
     });
 
     expect(session.revision).toBe(revision);
+    service.dispose();
+  });
+
+  it("invalidates auxiliary caches with the relation catalog epoch", async () => {
+    let generation = 1;
+    let columnCalls = 0;
+    let namespaceCalls = 0;
+    let invalidate:
+      | ((event: SqlCatalogInvalidation) => void)
+      | undefined;
+    const service = createSqlLanguageService<TestContext>({
+      catalog: {
+        id: "relations",
+        search: async () => ({
+          coverage: { kind: "complete" },
+          epoch: { generation, token: `epoch-${generation}` },
+          relations: [],
+          status: "ready",
+        }),
+        subscribe: (_scope, listener) => {
+          invalidate = listener;
+          return () => undefined;
+        },
+      },
+      columns: {
+        id: "columns",
+        loadColumns: async (request) => {
+          columnCalls += 1;
+          return {
+            epoch: { generation, token: `epoch-${generation}` },
+            relations: request.relations.map((relation) => ({
+              columns: [],
+              coverage: "complete",
+              relationEntityId: relation.requestKey,
+              requestKey: relation.requestKey,
+              status: "ready",
+            })),
+          };
+        },
+      },
+      dialects: [duckdb],
+      namespaces: {
+        id: "namespaces",
+        search: async () => {
+          namespaceCalls += 1;
+          return {
+            containers: [],
+            coverage: "complete",
+            epoch: { generation, token: `epoch-${generation}` },
+            status: "ready",
+          };
+        },
+      },
+    });
+    const open = (text: string) =>
+      service.openDocument({
+        context: {
+          catalog: { scope: "connection:invalidate" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+    const columns = open("SELECT u. FROM users u");
+    const namespaces = open("SELECT * FROM ma");
+    const completeColumns = () =>
+      columns.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+    const completeNamespaces = () =>
+      namespaces.complete({
+        position: "SELECT * FROM ma".length,
+        trigger: { kind: "invoked" },
+      });
+
+    await completeColumns();
+    await completeNamespaces();
+    await completeColumns();
+    await completeNamespaces();
+    expect({ columnCalls, namespaceCalls }).toEqual({
+      columnCalls: 1,
+      namespaceCalls: 1,
+    });
+
+    generation = 2;
+    invalidate?.({
+      epoch: { generation, token: `epoch-${generation}` },
+    });
+    await completeColumns();
+    await completeNamespaces();
+    expect({ columnCalls, namespaceCalls }).toEqual({
+      columnCalls: 2,
+      namespaceCalls: 2,
+    });
     service.dispose();
   });
 });
@@ -3979,10 +4305,10 @@ describe("session coverage hardening", () => {
     { namespaces: { id: "", search: async () => ({}) } },
   ])("rejects a malformed auxiliary provider %#", (provider) => {
     expectSessionError("invalid-service-options", () => {
-      createSqlLanguageService({
+      Reflect.apply(createSqlLanguageService, undefined, [{
         ...provider,
         dialects: [duckdb],
-      });
+      }]);
     });
   });
 
@@ -4450,6 +4776,15 @@ describe("session coverage hardening", () => {
       },
       completion: { catalogResponseBudgetMs: 0 },
       dialects: [duckdb],
+      namespaces: {
+        id: "retained-intent-namespaces",
+        search: async () => ({
+          containers: [],
+          coverage: "complete",
+          epoch: { generation: 0, token: "ready" },
+          status: "ready",
+        }),
+      },
     });
     const session = service.openDocument({
       context: {

@@ -302,6 +302,12 @@ export type SqlCompletionIssue =
     }
   | {
       readonly reason:
+        | "column-catalog-loading"
+        | "namespace-catalog-loading";
+      readonly remainingIntentLeaseMs?: number;
+    }
+  | {
+      readonly reason:
         | "catalog-partial"
         | "catalog-paginated"
         | "catalog-failed"
@@ -310,12 +316,10 @@ export type SqlCompletionIssue =
         | "catalog-queue-timeout"
         | "catalog-timeout"
         | "column-catalog-failed"
-        | "column-catalog-loading"
         | "column-catalog-malformed"
         | "column-catalog-partial"
         | "cte-scope-uncertainty"
         | "namespace-catalog-failed"
-        | "namespace-catalog-loading"
         | "namespace-catalog-malformed"
         | "namespace-catalog-partial"
         | "namespace-prefix-uncertain"
@@ -389,16 +393,22 @@ export type SqlColumnCatalogProviderReport =
       readonly outcome: "ready";
       readonly providerId: string;
       readonly coverage: "complete" | "partial";
+      readonly failures: readonly SqlColumnCatalogFailure[];
     }
   | {
       readonly feature: "column-catalog";
       readonly outcome: "loading";
       readonly providerId: string;
+      readonly failures: readonly SqlColumnCatalogFailure[];
     }
   | {
       readonly feature: "column-catalog";
       readonly outcome: "failed";
       readonly providerId: string;
+      readonly failures: readonly [
+        SqlColumnCatalogFailure,
+        ...SqlColumnCatalogFailure[],
+      ];
     }
   | {
       readonly feature: "column-catalog";
@@ -410,6 +420,12 @@ export type SqlColumnCatalogProviderReport =
         | "malformed-response"
         | "provider-failed";
     };
+
+export interface SqlColumnCatalogFailure {
+  readonly code: SqlCatalogFailureCode;
+  readonly requestKey: string;
+  readonly retry: SqlCatalogRetryPolicy;
+}
 
 export type SqlNamespaceCatalogProviderReport =
   | {
@@ -427,6 +443,8 @@ export type SqlNamespaceCatalogProviderReport =
       readonly feature: "namespace-catalog";
       readonly outcome: "failed";
       readonly providerId: string;
+      readonly code: SqlCatalogFailureCode;
+      readonly retry: SqlCatalogRetryPolicy;
     }
   | {
       readonly feature: "namespace-catalog";

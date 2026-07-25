@@ -170,6 +170,8 @@ test("vNext editor applies a batched column completion", async () => {
       id: "browser-columns",
       loadColumns: async (request) => {
         columnCalls += 1;
+        const relation = request.relations[0];
+        if (!relation) throw new Error("Expected one relation");
         return {
           epoch: { generation: 1, token: "epoch-1" },
           relations: [{
@@ -182,7 +184,7 @@ test("vNext editor applies a batched column completion", async () => {
             }],
             coverage: "complete",
             relationEntityId: "users",
-            requestKey: request.relations[0]?.requestKey,
+            requestKey: relation.requestKey,
             status: "ready",
           }],
         };

@@ -181,7 +181,12 @@ function loadingLeaseMs(
   result: Extract<SqlCompletionResult, { readonly status: "ready" }>,
 ): number | null {
   for (const issue of result.value.issues) {
-    if (issue.reason === "catalog-loading") {
+    if (
+      (issue.reason === "catalog-loading" ||
+        issue.reason === "column-catalog-loading" ||
+        issue.reason === "namespace-catalog-loading") &&
+      typeof issue.remainingIntentLeaseMs === "number"
+    ) {
       return issue.remainingIntentLeaseMs;
     }
   }

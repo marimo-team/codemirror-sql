@@ -68,6 +68,18 @@ export type SqlNamespaceCatalogSearchResponse =
       readonly status: "failed";
     };
 
+export type SqlNamespaceCatalogProviderResponse =
+  | {
+      readonly containers: readonly SqlNamespaceCatalogContainer[];
+      readonly coverage: "complete" | "partial";
+      readonly epoch: SqlCatalogEpoch;
+      readonly status: "ready";
+    }
+  | Extract<
+      SqlNamespaceCatalogSearchResponse,
+      { readonly status: "loading" | "failed" }
+    >;
+
 export interface SqlNamespaceCatalogProvenance {
   readonly containerEntityId: string;
   readonly epoch: SqlCatalogEpoch;
@@ -86,7 +98,7 @@ export interface SqlNamespaceCatalogProvider {
     this: void,
     request: SqlNamespaceCatalogSearchRequest,
     signal: AbortSignal,
-  ) => Promise<unknown>;
+  ) => Promise<SqlNamespaceCatalogProviderResponse>;
 }
 
 export interface SqlNamespaceQuerySite {

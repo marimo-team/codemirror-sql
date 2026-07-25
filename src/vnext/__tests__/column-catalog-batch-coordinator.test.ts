@@ -38,8 +38,7 @@ function ready(
         ordinal: 0,
       }],
       coverage: "complete",
-      relationEntityId:
-        relation.relationEntityId ?? `relation-${relation.requestKey}`,
+      relationEntityId: `relation-${relation.requestKey}`,
       requestKey: relation.requestKey,
       status: "ready",
     })),

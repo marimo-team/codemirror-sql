@@ -38,8 +38,9 @@ reproduce
 The same shared service configures one `SqlColumnCatalogProvider`. Each
 `loadColumns` call forwards the complete relation request array to one
 DataTable metadata batch operation. It does not fetch once per relation.
-Relation IDs are the stable IDs emitted by the relation provider. Column IDs
-are stable within that relation and connection incarnation.
+The column authority resolves each canonical relation path within the same
+scope and search paths as relation completion. Column IDs and returned relation
+IDs are stable within that connection incarnation.
 
 Each column supplies a canonical identifier and provider-rendered
 `insertText`; these are intentionally separate so quoted or dialect-sensitive

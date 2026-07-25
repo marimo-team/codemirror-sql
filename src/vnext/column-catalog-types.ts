@@ -8,7 +8,6 @@ export type SqlColumnCatalogCoverage = "complete" | "partial";
 
 export interface SqlColumnCatalogRelationReference {
   readonly path: SqlIdentifierPath;
-  readonly relationEntityId?: string;
   readonly requestKey: string;
 }
 
@@ -72,11 +71,30 @@ export interface SqlColumnCatalogBatchResponse {
   readonly relations: readonly SqlColumnCatalogRelationResult[];
 }
 
+export type SqlColumnCatalogProviderRelationResult =
+  | {
+      readonly columns: readonly SqlColumnCatalogColumn[];
+      readonly coverage: SqlColumnCatalogCoverage;
+      readonly relationEntityId: string;
+      readonly requestKey: string;
+      readonly status: "ready";
+    }
+  | Extract<
+      SqlColumnCatalogRelationResult,
+      { readonly status: "loading" | "failed" }
+    >;
+
+export interface SqlColumnCatalogProviderResponse {
+  readonly epoch: SqlCatalogEpoch;
+  readonly relations:
+    readonly SqlColumnCatalogProviderRelationResult[];
+}
+
 export interface SqlColumnCatalogProvider {
   readonly id: string;
   readonly loadColumns: (
     this: void,
     request: SqlColumnCatalogBatchRequest,
     signal: AbortSignal,
-  ) => Promise<unknown>;
+  ) => Promise<SqlColumnCatalogProviderResponse>;
 }

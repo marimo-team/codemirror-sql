@@ -465,6 +465,12 @@ export function recognizeSqlColumnQuerySite(
     index += 1
   ) {
     const token = tokens[index]!;
+    if (
+      clause === "join-condition" &&
+      token.from >= position
+    ) {
+      break;
+    }
     if (token.depth < selectDepth) break;
     if (token.depth !== selectDepth) {
       if (word(source, token) === "select") issues.add("nested-query");
@@ -472,15 +478,19 @@ export function recognizeSqlColumnQuerySite(
     }
     const tokenWord = word(source, token);
     if (
+      tokenWord === "union" ||
+      tokenWord === "intersect" ||
+      tokenWord === "except"
+    ) {
+      break;
+    }
+    if (
       tokenWord === "where" ||
       tokenWord === "group" ||
       tokenWord === "having" ||
       tokenWord === "qualify" ||
       tokenWord === "order" ||
-      tokenWord === "limit" ||
-      tokenWord === "union" ||
-      tokenWord === "intersect" ||
-      tokenWord === "except"
+      tokenWord === "limit"
     ) {
       inFrom = false;
       commaStartsRelation = false;

@@ -11,6 +11,7 @@ import type {
 } from "./column-query-site.js";
 import type {
   SqlColumnCatalogProviderReport,
+  SqlColumnCatalogFailure,
   SqlCompletionIssue,
   SqlCompletionItem,
   SqlCompletionList,
@@ -187,11 +188,15 @@ function compareItems(
   left: SqlCompletionItem,
   right: SqlCompletionItem,
 ): number {
-  return left.label.localeCompare(right.label) ||
-    (left.detail ?? "").localeCompare(right.detail ?? "") ||
-    left.edit.insert.localeCompare(right.edit.insert) ||
+  return compareText(left.label, right.label) ||
+    compareText(left.detail ?? "", right.detail ?? "") ||
+    compareText(left.edit.insert, right.edit.insert) ||
     left.edit.from - right.edit.from ||
     left.edit.to - right.edit.to;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function composeSqlColumnCompletion(
@@ -224,6 +229,7 @@ export function composeSqlColumnCompletion(
   let hasFailure = false;
   let hasPartial = input.site.coverage === "partial";
   const seen = new Set<string>();
+  const failures: SqlColumnCatalogFailure[] = [];
   for (const result of input.outcome.relations) {
     issues.push(...resultIssues(result));
     if (result.status === "loading") {
@@ -232,6 +238,11 @@ export function composeSqlColumnCompletion(
     }
     if (result.status === "failed") {
       hasFailure = true;
+      failures.push(Object.freeze({
+        code: result.code,
+        requestKey: result.requestKey,
+        retry: result.retry,
+      }));
       continue;
     }
     if (result.coverage === "partial") hasPartial = true;
@@ -292,21 +303,30 @@ export function composeSqlColumnCompletion(
     new Map(issues.map((item) => [item.reason, item])).values(),
   );
   const coverage = hasPartial || hasFailure ? "partial" : "complete";
+  const frozenFailures = Object.freeze(failures);
+  const firstFailure = failures[0];
   const source: SqlColumnCatalogProviderReport = hasLoading
     ? {
         feature: "column-catalog",
+        failures: frozenFailures,
         outcome: "loading",
         providerId: input.outcome.providerId,
       }
-    : hasFailure && items.length === 0
+    : hasFailure && items.length === 0 &&
+        firstFailure !== undefined
       ? {
           feature: "column-catalog",
+          failures: Object.freeze([
+            firstFailure,
+            ...failures.slice(1),
+          ]),
           outcome: "failed",
           providerId: input.outcome.providerId,
         }
       : {
           coverage,
           feature: "column-catalog",
+          failures: frozenFailures,
           outcome: "ready",
           providerId: input.outcome.providerId,
         };

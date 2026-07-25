@@ -278,7 +278,7 @@ function decodeRelationReference(
 ): SqlColumnCatalogRelationReference | null {
   const record = readRecord(
     value,
-    new Set(["path", "relationEntityId", "requestKey"]),
+    new Set(["path", "requestKey"]),
   );
   if (!record) return null;
   const requestKey = boundedString(
@@ -289,15 +289,10 @@ function decodeRelationReference(
     required(record, "path"),
     MAX_COLUMN_RELATION_PATH_COMPONENTS,
   );
-  const relationEntityId = optionalBoundedString(
-    required(record, "relationEntityId"),
-    MAX_COLUMN_ENTITY_ID_LENGTH,
-  );
-  if (requestKey === null || !path || relationEntityId === null) return null;
+  if (requestKey === null || !path) return null;
   return Object.freeze({
     path,
     requestKey,
-    ...(relationEntityId === undefined ? {} : { relationEntityId }),
   });
 }
 
@@ -659,12 +654,6 @@ export function decodeSqlColumnCatalogBatchResponse(
   const requested = new Set(
     request.relations.map((relation) => relation.requestKey),
   );
-  const references = new Map(
-    request.relations.map((relation) => [
-      relation.requestKey,
-      relation,
-    ]),
-  );
   const byId = new Map<string, SqlColumnCatalogRelationResult>();
   let columnCount = 0;
   for (let index = 0; index < relationCount; index += 1) {
@@ -680,14 +669,6 @@ export function decodeSqlColumnCatalogBatchResponse(
     const relation = decoded.value;
     if (!requested.has(relation.requestKey)) {
       return malformed("unexpected-relation");
-    }
-    const reference = references.get(relation.requestKey);
-    if (
-      relation.status === "ready" &&
-      reference?.relationEntityId !== undefined &&
-      relation.relationEntityId !== reference.relationEntityId
-    ) {
-      return malformed("invalid-shape");
     }
     if (byId.has(relation.requestKey)) {
       return malformed("duplicate-request-key");

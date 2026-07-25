@@ -200,7 +200,18 @@ describe("column completion", () => {
       dialect: POSTGRESQL_SQL_RELATION_DIALECT,
       outcome: usable([
         {
-          columns: [column("id", "users", 0)],
+          columns: [
+            column("id", "users", 0),
+            Object.freeze({
+              ...column("id", "users", 1),
+              columnEntityId: "users:id-alternate",
+              insertText: "id_alternate",
+              provenance: Object.freeze({
+                ...column("id", "users", 1).provenance,
+                columnEntityId: "users:id-alternate",
+              }),
+            }),
+          ],
           coverage: "partial",
           relationEntityId: "users",
           requestKey: "binding:0",
@@ -390,6 +401,11 @@ describe("column completion", () => {
     expect(result).toMatchObject({
       sources: [{
         coverage: "partial",
+        failures: [{
+          code: "unavailable",
+          requestKey: "binding:1",
+          retry: "next-request",
+        }],
         outcome: "ready",
       }],
       value: {
@@ -415,6 +431,81 @@ describe("column completion", () => {
         providerId: "columns",
         site: current,
       })?.sources[0],
-    ).toMatchObject({ outcome: "failed" });
+    ).toMatchObject({
+      failures: [{
+        code: "unavailable",
+        requestKey: "binding:0",
+        retry: "next-request",
+      }],
+      outcome: "failed",
+    });
+  });
+
+  it("uses deterministic code-unit ordering", () => {
+    const current = site();
+    const prepared = prepareSqlColumnCatalogRelations(
+      current,
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    );
+    const result = composeSqlColumnCompletion({
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      outcome: usable([{
+        columns: [
+          column("ä_value", "users", 0),
+          column("z_value", "users", 1),
+        ],
+        coverage: "complete",
+        relationEntityId: "users",
+        requestKey: "binding:0",
+        status: "ready",
+      }]),
+      prepared,
+      providerId: "columns",
+      site: current,
+    });
+
+    expect(result?.value.items.map((item) => item.label)).toEqual([
+      "z_value",
+      "ä_value",
+    ]);
+  });
+
+  it("uses relation detail to order columns with equal labels", () => {
+    const current = site();
+    const prepared = prepareSqlColumnCatalogRelations(
+      current,
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    );
+    const result = composeSqlColumnCompletion({
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      outcome: usable([
+        {
+          columns: [column("id", "users", 0)],
+          coverage: "complete",
+          relationEntityId: "users",
+          requestKey: "binding:0",
+          status: "ready",
+        },
+        {
+          columns: [column("id", "orders", 0)],
+          coverage: "complete",
+          relationEntityId: "orders",
+          requestKey: "binding:1",
+          status: "ready",
+        },
+      ]),
+      prepared,
+      providerId: "columns",
+      site: current,
+    });
+
+    expect(result?.value.items.map((item) => item.detail)).toEqual([
+      "VARCHAR — o",
+      "VARCHAR — u",
+    ]);
+    expect(result?.value.items.map((item) => item.edit.insert)).toEqual([
+      "id",
+      "id",
+    ]);
   });
 });

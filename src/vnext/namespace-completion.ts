@@ -217,9 +217,11 @@ export function composeSqlNamespaceCompletion(
   if (response.status === "failed") {
     return Object.freeze({
       source: Object.freeze({
+        code: response.code,
         feature: "namespace-catalog",
         outcome: "failed",
         providerId: input.outcome.providerId,
+        retry: response.retry,
       }),
       value: list([], ["namespace-catalog-failed"]),
     });
