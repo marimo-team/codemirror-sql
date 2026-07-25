@@ -20,9 +20,12 @@ import {
   type SqlCatalogRelation,
   type SqlCatalogSearchRequest,
   type SqlCatalogSearchResponse,
+  type SqlColumnCatalogBatchRequest,
+  type SqlColumnCatalogProvider,
   type SqlContextInput,
   type SqlDocumentContext,
   type SqlEmbeddedRegion,
+  type SqlIdentifierComponent,
   type SqlIdentifierPath,
   type SqlRelationCatalogProvider,
 } from "../../src/vnext/index.js";
@@ -64,15 +67,71 @@ interface MarimoTableMetadata {
   readonly entityId: string;
 }
 
+interface MarimoColumnMetadata {
+  readonly columnEntityId: string;
+  readonly detail: string;
+  readonly relationEntityId: string;
+}
+
 interface MarimoCatalogSnapshot {
   readonly epoch: SqlCatalogEpoch;
   readonly relations: readonly SqlCatalogRelation[];
+}
+
+interface MarimoDataTableColumn {
+  readonly columnEntityId: string;
+  readonly dataType?: string;
+  readonly detail?: string;
+  readonly identifier: SqlIdentifierComponent;
+  readonly insertText: string;
+  readonly ordinal: number;
+}
+
+type MarimoDataTableColumnResult =
+  | {
+      readonly columns: readonly MarimoDataTableColumn[];
+      readonly coverage: "complete" | "partial";
+      readonly relationEntityId: string;
+      readonly requestKey: string;
+      readonly status: "ready";
+    }
+  | {
+      readonly requestKey: string;
+      readonly status: "loading";
+    }
+  | {
+      readonly code:
+        | "authentication"
+        | "authorization"
+        | "invalid-configuration"
+        | "rate-limited"
+        | "unavailable"
+        | "unknown";
+      readonly requestKey: string;
+      readonly retry: "after-invalidation" | "never" | "next-request";
+      readonly status: "failed";
+    };
+
+interface MarimoDataTableColumnBatch {
+  readonly epoch: SqlCatalogEpoch;
+  readonly relations: readonly MarimoDataTableColumnResult[];
+}
+
+interface MarimoNamespaceProjection {
+  readonly entityId: string;
+  readonly kind: "catalog" | "dataset" | "project" | "schema";
+  readonly path: SqlIdentifierPath;
+  readonly scope: string;
 }
 
 declare const catalogByScope:
   ReadonlyMap<string, MarimoCatalogSnapshot>;
 declare const tableMetadataById:
   ReadonlyMap<string, MarimoTableMetadata>;
+declare const columnMetadataByProvenance:
+  ReadonlyMap<string, MarimoColumnMetadata>;
+declare const namespaceProjectionByScope:
+  ReadonlyMap<string, readonly MarimoNamespaceProjection[]>;
 declare const subscribeToCatalogScope: (
   scope: string,
   listener: (epoch: SqlCatalogEpoch) => void,
@@ -84,6 +143,10 @@ declare const searchMarimoCatalogIndex: (
   readonly coverage: SqlCatalogReadyCoverage;
   readonly relations: readonly SqlCatalogRelation[];
 };
+declare const loadMarimoDataTableColumnBatch: (
+  request: SqlColumnCatalogBatchRequest,
+  signal: AbortSignal,
+) => Promise<MarimoDataTableColumnBatch>;
 declare const variableCompletionSource: CompletionSource;
 declare const keywordCompletionSource: CompletionSource;
 declare const legacySchemaCompletionSource: CompletionSource;
@@ -167,10 +230,44 @@ const marimoCatalogProvider: SqlRelationCatalogProvider = {
   },
 };
 
+const marimoColumnProvider: SqlColumnCatalogProvider = {
+  id: "marimo-datatable-columns",
+  loadColumns: async (request, signal) => {
+    signal.throwIfAborted();
+    const batch = await loadMarimoDataTableColumnBatch(request, signal);
+    signal.throwIfAborted();
+    return {
+      epoch: batch.epoch,
+      relations: batch.relations.map((result) => {
+        if (result.status !== "ready") return result;
+        return {
+          columns: result.columns.map((column) => ({
+            columnEntityId: column.columnEntityId,
+            identifier: column.identifier,
+            insertText: column.insertText,
+            ordinal: column.ordinal,
+            ...(column.dataType === undefined
+              ? {}
+              : { dataType: column.dataType }),
+            ...(column.detail === undefined
+              ? {}
+              : { detail: column.detail }),
+          })),
+          coverage: result.coverage,
+          relationEntityId: result.relationEntityId,
+          requestKey: result.requestKey,
+          status: result.status,
+        };
+      }),
+    };
+  },
+};
+
 // One caller-owned service is shared by every SQL editor support/view.
 const sharedSqlService =
   createSqlLanguageService<MarimoSqlContext>({
     catalog: marimoCatalogProvider,
+    columns: marimoColumnProvider,
     dialects: [
       bigQueryDialect(),
       dremioDialect(),
@@ -184,10 +281,13 @@ const infoResolver: SqlCompletionInfoResolver = (
   { signal },
 ) => {
   signal.throwIfAborted();
-  if (item.provenance.kind !== "catalog") return null;
-  const metadata = tableMetadataById.get(
-    item.provenance.entityId,
-  );
+  const metadata = item.provenance.kind === "catalog"
+    ? tableMetadataById.get(item.provenance.entityId)
+    : item.provenance.kind === "column-catalog"
+    ? columnMetadataByProvenance.get(
+      `${item.provenance.scope}\0${item.provenance.relationEntityId}\0${item.provenance.columnEntityId}`,
+    )
+    : undefined;
   if (metadata === undefined) return null;
   const dom = document.createElement("div");
   const root = createReactRoot(dom);
@@ -387,9 +487,65 @@ const relationPath = [
   { quoted: false, role: "relation", value: "users" },
 ] satisfies SqlCanonicalRelationPath;
 
+const coldColumnBatch = {
+  dialectId: "duckdb",
+  expectedEpoch: null,
+  relations: [
+    {
+      path: [
+        { quoted: false, value: "main" },
+        { quoted: false, value: "users" },
+      ],
+      relationEntityId: "connection:users",
+      requestKey: "binding:users",
+    },
+    {
+      path: [
+        { quoted: false, value: "main" },
+        { quoted: false, value: "orders" },
+      ],
+      relationEntityId: "connection:orders",
+      requestKey: "binding:orders",
+    },
+  ],
+  searchPaths: [[{ quoted: false, value: "main" }]],
+  scope: "duckdb:42",
+} satisfies SqlColumnCatalogBatchRequest;
+
+const columnProviderStateExamples = [
+  {
+    columns: [{
+      columnEntityId: "connection:users:customer-id",
+      dataType: "VARCHAR",
+      detail: "Customer identifier",
+      identifier: { quoted: true, value: "customer id" },
+      insertText: '"customer id"',
+      ordinal: 0,
+    }],
+    coverage: "partial",
+    relationEntityId: "connection:users",
+    requestKey: "binding:users",
+    status: "ready",
+  },
+  {
+    requestKey: "binding:orders",
+    status: "loading",
+  },
+  {
+    code: "authorization",
+    requestKey: "binding:private-orders",
+    retry: "after-invalidation",
+    status: "failed",
+  },
+] satisfies readonly MarimoDataTableColumnResult[];
+
 void atomicSwitch;
+void coldColumnBatch;
+void columnProviderStateExamples;
 void firstSupport;
 void marimoCatalogProvider;
+void marimoColumnProvider;
+void namespaceProjectionByScope;
 void relationPath;
 void secondSupport;
 

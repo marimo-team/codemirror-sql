@@ -1,6 +1,6 @@
 # Marimo SQL Completion Migration
 
-Status: implementation fixture; relation completion only
+Status: implementation fixture; relation and column completion
 
 The compile-only fixture
 [`marimo-sql-migration.test-d.ts`](../../test/vnext-types/marimo-sql-migration.test-d.ts)
@@ -14,8 +14,9 @@ Every `sqlEditor` support/view opens its own session against that service.
 Destroying a view never disposes the service; the application disposes the
 service after its views have been retired.
 
-One provider projects `dataConnectionsMapAtom` and `datasetTablesAtom` into
-canonical relation records. It must preserve today's collision rule:
+One relation provider projects `dataConnectionsMapAtom` and
+`datasetTablesAtom` into canonical relation records. It must preserve today's
+collision rule:
 connection relations win over same-named local relations. Provider records
 contain plain immutable data and stable entity IDs, never Jotai atoms, React
 roots, or backend objects.
@@ -31,6 +32,27 @@ and scope. Schema/table mutations within an incarnation advance its provider
 epoch and notify the one scoped subscription. The context `searchPath` values
 reproduce
 `default_database`, `default_schema`, nested-schema, and schemaless behavior.
+
+## Batched DataTable columns
+
+The same shared service configures one `SqlColumnCatalogProvider`. Each
+`loadColumns` call forwards the complete relation request array to one
+DataTable metadata batch operation. It does not fetch once per relation.
+Relation IDs are the stable IDs emitted by the relation provider. Column IDs
+are stable within that relation and connection incarnation.
+
+Each column supplies a canonical identifier and provider-rendered
+`insertText`; these are intentionally separate so quoted or dialect-sensitive
+names insert correctly. The provider also supplies ordinal, data type, and
+detail when known. A cold request carries `expectedEpoch: null`. The returned
+epoch becomes the authority for later work, while connection replacement gets
+a new scope.
+
+Every requested relation independently reports complete or partial ready
+columns, loading, or normalized failure. Partial, loading, and failed results
+remain retryable according to the library contract and are not disguised as
+complete empty schemas. The public boundary validates the provider's unknown
+payload before it reaches completion composition.
 
 ## One atomic editor input
 
@@ -72,8 +94,9 @@ The gate receives only the immutable CodeMirror `EditorState` and numeric
 position. It must remain synchronous and side-effect free. Do not encode a
 range beyond the document or an empty embedded region.
 
-The rich-info resolver uses catalog provenance IDs to look up current marimo
-metadata, mounts React into a new element, and returns
+The rich-info resolver uses relation `catalog` provenance or
+`column-catalog` scope, relation ID, and column ID to look up current marimo
+metadata. It mounts React into a new element and returns
 `{ dom, destroy: root.unmount }`. The adapter owns cancellation and disposal.
 
 ## Dialect cutover
@@ -98,41 +121,57 @@ explicit, tested generic-dialect policy.
 
 Marimo's current `tablesCompletionSource()` is broader than its name. The
 CodeMirror SQL schema source provides relations, namespace navigation, and
-columns. vNext currently provides relation items only.
+columns. vNext now provides the relation and lazy batched column portions,
+including qualified and unqualified query-site completion, ambiguity handling,
+stable provenance, cancellation, and bounded provider work.
 
-No-regression replacement therefore still requires:
+The remaining feature gaps are:
 
-- lazy, bounded, cancellation-aware column lookup keyed by stable relation
-  entity IDs;
-- qualified and unqualified column completion with aliases, joins,
-  ambiguity, quoting, and exact edits;
-- column provenance for the disposable info resolver;
-- namespace/container parity for database, schema, project, and dataset
+- namespace/container completion for database, schema, project, and dataset
   navigation; and
 - the dialect coverage described above.
 
-Column lookup should be batched for all visible relations at a completion site.
-It must not attach every column to every relation-search response or issue one
-provider request per relation.
+The fixture defines marimo's immutable namespace projection—stable entity ID,
+scope, canonical identifier path, and namespace kind—but deliberately does
+not invent a provider import. Once a public namespace provider lands, that
+projection should feed one scoped provider on the shared service.
 
 ## Migration sequence
 
 1. Capture golden legacy results for labels, kinds, edit ranges, qualification,
    and details across representative connection shapes.
-2. Land the shared provider, incarnation scope, atomic transaction builder,
-   region scanner, insertion-point completion gate, and completion router
-   behind a feature flag.
+2. Land the shared relation and batched column providers, incarnation scope,
+   atomic transaction builder, region scanner, insertion-point completion
+   gate, and completion router behind a feature flag.
 3. Run vNext relation completion in shadow mode while the legacy source remains
    visible.
-4. Add column and namespace completion to the library and compare the golden
-   corpus.
-5. Cut over the four supported dialects as one source replacement, preserving
+4. Compare relation and column results with the golden corpus, including
+   quoted insert text, aliases, ambiguity, partial/loading/failure states, and
+   cold epoch behavior.
+5. Add the public namespace provider and connect the prepared marimo namespace
+   projection.
+6. Cut over the four supported dialects as one source replacement, preserving
    variable and keyword external sources.
-6. Add dialect coverage, expand the router, and remove completion-only legacy
+7. Add dialect coverage, expand the router, and remove completion-only legacy
    schema code. Keep legacy schema data while hover or diagnostics still use
    it.
 
 ## Acceptance tests
+
+The compile-only marimo fixture proves:
+
+- one shared service configured with one relation provider and one batched
+  column provider;
+- a two-relation cold column request with `expectedEpoch: null`;
+- stable relation and column IDs, canonical identifiers, and distinct
+  provider-rendered insert text;
+- partial, loading, and failure provider states;
+- relation and column provenance lookup by current scope with a React
+  disposer;
+- atomic editor interpretation updates, complete template regions, and the
+  unmatched-expression insertion-point gate;
+- preservation of variable and keyword sources; and
+- supported-dialect vNext routing with exclusive legacy fallback.
 
 Library tests cover relation and column completion for `FROM`, `JOIN`,
 `alias.`, unqualified projections and predicates, `USING`, nested queries,
