@@ -11,6 +11,7 @@ import { EditorSelection, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bigQueryDialect,
   createSqlLanguageService,
   duckdbDialect,
   type SqlCatalogSearchRequest,
@@ -27,6 +28,7 @@ import {
   type SqlRelationCatalogProvider,
   type SqlRevision,
   type SqlSessionChangeEvent,
+  type SqlTextRange,
 } from "../../index.js";
 import {
   createSqlCompletionRefreshToken,
@@ -48,6 +50,8 @@ interface FakeServiceHarness {
   readonly getLastToken: () => SqlCompletionRefreshToken | null;
   readonly service: SqlLanguageService<TestContext>;
   readonly sessionDisposals: () => number;
+  readonly statementBoundaryCalls: () => number;
+  readonly statementIntersectionCalls: () => number;
   readonly updates: readonly SqlDocumentUpdate<TestContext>[];
 }
 
@@ -126,6 +130,7 @@ function fakeService(
     token: SqlCompletionRefreshToken,
   ) => SqlCompletionResult | Promise<SqlCompletionResult>,
   rejectUpdates = false,
+  statementCode: SqlTextRange | null = null,
 ): FakeServiceHarness {
   const completeSignals: AbortSignal[] = [];
   const updates: SqlDocumentUpdate<TestContext>[] = [];
@@ -134,6 +139,8 @@ function fakeService(
     | null = null;
   let lastToken: SqlCompletionRefreshToken | null = null;
   let sessionDisposalCount = 0;
+  let statementBoundaryCallCount = 0;
+  let statementIntersectionCallCount = 0;
   const service: SqlLanguageService<TestContext> = {
     dispose: () => undefined,
     openDocument: () => {
@@ -166,30 +173,56 @@ function fakeService(
         get revision() {
           return revision;
         },
-        statementBoundaryAt: () => ({
-          boundary: {
-            boundaryQuality: "exact",
-            code: null,
-            endState: { kind: "normal" },
-            extent: { from: 0, to: 0 },
-            hasCode: false,
-            source: { from: 0, to: 0 },
-            terminator: null,
-          },
-          revision,
-        }),
-        statementBoundariesIntersecting: () => ({
-          boundaries: [{
-            boundaryQuality: "exact",
-            code: null,
-            endState: { kind: "normal" },
-            extent: { from: 0, to: 0 },
-            hasCode: false,
-            source: { from: 0, to: 0 },
-            terminator: null,
-          }],
-          revision,
-        }),
+        statementBoundaryAt: () => {
+          statementBoundaryCallCount += 1;
+          return {
+            boundary: statementCode === null
+              ? {
+                  boundaryQuality: "exact",
+                  code: null,
+                  endState: { kind: "normal" },
+                  extent: { from: 0, to: 0 },
+                  hasCode: false,
+                  source: { from: 0, to: 0 },
+                  terminator: null,
+                }
+              : {
+                  boundaryQuality: "exact",
+                  code: statementCode,
+                  endState: { kind: "normal" },
+                  extent: statementCode,
+                  hasCode: true,
+                  source: statementCode,
+                  terminator: null,
+                },
+            revision,
+          };
+        },
+        statementBoundariesIntersecting: () => {
+          statementIntersectionCallCount += 1;
+          return {
+            boundaries: [statementCode === null
+              ? {
+                  boundaryQuality: "exact",
+                  code: null,
+                  endState: { kind: "normal" },
+                  extent: { from: 0, to: 0 },
+                  hasCode: false,
+                  source: { from: 0, to: 0 },
+                  terminator: null,
+                }
+              : {
+                  boundaryQuality: "exact",
+                  code: statementCode,
+                  endState: { kind: "normal" },
+                  extent: statementCode,
+                  hasCode: true,
+                  source: statementCode,
+                  terminator: null,
+                }],
+            revision,
+          };
+        },
         update: (update) => {
           updates.push(update);
           if (rejectUpdates) {
@@ -208,6 +241,9 @@ function fakeService(
     getLastToken: () => lastToken,
     service,
     sessionDisposals: () => sessionDisposalCount,
+    statementBoundaryCalls: () => statementBoundaryCallCount,
+    statementIntersectionCalls: () =>
+      statementIntersectionCallCount,
     updates,
   };
 }
@@ -320,6 +356,318 @@ async function resolveCompletionInfo(
 }
 
 describe("sqlEditor", () => {
+  it("exposes current statement boundaries only for owned views", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+    });
+    const view = createView(support.extension, "SELECT 1;SELECT 2");
+    const foreign = createView([]);
+
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 9,
+    })?.boundary).toMatchObject({
+      boundaryQuality: "exact",
+      code: { from: 0, to: 8 },
+      hasCode: true,
+    });
+    expect(support.statementBoundariesIntersecting(view, {
+      from: 0,
+      to: view.state.doc.length,
+    })?.boundaries).toHaveLength(2);
+    expect(support.statementBoundaryAt(foreign, {
+      affinity: "left",
+      position: 0,
+    })).toBeNull();
+    expect(support.statementBoundariesIntersecting(foreign, {
+      from: 0,
+      to: 0,
+    })).toBeNull();
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 100,
+    })).toBeNull();
+
+    view.destroy();
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 0,
+    })).toBeNull();
+    expect(support.statementBoundariesIntersecting(view, {
+      from: 0,
+      to: 0,
+    })).toBeNull();
+    service.dispose();
+  });
+
+  it("renders an opt-in visible-line statement gutter", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT 1;\n\n/* separator */\nSELECT 2;",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(2);
+    });
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker-active"),
+    ).toHaveLength(1);
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker-inactive"),
+    ).toHaveLength(1);
+    expect(Array.from(
+      view.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).findIndex((marker) =>
+      marker.classList.contains("cm-sql-statement-marker-active")
+    )).toBe(1);
+
+    view.dispatch({ selection: { anchor: 1 } });
+    await vi.waitFor(() => {
+      const markers = view.dom.querySelectorAll(
+        ".cm-sql-statement-marker",
+      );
+      expect(markers).toHaveLength(2);
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+      expect(Array.from(markers).findIndex((marker) =>
+        marker.classList.contains(
+          "cm-sql-statement-marker-active",
+        )
+      )).toBe(0);
+    });
+    service.dispose();
+  });
+
+  it("does not install a statement gutter by default", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+    });
+    const view = createView(support.extension, "SELECT 1");
+
+    expect(
+      view.dom.querySelector(".cm-sql-statement-gutter"),
+    ).toBeNull();
+    service.dispose();
+  });
+
+  it("renders no marker for an empty document", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(support.extension, "");
+
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).toHaveLength(0);
+    service.dispose();
+  });
+
+  it("supports hidden and active-only gutter policies", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const hidden = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: { hideWhenNotFocused: true },
+    });
+    const hiddenView = createView(hidden.extension, "SELECT 1");
+    expect(
+      hiddenView.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).toHaveLength(0);
+    hiddenView.focus();
+    await vi.waitFor(() => {
+      expect(
+        hiddenView.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(1);
+    });
+
+    const activeOnly = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: { showInactive: false },
+    });
+    const activeView = createView(
+      activeOnly.extension,
+      "SELECT 1;\nSELECT 2",
+    );
+    await vi.waitFor(() => {
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-inactive",
+        ),
+      ).toHaveLength(0);
+    });
+    activeOnly.setContext(activeView, {
+      dialect: "duckdb",
+      engine: "remote",
+    });
+    await vi.waitFor(() => {
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+    });
+    service.dispose();
+  });
+
+  it("shows only inactive markers when no code boundary is current", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT 1;\n/* trailing */",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(0);
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-inactive",
+        ),
+      ).toHaveLength(1);
+    });
+    service.dispose();
+    expect(() => {
+      view.dispatch({ selection: { anchor: 0 } });
+    }).not.toThrow();
+  });
+
+  it("accepts an explicit false gutter option", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: false,
+    });
+    const view = createView(support.extension, "SELECT 1");
+    expect(
+      view.dom.querySelector(".cm-sql-statement-gutter"),
+    ).toBeNull();
+    service.dispose();
+  });
+
+  it("marks internal blank lines but not separator trivia", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT\n\n  1;\n\nSELECT 2",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(4);
+    });
+    service.dispose();
+  });
+
+  it("does not fall back across an opaque right boundary", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [bigQueryDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "bigquery", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const documentText =
+      "SELECT 1; IF condition THEN SELECT 2; END IF;";
+    const sharedBoundary = documentText.indexOf(";") + 1;
+    const view = createView(support.extension, documentText);
+    view.dispatch({ selection: { anchor: sharedBoundary } });
+
+    expect(
+      support.statementBoundaryAt(view, {
+        affinity: "right",
+        position: sharedBoundary,
+      })?.boundary.boundaryQuality,
+    ).toBe("opaque");
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(0);
+    });
+    service.dispose();
+  });
+
+  it("queries structural boundaries once per relevant redraw", () => {
+    const documentText = "SELECT\n\n  1;\nSELECT 2";
+    const harness = fakeService(
+      (revision) => readyResult(revision, []),
+      false,
+      { from: 0, to: documentText.length },
+    );
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service: harness.service,
+      statementGutter: {},
+    });
+    const view = createView(support.extension, documentText);
+
+    expect(harness.statementBoundaryCalls()).toBe(1);
+    expect(harness.statementIntersectionCalls()).toBe(1);
+    view.dispatch({ selection: { anchor: 1 } });
+    expect(harness.statementBoundaryCalls()).toBe(2);
+    expect(harness.statementIntersectionCalls()).toBe(2);
+    view.dispatch({});
+    expect(harness.statementBoundaryCalls()).toBe(2);
+    expect(harness.statementIntersectionCalls()).toBe(2);
+  });
+
   it("maps current service completions and applies the exact core edit", async () => {
     const service = createSqlLanguageService<TestContext>({
       catalog: {

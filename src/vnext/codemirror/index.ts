@@ -5,6 +5,9 @@ export {
   type SqlEditorSupport,
 } from "./sql-editor.js";
 export type {
+  SqlEditorStatementGutterOptions,
+} from "./statement-gutter.js";
+export type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
   SqlDisposableCompletionInfo,

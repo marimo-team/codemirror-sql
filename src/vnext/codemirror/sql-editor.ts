@@ -37,6 +37,12 @@ import type {
   SqlCompletionTask,
 } from "../relation-completion-types.js";
 import type {
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+} from "../statement-boundary-types.js";
+import type {
   SqlContextInput,
   SqlDocumentContext,
   SqlDocumentSession,
@@ -45,6 +51,10 @@ import type {
   SqlRevision,
   SqlTextChange,
 } from "../types.js";
+import {
+  createSqlStatementGutter,
+  type SqlEditorStatementGutterOptions,
+} from "./statement-gutter.js";
 
 export interface SqlEditorAutocompleteOptions {
   readonly activateOnTyping?: boolean;
@@ -67,6 +77,9 @@ export interface SqlEditorOptions<
     | readonly SqlEmbeddedRegion[]
     | undefined;
   readonly service: SqlLanguageService<Context>;
+  readonly statementGutter?:
+    | false
+    | SqlEditorStatementGutterOptions;
 }
 
 export interface SqlEditorSupport<
@@ -77,6 +90,14 @@ export interface SqlEditorSupport<
     readonly SqlEmbeddedRegion[]
   >;
   readonly extension: Extension;
+  readonly statementBoundariesIntersecting: (
+    view: EditorView,
+    request: SqlStatementBoundariesIntersectingRequest,
+  ) => SqlStatementBoundariesIntersectingResult | null;
+  readonly statementBoundaryAt: (
+    view: EditorView,
+    request: SqlStatementBoundaryAtRequest,
+  ) => SqlStatementBoundaryAtResult | null;
   readonly setContext: (
     view: EditorView,
     context: SqlContextInput<Context>,
@@ -607,6 +628,28 @@ export function createSqlEditorInternal<
       this.#clearCompletionState();
     };
 
+    readonly statementBoundariesIntersecting = (
+      request: SqlStatementBoundariesIntersectingRequest,
+    ): SqlStatementBoundariesIntersectingResult | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.statementBoundariesIntersecting(request);
+      } catch {
+        return null;
+      }
+    };
+
+    readonly statementBoundaryAt = (
+      request: SqlStatementBoundaryAtRequest,
+    ): SqlStatementBoundaryAtResult | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.statementBoundaryAt(request);
+      } catch {
+        return null;
+      }
+    };
+
     readonly update = (update: ViewUpdate): void => {
       let contextChanged = false;
       let regionsChanged = false;
@@ -744,6 +787,23 @@ export function createSqlEditorInternal<
       },
     }]),
   );
+  const statementGutter = options.statementGutter === false ||
+      options.statementGutter === undefined
+    ? []
+    : createSqlStatementGutter(options.statementGutter, {
+        boundariesIntersecting: (view, range) =>
+          view.plugin(plugin)?.statementBoundariesIntersecting(range) ??
+            null,
+        boundaryAt: (view, position, affinity) =>
+          view.plugin(plugin)?.statementBoundaryAt({
+            affinity,
+            position,
+          }) ?? null,
+        inputKeys: (view) => [
+          view.state.field(contextField),
+          view.state.field(embeddedRegionsField),
+        ],
+      });
   return Object.freeze({
     contextEffect,
     embeddedRegionsEffect,
@@ -752,11 +812,23 @@ export function createSqlEditorInternal<
       embeddedRegionsField,
       plugin,
       escapeKeymap,
+      statementGutter,
       autocompletion({
         ...autocompleteOptions,
         override: [completionSource, ...externalSources],
       }),
     ],
+    statementBoundariesIntersecting: (
+      view: EditorView,
+      request: SqlStatementBoundariesIntersectingRequest,
+    ) =>
+      view.plugin(plugin)?.statementBoundariesIntersecting(request) ??
+        null,
+    statementBoundaryAt: (
+      view: EditorView,
+      request: SqlStatementBoundaryAtRequest,
+    ) =>
+      view.plugin(plugin)?.statementBoundaryAt(request) ?? null,
     setContext: (
       view: EditorView,
       context: SqlContextInput<Context>,

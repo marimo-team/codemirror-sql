@@ -3,6 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
+  SqlEditorStatementGutterOptions,
 } from "../../src/vnext/codemirror/index.js";
 import type { SqlCompletionItem } from "../../src/vnext/relation-completion-types.js";
 
@@ -32,6 +33,14 @@ declare const item: SqlCompletionItem;
 const resolved = resolveInfo(item, {
   signal: new AbortController().signal,
 });
+const gutter: SqlEditorStatementGutterOptions = {
+  hideWhenNotFocused: true,
+  showInactive: true,
+};
+const invalidGutter: SqlEditorStatementGutterOptions = {
+  // @ts-expect-error gutter flags are boolean
+  showInactive: "yes",
+};
 
 // @ts-expect-error resolver items are immutable
 item.label = "changed";
@@ -62,6 +71,8 @@ const resolverWithoutDestroy: SqlCompletionInfoResolver = () => ({
 });
 
 void resolved;
+void gutter;
+void invalidGutter;
 void resolverReturningNode;
 void resolverReturningNumber;
 void resolverReturningReactData;
