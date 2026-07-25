@@ -29,6 +29,19 @@ export type {
 } from "./types.js";
 export { SqlSessionError } from "./types.js";
 export type {
+  SqlExactStatementBoundary,
+  SqlOpaqueStatementBoundary,
+  SqlStatementAffinity,
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundary,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+  SqlStatementLexicalEnd,
+  SqlStatementOpaqueReason,
+  SqlStatementUnterminatedConstruct,
+} from "./statement-boundary-types.js";
+export type {
   SqlCanonicalRelationPath,
   SqlCatalogEpoch,
   SqlCatalogFailureCode,

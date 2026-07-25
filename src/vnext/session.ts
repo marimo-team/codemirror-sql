@@ -13,6 +13,7 @@ import type {
 import {
   buildSqlStatementIndex,
   findSqlStatementSlot,
+  findSqlStatementSlotsIntersecting,
   type SqlLexicalProfile,
   type SqlStatementIndex,
   type SqlStatementSlot,
@@ -63,6 +64,7 @@ import {
   createIdentitySqlSource,
   createMaskedSqlSource,
   isSqlSourceError,
+  mapAnalysisRangeToOriginal,
   MAX_SQL_SOURCE_LENGTH,
   normalizeSqlTextRange,
   type SqlSourceSnapshot,
@@ -73,6 +75,14 @@ import {
   type SqlDialect,
   SqlSessionError,
 } from "./types.js";
+import type {
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundary,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+  SqlStatementLexicalEnd,
+} from "./statement-boundary-types.js";
 
 const MAX_CONTEXT_DEPTH = 100;
 const MAX_CONTEXT_NODES = 10_000;
@@ -772,6 +782,156 @@ function createCompletionTask(
   return Object.freeze(Object.assign(result, { refreshToken }));
 }
 
+function invalidStatementBoundaryRequest(message: string): never {
+  throw new SqlSessionError(
+    "invalid-statement-boundary-request",
+    message,
+  );
+}
+
+function statementBoundaryRequest(
+  request: unknown,
+): SqlStatementBoundaryAtRequest {
+  if (request === null || typeof request !== "object") {
+    return invalidStatementBoundaryRequest(
+      "SQL statement boundary request must be an object",
+    );
+  }
+  let affinity: unknown;
+  let position: unknown;
+  try {
+    affinity = readRequiredDataProperty(
+      request,
+      "affinity",
+      "invalid-statement-boundary-request",
+      "SQL statement boundary request",
+    );
+    position = readRequiredDataProperty(
+      request,
+      "position",
+      "invalid-statement-boundary-request",
+      "SQL statement boundary request",
+    );
+  } catch {
+    return invalidStatementBoundaryRequest(
+      "SQL statement boundary request requires own data properties",
+    );
+  }
+  if (affinity !== "left" && affinity !== "right") {
+    return invalidStatementBoundaryRequest(
+      "SQL statement affinity must be left or right",
+    );
+  }
+  if (
+    typeof position !== "number" ||
+    !Number.isSafeInteger(position) ||
+    position < 0
+  ) {
+    return invalidStatementBoundaryRequest(
+      "SQL statement position must be a non-negative safe integer",
+    );
+  }
+  return Object.freeze({
+    affinity,
+    position,
+  });
+}
+
+function statementIntersectionRequest(
+  request: unknown,
+): SqlStatementBoundariesIntersectingRequest {
+  if (request === null || typeof request !== "object") {
+    return invalidStatementBoundaryRequest(
+      "SQL statement intersection request must be an object",
+    );
+  }
+  let from: unknown;
+  let to: unknown;
+  try {
+    from = readRequiredDataProperty(
+      request,
+      "from",
+      "invalid-statement-boundary-request",
+      "SQL statement intersection request",
+    );
+    to = readRequiredDataProperty(
+      request,
+      "to",
+      "invalid-statement-boundary-request",
+      "SQL statement intersection request",
+    );
+  } catch {
+    return invalidStatementBoundaryRequest(
+      "SQL statement intersection request requires own data properties",
+    );
+  }
+  if (
+    typeof from !== "number" ||
+    typeof to !== "number" ||
+    !Number.isSafeInteger(from) ||
+    !Number.isSafeInteger(to) ||
+    from < 0 ||
+    to < from
+  ) {
+    return invalidStatementBoundaryRequest(
+      "SQL statement intersection range must be ordered safe integers",
+    );
+  }
+  return Object.freeze({ from, to });
+}
+
+function statementRange(
+  source: SqlSourceSnapshot,
+  range: SqlTextRange,
+): SqlTextRange {
+  return mapAnalysisRangeToOriginal(source, range);
+}
+
+function statementBoundary(
+  source: SqlSourceSnapshot,
+  slot: SqlStatementSlot,
+): SqlStatementBoundary {
+  const extent = statementRange(source, slot.extent);
+  if (slot.boundaryQuality === "opaque") {
+    return Object.freeze({
+      boundaryQuality: "opaque",
+      extent,
+      reason: slot.endState.reason,
+    });
+  }
+  const endState: SqlStatementLexicalEnd =
+    slot.endState.kind === "normal"
+      ? Object.freeze({ kind: "normal" })
+      : Object.freeze({
+          construct: slot.endState.construct,
+          from: statementRange(source, {
+            from: slot.endState.from,
+            to: slot.endState.from,
+          }).from,
+          kind: "unterminated",
+        });
+  const base = {
+    boundaryQuality: "exact",
+    endState,
+    extent,
+    source: statementRange(source, slot.source),
+    terminator: slot.terminator === null
+      ? null
+      : statementRange(source, slot.terminator),
+  } as const;
+  return slot.code === null
+    ? Object.freeze({
+        ...base,
+        code: null,
+        hasCode: false,
+      })
+    : Object.freeze({
+        ...base,
+        code: statementRange(source, slot.code),
+        hasCode: true,
+      });
+}
+
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   implements SqlDocumentSession<Context>
 {
@@ -838,7 +998,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return this.#statementIndexCache?.index ?? null;
   }
 
-  getStatementIndexForTesting(): SqlStatementIndex {
+  #getStatementIndex(): SqlStatementIndex {
     if (this.#disposed) {
       throw new SqlSessionError(
         "session-disposed",
@@ -864,6 +1024,65 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     });
     return index;
   }
+
+  getStatementIndexForTesting(): SqlStatementIndex {
+    return this.#getStatementIndex();
+  }
+
+  readonly statementBoundaryAt = (
+    input: SqlStatementBoundaryAtRequest,
+  ): SqlStatementBoundaryAtResult => {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const request = statementBoundaryRequest(input);
+    const snapshot = this.#snapshot;
+    if (request.position > snapshot.source.originalText.length) {
+      return invalidStatementBoundaryRequest(
+        "SQL statement position is outside the document",
+      );
+    }
+    const slot = findSqlStatementSlot(
+      this.#getStatementIndex(),
+      request.position,
+      request.affinity,
+    );
+    return Object.freeze({
+      boundary: statementBoundary(snapshot.source, slot),
+      revision: snapshot.revision,
+    });
+  };
+
+  readonly statementBoundariesIntersecting = (
+    input: SqlStatementBoundariesIntersectingRequest,
+  ): SqlStatementBoundariesIntersectingResult => {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const request = statementIntersectionRequest(input);
+    const snapshot = this.#snapshot;
+    if (request.to > snapshot.source.originalText.length) {
+      return invalidStatementBoundaryRequest(
+        "SQL statement intersection range is outside the document",
+      );
+    }
+    const slots = findSqlStatementSlotsIntersecting(
+      this.#getStatementIndex(),
+      request,
+    );
+    return Object.freeze({
+      boundaries: Object.freeze(
+        slots.map((slot) => statementBoundary(snapshot.source, slot)),
+      ),
+      revision: snapshot.revision,
+    });
+  };
 
   #clearTerminalIntent(): void {
     const intent = this.#terminalRefreshIntent;
@@ -1281,7 +1500,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           );
         }
       }
-      const index = this.getStatementIndexForTesting();
+      const index = this.#getStatementIndex();
       const slot = findSqlStatementSlot(index, position, "left");
       const cachedLocal = this.#localRelationStatementCache;
       const prepared =

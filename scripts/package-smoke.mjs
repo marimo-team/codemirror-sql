@@ -207,6 +207,13 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT * FROM {next_df}" },
 });
+const statement = session.statementBoundaryAt({ affinity: "left", position: 0 });
+if (
+  statement.boundary.boundaryQuality !== "exact" ||
+  !statement.boundary.hasCode
+) {
+  throw new Error("The packaged vNext statement boundary was unavailable");
+}
 service.dispose();
 `,
   );
@@ -229,6 +236,7 @@ import {
   duckdbDialect,
   type SqlDocumentContext,
   type SqlEmbeddedRegion,
+  type SqlStatementBoundaryAtResult,
   type SqlTextRange,
 } from "@marimo-team/codemirror-sql/vnext";
 import { sqlEditor } from "@marimo-team/codemirror-sql/vnext/codemirror";
@@ -265,12 +273,17 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "changes", changes: [] },
 });
+const statement: SqlStatementBoundaryAtResult = session.statementBoundaryAt({
+  affinity: "left",
+  position: 0,
+});
 
 void extensions;
 void editorSupport.extension;
 void parser;
 void range;
 void session;
+void statement;
 void BigQueryDialect;
 void DremioDialect;
 void commonKeywords;
@@ -348,6 +361,20 @@ const updatedRevision = session.update({
 });
 if (session.isCurrent(originalRevision) || !session.isCurrent(updatedRevision)) {
   throw new Error("The packaged vNext session violated revision identity");
+}
+const statement = session.statementBoundaryAt({ affinity: "left", position: 0 });
+const visible = session.statementBoundariesIntersecting({
+  from: 0,
+  to: 23,
+});
+if (
+  statement.revision !== updatedRevision ||
+  statement.boundary.boundaryQuality !== "exact" ||
+  !statement.boundary.hasCode ||
+  visible.revision !== updatedRevision ||
+  visible.boundaries.length !== 1
+) {
+  throw new Error("The packaged vNext statement boundary is invalid");
 }
 service.dispose();
 `,

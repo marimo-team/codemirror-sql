@@ -135,6 +135,12 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 /** Owns all mutable state for one open SQL document. */
 export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
+  readonly statementBoundaryAt: (
+    request: SqlStatementBoundaryAtRequest,
+  ) => SqlStatementBoundaryAtResult;
+  readonly statementBoundariesIntersecting: (
+    request: SqlStatementBoundariesIntersectingRequest,
+  ) => SqlStatementBoundariesIntersectingResult;
   readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
   readonly complete: (
     request: SqlCompletionRequest,
@@ -170,6 +176,7 @@ export type SqlSessionErrorCode =
   | "invalid-dialect"
   | "invalid-document"
   | "invalid-service-options"
+  | "invalid-statement-boundary-request"
   | "invalid-update"
   | "reentrant-update"
   | "service-disposed"
@@ -192,3 +199,9 @@ import type {
   SqlRelationCatalogProvider,
   SqlSessionChangeEvent,
 } from "./relation-completion-types.js";
+import type {
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+} from "./statement-boundary-types.js";

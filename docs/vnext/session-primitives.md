@@ -14,6 +14,47 @@ CodeMirror consumers should use the separate
 See [source coordinates](./source-coordinates.md) for the shared UTF-16 range
 contract and the internal immutable source-snapshot model.
 
+Statement boundaries are available as a synchronous structural query:
+
+```ts
+const result = session.statementBoundaryAt({
+  affinity: "left",
+  position: cursorOffset,
+});
+
+if (
+  session.isCurrent(result.revision) &&
+  result.boundary.boundaryQuality === "exact" &&
+  result.boundary.hasCode
+) {
+  executeRange(result.boundary.source);
+}
+```
+
+The immutable result carries the current session revision. Exact boundaries
+expose their full extent, source range, optional terminator, lexical end state,
+and a nullable range from the first through last SQL code token. Source ranges
+retain attached
+whitespace and comments; they are factual lexical boundaries, not pre-trimmed
+visual selections. The `code` range excludes leading and trailing separator
+trivia so presentation layers do not need to re-lex the document. Opaque
+procedural, custom-delimiter, and resource-limited
+regions expose only their extent and reason, so consumers cannot mistake them
+for safely executable SQL.
+
+Viewport consumers can retrieve every structural boundary in one half-open
+range without probing or re-lexing the document:
+
+```ts
+const visible = session.statementBoundariesIntersecting({
+  from: viewport.from,
+  to: viewport.to,
+});
+```
+
+The query runs in logarithmic lookup time plus the number of intersecting
+boundaries and returns a frozen, revision-stamped array.
+
 ## Example
 
 ```ts
