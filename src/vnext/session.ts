@@ -10,15 +10,18 @@ import type {
   SqlTextRange,
 } from "./types.js";
 import {
-  BIGQUERY_SQL_LEXICAL_PROFILE,
   buildSqlStatementIndex,
-  DREMIO_SQL_LEXICAL_PROFILE,
-  DUCKDB_SQL_LEXICAL_PROFILE,
-  POSTGRESQL_SQL_LEXICAL_PROFILE,
   type SqlLexicalProfile,
   type SqlStatementIndex,
   updateSqlStatementIndex,
 } from "./statement-index.js";
+import {
+  BIGQUERY_SQL_RELATION_DIALECT,
+  DREMIO_SQL_RELATION_DIALECT,
+  DUCKDB_SQL_RELATION_DIALECT,
+  POSTGRESQL_SQL_RELATION_DIALECT,
+  type SqlRelationDialectRuntime,
+} from "./relation-dialect.js";
 import {
   createIdentitySqlSource,
   createMaskedSqlSource,
@@ -46,6 +49,7 @@ const MAX_DIALECTS = 1_000;
 interface SqlDialectRuntime {
   readonly dialect: SqlDialect;
   readonly lexicalProfile: SqlLexicalProfile;
+  readonly relationDialect: SqlRelationDialectRuntime;
 }
 
 const sqlDialectRuntimes = new WeakMap<object, SqlDialectRuntime>();
@@ -53,12 +57,22 @@ const sqlDialectRuntimes = new WeakMap<object, SqlDialectRuntime>();
 function createBuiltinSqlDialect(
   id: string,
   displayName: string,
-  lexicalProfile: SqlLexicalProfile,
+  relationDialect: SqlRelationDialectRuntime,
 ): SqlDialect {
+  if (
+    relationDialect.querySite.lexicalProfile !==
+      relationDialect.cteLayout.lexicalProfile
+  ) {
+    throw new Error("Built-in SQL dialect lexical profiles must match");
+  }
   const dialect = createSqlDialect(id, displayName);
   sqlDialectRuntimes.set(
     dialect,
-    Object.freeze({ dialect, lexicalProfile }),
+    Object.freeze({
+      dialect,
+      lexicalProfile: relationDialect.querySite.lexicalProfile,
+      relationDialect,
+    }),
   );
   return dialect;
 }
@@ -66,22 +80,22 @@ function createBuiltinSqlDialect(
 const BIGQUERY_DIALECT = createBuiltinSqlDialect(
   "bigquery",
   "BigQuery",
-  BIGQUERY_SQL_LEXICAL_PROFILE,
+  BIGQUERY_SQL_RELATION_DIALECT,
 );
 const DREMIO_DIALECT = createBuiltinSqlDialect(
   "dremio",
   "Dremio",
-  DREMIO_SQL_LEXICAL_PROFILE,
+  DREMIO_SQL_RELATION_DIALECT,
 );
 const DUCKDB_DIALECT = createBuiltinSqlDialect(
   "duckdb",
   "DuckDB",
-  DUCKDB_SQL_LEXICAL_PROFILE,
+  DUCKDB_SQL_RELATION_DIALECT,
 );
 const POSTGRES_DIALECT = createBuiltinSqlDialect(
   "postgresql",
   "PostgreSQL",
-  POSTGRESQL_SQL_LEXICAL_PROFILE,
+  POSTGRESQL_SQL_RELATION_DIALECT,
 );
 
 /** Returns the package-owned BigQuery dialect handle. */
@@ -109,6 +123,12 @@ function getSqlDialectRuntime(candidate: unknown): SqlDialectRuntime | null {
     return null;
   }
   return sqlDialectRuntimes.get(candidate) ?? null;
+}
+
+export function getSqlRelationDialectRuntime(
+  candidate: unknown,
+): SqlRelationDialectRuntime | null {
+  return getSqlDialectRuntime(candidate)?.relationDialect ?? null;
 }
 
 interface PendingContextValue {

@@ -5,6 +5,7 @@ import {
   MAX_CTE_DEPTH,
   MAX_CTE_FRAMES,
   MAX_CTE_IDENTIFIER_LENGTH,
+  MAX_CTE_QUOTED_IDENTIFIER_LENGTH,
   MAX_CTE_STATEMENT_LENGTH,
   type SqlCteLayout,
   type SqlCteLayoutDialect,
@@ -13,11 +14,11 @@ import {
   visibleSqlCtesAt,
 } from "../cte-layout.js";
 import {
-  BIGQUERY_SQL_LEXICAL_PROFILE,
-  DREMIO_SQL_LEXICAL_PROFILE,
-  DUCKDB_SQL_LEXICAL_PROFILE,
-  POSTGRESQL_SQL_LEXICAL_PROFILE,
-} from "../lexical.js";
+  BIGQUERY_SQL_RELATION_DIALECT,
+  DREMIO_SQL_RELATION_DIALECT,
+  DUCKDB_SQL_RELATION_DIALECT,
+  POSTGRESQL_SQL_RELATION_DIALECT,
+} from "../relation-dialect.js";
 import {
   createIdentitySqlSource,
   createMaskedSqlSource,
@@ -28,94 +29,10 @@ import {
   type ExactSqlStatementSlot,
 } from "../statement-index.js";
 
-function decodeQuoted(raw: string): string {
-  const quote = raw.at(0) ?? "";
-  return raw
-    .slice(1, -1)
-    .replaceAll(`${quote}${quote}`, quote)
-    .replaceAll(`\\${quote}`, quote);
-}
-
-function isAscii(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    if (value.charCodeAt(index) > 0x7f) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function createDialect(
-  kind: "bigquery" | "dremio" | "duckdb" | "postgresql",
-): SqlCteLayoutDialect {
-  const lexicalProfile =
-    kind === "bigquery"
-      ? BIGQUERY_SQL_LEXICAL_PROFILE
-      : kind === "dremio"
-        ? DREMIO_SQL_LEXICAL_PROFILE
-        : kind === "duckdb"
-          ? DUCKDB_SQL_LEXICAL_PROFILE
-          : POSTGRESQL_SQL_LEXICAL_PROFILE;
-  return {
-    classifyIdentifierToken: (raw, quoted) => {
-      const value = quoted ? decodeQuoted(raw) : raw;
-      if (
-        value.length === 0 ||
-        (!quoted &&
-          /^(?:as|materialized|not|recursive|select|with)$/i.test(
-            value,
-          ))
-      ) {
-        return { status: "unsupported" };
-      }
-      return {
-        status: "identifier",
-        value: {
-          component: { quoted, value },
-        },
-      };
-    },
-    compareCteIdentifiers: (left, right) => {
-      const leftKey =
-        kind === "postgresql" && left.quoted
-          ? isAscii(left.value)
-            ? left.value
-            : null
-          : isAscii(left.value)
-            ? left.value.toLowerCase()
-            : null;
-      const rightKey =
-        kind === "postgresql" && right.quoted
-          ? isAscii(right.value)
-            ? right.value
-            : null
-          : isAscii(right.value)
-            ? right.value.toLowerCase()
-            : null;
-      if (leftKey !== null && rightKey !== null) {
-        return leftKey === rightKey ? "equal" : "distinct";
-      }
-      return left.quoted === right.quoted &&
-        left.value === right.value
-        ? "equal"
-        : "unknown";
-    },
-    grammar: {
-      declaredColumns: kind !== "bigquery",
-      materialization:
-        kind === "duckdb" || kind === "postgresql",
-      maximumDeclarationsPerFrame:
-        kind === "dremio" ? 1 : MAX_CTE_DECLARATIONS,
-      recursive: kind !== "dremio",
-    },
-    lexicalProfile,
-  };
-}
-
-const postgres = createDialect("postgresql");
-const duckdb = createDialect("duckdb");
-const bigquery = createDialect("bigquery");
-const dremio = createDialect("dremio");
+const postgres = POSTGRESQL_SQL_RELATION_DIALECT.cteLayout;
+const duckdb = DUCKDB_SQL_RELATION_DIALECT.cteLayout;
+const bigquery = BIGQUERY_SQL_RELATION_DIALECT.cteLayout;
+const dremio = DREMIO_SQL_RELATION_DIALECT.cteLayout;
 
 function analyze(
   text: string,
@@ -787,7 +704,7 @@ describe("bounded CTE layout", () => {
     expect(calls).toBe(0);
 
     const oversizedQuoted = `"${"a".repeat(
-      MAX_CTE_IDENTIFIER_LENGTH * 2 + 1,
+      MAX_CTE_QUOTED_IDENTIFIER_LENGTH,
     )}"`;
     expectPartial(
       `WITH ${oversizedQuoted} AS (SELECT 1) SELECT 1`,

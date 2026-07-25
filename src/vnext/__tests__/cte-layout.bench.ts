@@ -4,35 +4,16 @@ import {
   MAX_CTE_DECLARATIONS,
   MAX_CTE_DEPTH,
   MAX_CTE_FRAMES,
-  type SqlCteLayoutDialect,
   visibleSqlCtesAt,
 } from "../cte-layout.js";
-import { DUCKDB_SQL_LEXICAL_PROFILE } from "../lexical.js";
+import { DUCKDB_SQL_RELATION_DIALECT } from "../relation-dialect.js";
 import { createIdentitySqlSource } from "../source.js";
 import {
   buildSqlStatementIndex,
   type ExactSqlStatementSlot,
 } from "../statement-index.js";
 
-const dialect: SqlCteLayoutDialect = {
-  classifyIdentifierToken: (rawIdentifier, quoted) => ({
-    status: "identifier",
-    value: {
-      component: { quoted, value: rawIdentifier },
-    },
-  }),
-  compareCteIdentifiers: (left, right) =>
-    left.value.toLowerCase() === right.value.toLowerCase()
-      ? "equal"
-      : "distinct",
-  grammar: {
-    declaredColumns: true,
-    materialization: true,
-    maximumDeclarationsPerFrame: MAX_CTE_DECLARATIONS,
-    recursive: true,
-  },
-  lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
-};
+const dialect = DUCKDB_SQL_RELATION_DIALECT.cteLayout;
 
 function fixture(text: string): {
   readonly source: ReturnType<typeof createIdentitySqlSource>;

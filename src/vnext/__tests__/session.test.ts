@@ -7,7 +7,16 @@ import {
   postgresDialect,
   SqlSessionError,
 } from "../index.js";
-import { DefaultSqlLanguageService } from "../session.js";
+import {
+  DefaultSqlLanguageService,
+  getSqlRelationDialectRuntime,
+} from "../session.js";
+import {
+  BIGQUERY_SQL_RELATION_DIALECT,
+  DREMIO_SQL_RELATION_DIALECT,
+  DUCKDB_SQL_RELATION_DIALECT,
+  POSTGRESQL_SQL_RELATION_DIALECT,
+} from "../relation-dialect.js";
 import {
   BIGQUERY_SQL_LEXICAL_PROFILE,
   buildSqlStatementIndex,
@@ -67,6 +76,28 @@ describe("dialect definitions", () => {
     expect(postgresDialect()).toBe(postgres);
     expect(bigQueryDialect()).toBe(bigQueryDialect());
     expect(dremioDialect()).toBe(dremioDialect());
+  });
+
+  it("authenticates one coherent relation runtime per built-in handle", () => {
+    for (const [dialect, relationDialect] of [
+      [bigQueryDialect(), BIGQUERY_SQL_RELATION_DIALECT],
+      [dremioDialect(), DREMIO_SQL_RELATION_DIALECT],
+      [duckdbDialect(), DUCKDB_SQL_RELATION_DIALECT],
+      [postgresDialect(), POSTGRESQL_SQL_RELATION_DIALECT],
+    ] as const) {
+      expect(getSqlRelationDialectRuntime(dialect)).toBe(
+        relationDialect,
+      );
+      expect(relationDialect.querySite.lexicalProfile).toBe(
+        relationDialect.cteLayout.lexicalProfile,
+      );
+    }
+    expect(
+      getSqlRelationDialectRuntime({
+        displayName: "DuckDB",
+        id: "duckdb",
+      }),
+    ).toBeNull();
   });
 
   it("rejects duplicate IDs", () => {

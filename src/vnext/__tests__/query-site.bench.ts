@@ -1,34 +1,15 @@
 import { bench, describe } from "vitest";
 import {
   recognizeSqlRelationQuerySite,
-  type SqlQuerySiteDialect,
 } from "../query-site.js";
+import { DUCKDB_SQL_RELATION_DIALECT } from "../relation-dialect.js";
 import { createIdentitySqlSource } from "../source.js";
 import {
   buildSqlStatementIndex,
-  DUCKDB_SQL_LEXICAL_PROFILE,
   findSqlStatementSlot,
 } from "../statement-index.js";
 
-const dialect: SqlQuerySiteDialect = {
-  classifyIdentifierToken: (rawIdentifier) => ({
-    status: "identifier",
-    value: rawIdentifier,
-  }),
-  decodeRelationPath: (rawPath, cursorOffset) => ({
-    finalSegment: { from: 0, to: rawPath.length },
-    prefix: {
-      quoted: false,
-      value: rawPath.slice(0, cursorOffset),
-    },
-    qualifier: [],
-    quality: "exact",
-    status: "decoded",
-  }),
-  lexicalProfile: DUCKDB_SQL_LEXICAL_PROFILE,
-  maximumPathDepth: 16,
-  supportsNaturalJoin: true,
-};
+const dialect = DUCKDB_SQL_RELATION_DIALECT.querySite;
 const TEN_KIBIBYTES = 10 * 1_024;
 const queryPrefix = "SELECT ";
 const querySuffix = " FROM schema_prefix";

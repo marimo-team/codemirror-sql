@@ -296,6 +296,22 @@ if (
 ) {
   throw new Error("vNext package exports are incomplete");
 }
+for (const dialect of [
+  vnext.bigQueryDialect(),
+  vnext.dremioDialect(),
+  vnext.duckdbDialect(),
+  vnext.postgresDialect(),
+]) {
+  if (
+    Object.keys(dialect).join(",") !== "displayName,id" ||
+    "decodeIdentifier" in dialect ||
+    "grammar" in dialect ||
+    "relationDialect" in dialect ||
+    "renderRelationPath" in dialect
+  ) {
+    throw new Error("vNext dialect implementation policy leaked publicly");
+  }
+}
 if (!commonKeywords.keywords || !duckdbKeywords.keywords) {
   throw new Error("Keyword data exports are incomplete");
 }

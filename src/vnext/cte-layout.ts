@@ -15,6 +15,8 @@ export const MAX_CTE_DEPTH = 128;
 export const MAX_CTE_DECLARATIONS = 256;
 export const MAX_CTE_FRAMES = 256;
 export const MAX_CTE_IDENTIFIER_LENGTH = 256;
+export const MAX_CTE_QUOTED_IDENTIFIER_LENGTH =
+  MAX_CTE_IDENTIFIER_LENGTH * 10 + 2;
 
 export interface SqlCteRange {
   readonly [cteRangeBrand]: "SqlCteRange";
@@ -330,7 +332,7 @@ function normalizeIdentifier(
   const raw = text.slice(token.from, token.to);
   const maximumRawLength =
     token.kind === "quoted-identifier"
-      ? MAX_CTE_IDENTIFIER_LENGTH * 2 + 2
+      ? MAX_CTE_QUOTED_IDENTIFIER_LENGTH
       : MAX_CTE_IDENTIFIER_LENGTH;
   if (raw.length > maximumRawLength) {
     return null;
