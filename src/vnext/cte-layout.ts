@@ -173,11 +173,19 @@ export interface SqlCteVisibility {
   readonly shadowing: SqlCteShadowing;
 }
 
+type AuthenticatedSqlCteLayout =
+  | Exclude<SqlCteLayout, { readonly status: "unavailable" }>
+  | {
+      readonly reason: "resource-limit";
+      readonly resource: "active-statement";
+      readonly status: "unavailable";
+    };
+
 interface SqlCteLayoutProvenance {
   readonly dialect: SqlCteLayoutDialect;
-  readonly entrypoints: readonly SqlCteMainQueryEntrypoint[];
   readonly index: SqlStatementIndex;
   readonly lexicalProfile: SqlLexicalProfile;
+  readonly layout: AuthenticatedSqlCteLayout;
   readonly slot: ExactSqlStatementSlot;
   readonly source: SqlSourceSnapshot;
 }
@@ -186,6 +194,40 @@ const sqlCteLayoutProvenance = new WeakMap<
   object,
   SqlCteLayoutProvenance
 >();
+
+function registerSqlCteLayout<
+  Layout extends AuthenticatedSqlCteLayout,
+>(
+  layout: Layout,
+  source: SqlSourceSnapshot,
+  index: SqlStatementIndex,
+  slot: ExactSqlStatementSlot,
+  dialect: SqlCteLayoutDialect,
+  lexicalProfile: SqlLexicalProfile,
+): Layout {
+  if (
+    isSqlSourceSnapshot(source) &&
+    isExactSqlStatementSlotSnapshotFor(
+      index,
+      slot,
+      source.analysisText,
+      lexicalProfile,
+    )
+  ) {
+    sqlCteLayoutProvenance.set(
+      layout,
+      Object.freeze({
+        dialect,
+        index,
+        layout,
+        lexicalProfile,
+        slot,
+        source,
+      }),
+    );
+  }
+  return layout;
+}
 
 type HeaderState =
   | "after-as"
@@ -650,13 +692,19 @@ function freezeIssues(
 
 function layoutUnavailable(
   reason: "opaque-statement" | "resource-limit",
-  resource?: SqlCteLayoutResource,
 ): SqlCteLayout {
-  return Object.freeze(
-    resource === undefined
-      ? { reason, status: "unavailable" }
-      : { reason, resource, status: "unavailable" },
-  );
+  return Object.freeze({ reason, status: "unavailable" });
+}
+
+function activeStatementUnavailable(): Extract<
+  AuthenticatedSqlCteLayout,
+  { readonly status: "unavailable" }
+> {
+  return Object.freeze({
+    reason: "resource-limit",
+    resource: "active-statement",
+    status: "unavailable",
+  });
 }
 
 function findOpenParentFrame(
@@ -1038,14 +1086,21 @@ export function analyzeSqlCteLayout(
   dialect: SqlCteLayoutDialect,
 ): SqlCteLayout {
   const statementLength = slot.source.to - slot.source.from;
-  if (statementLength > MAX_CTE_STATEMENT_LENGTH) {
-    return layoutUnavailable("resource-limit", "active-statement");
-  }
   const validatedDialect = validateDialect(dialect);
   if (!validatedDialect) {
     return layoutUnavailable("resource-limit");
   }
   const { grammar, lexicalProfile } = validatedDialect;
+  if (statementLength > MAX_CTE_STATEMENT_LENGTH) {
+    return registerSqlCteLayout(
+      activeStatementUnavailable(),
+      source,
+      index,
+      slot,
+      dialect,
+      lexicalProfile,
+    );
+  }
   const text = source.analysisText;
   const statementFrom = slot.source.from;
   const lexer = new BoundedSqlLexer(
@@ -1583,36 +1638,22 @@ export function analyzeSqlCteLayout(
     issues,
     resource,
   );
-  if (
-    isSqlSourceSnapshot(source) &&
-    isExactSqlStatementSlotSnapshotFor(
-      index,
-      slot,
-      source.analysisText,
-      lexicalProfile,
-    )
-  ) {
-    sqlCteLayoutProvenance.set(
-      layout,
-      Object.freeze({
-        dialect,
-        entrypoints: layout.mainQueryEntrypoints,
-        index,
-        lexicalProfile,
-        slot,
-        source,
-      }),
-    );
-  }
-  return layout;
+  return registerSqlCteLayout(
+    layout,
+    source,
+    index,
+    slot,
+    dialect,
+    lexicalProfile,
+  );
 }
 
-export function resolveAuthenticatedSqlCteEntrypoints(
+export function resolveAuthenticatedSqlCteLayout(
   candidate: unknown,
   source: SqlSourceSnapshot,
   slot: ExactSqlStatementSlot,
   dialect: SqlCteLayoutDialect,
-): readonly SqlCteMainQueryEntrypoint[] | null {
+): AuthenticatedSqlCteLayout | null {
   if (
     candidate === null ||
     typeof candidate !== "object" ||
@@ -1634,7 +1675,25 @@ export function resolveAuthenticatedSqlCteEntrypoints(
   ) {
     return null;
   }
-  return provenance.entrypoints;
+  return provenance.layout;
+}
+
+export function resolveAuthenticatedSqlCteEntrypoints(
+  candidate: unknown,
+  source: SqlSourceSnapshot,
+  slot: ExactSqlStatementSlot,
+  dialect: SqlCteLayoutDialect,
+): readonly SqlCteMainQueryEntrypoint[] | null {
+  const layout = resolveAuthenticatedSqlCteLayout(
+    candidate,
+    source,
+    slot,
+    dialect,
+  );
+  if (!layout || layout.status === "unavailable") {
+    return null;
+  }
+  return layout.mainQueryEntrypoints;
 }
 
 function framePhase(

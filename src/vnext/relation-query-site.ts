@@ -1,5 +1,5 @@
 import {
-  resolveAuthenticatedSqlCteEntrypoints,
+  resolveAuthenticatedSqlCteLayout,
   type SqlCteLayout,
 } from "./cte-layout.js";
 import {
@@ -18,9 +18,17 @@ import {
 } from "./statement-index.js";
 
 function unavailable(
-  reason: "ambiguous-query-site" | "opaque-statement",
+  reason:
+    | "ambiguous-query-site"
+    | "opaque-statement"
+    | "resource-limit",
+  resource?: "active-statement",
 ): SqlQuerySiteResult {
-  return Object.freeze({ reason, status: "unavailable" });
+  return Object.freeze(
+    resource === undefined
+      ? { reason, status: "unavailable" }
+      : { reason, resource, status: "unavailable" },
+  );
 }
 
 export function recognizeSqlRelationQuerySiteWithCteLayout(
@@ -40,20 +48,26 @@ export function recognizeSqlRelationQuerySiteWithCteLayout(
   if (slot.boundaryQuality === "opaque") {
     return unavailable("opaque-statement");
   }
-  const entrypoints = resolveAuthenticatedSqlCteEntrypoints(
+  const authenticatedLayout = resolveAuthenticatedSqlCteLayout(
     layout,
     source,
     slot,
     dialect.cteLayout,
   );
-  if (!entrypoints) {
+  if (!authenticatedLayout) {
     return unavailable("ambiguous-query-site");
+  }
+  if (authenticatedLayout.status === "unavailable") {
+    return unavailable(
+      authenticatedLayout.reason,
+      authenticatedLayout.resource,
+    );
   }
   return recognizeSqlRelationQuerySiteWithEntrypoints(
     source,
     slot,
     position,
     dialect.querySite,
-    entrypoints,
+    authenticatedLayout.mainQueryEntrypoints,
   );
 }

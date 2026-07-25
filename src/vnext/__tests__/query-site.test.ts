@@ -857,6 +857,43 @@ describe("authenticated CTE main-query entrypoints", () => {
     });
   });
 
+  it("preserves authenticated CTE resource failures", () => {
+    const source = createIdentitySqlSource(
+      `SELECT * FROM ${" ".repeat(65_537)}`,
+    );
+    const index = buildSqlStatementIndex(
+      source.analysisText,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const slot = findSqlStatementSlot(
+      index,
+      source.analysisText.length,
+      "left",
+    );
+    if (slot.boundaryQuality === "opaque") {
+      throw new Error("Resource fixture requires an exact statement");
+    }
+    const layout = analyzeSqlCteLayout(
+      source,
+      index,
+      slot,
+      POSTGRESQL_SQL_RELATION_DIALECT.cteLayout,
+    );
+    expect(
+      recognizeSqlRelationQuerySiteWithCteLayout(
+        source,
+        slot,
+        source.analysisText.length,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        layout,
+      ),
+    ).toEqual({
+      reason: "resource-limit",
+      resource: "active-statement",
+      status: "unavailable",
+    });
+  });
+
   it.each([
     ["invalid-header", "header"],
     ["skipped", "skipped"],
