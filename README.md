@@ -161,7 +161,15 @@ which can be found in the `src/data` directory.
 
 ## Demo
 
-See the [demo](https://marimo-team.github.io/codemirror-sql/) for a full example.
+Run the interactive vNext playground locally:
+
+```bash
+pnpm dev
+```
+
+The playground exercises relation, namespace, physical-column, CTE, correlated
+scope, and `LATERAL` completion against an in-memory catalog. It also exposes
+provider latency and catalog invalidation controls.
 
 ## Development
 
