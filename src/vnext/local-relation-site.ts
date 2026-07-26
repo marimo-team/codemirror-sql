@@ -5,6 +5,10 @@ import {
   visibleSqlCtesAt,
 } from "./cte-layout.js";
 import {
+  recognizeSqlColumnQuerySite,
+  type SqlColumnQuerySiteResult,
+} from "./column-query-site.js";
+import {
   recognizeSqlRelationQuerySiteWithEntrypoints,
   type SqlQuerySiteResult,
 } from "./query-site.js";
@@ -179,13 +183,6 @@ export function analyzeSqlLocalRelationSite(
     });
   }
   const relativePosition = position - context.slot.source.from;
-  if (
-    !Number.isSafeInteger(relativePosition) ||
-    relativePosition < 0 ||
-    relativePosition > context.layout.statementLength
-  ) {
-    return unavailableSite();
-  }
   return Object.freeze({
     local: Object.freeze({
       cteVisibility: visibleSqlCtesAt(
@@ -197,4 +194,55 @@ export function analyzeSqlLocalRelationSite(
     querySite,
     status: "ready",
   });
+}
+
+export function analyzeSqlLocalColumnSite(
+  statement: SqlLocalRelationStatement,
+  position: number,
+): SqlColumnQuerySiteResult {
+  if (
+    statement === null ||
+    typeof statement !== "object"
+  ) {
+    return Object.freeze({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  }
+  const context = localRelationStatements.get(statement);
+  if (!context) {
+    return Object.freeze({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  }
+  const result = recognizeSqlColumnQuerySite(
+    context.source,
+    context.slot,
+    position,
+    context.dialect,
+  );
+  if (result.status !== "ready") return result;
+  const visibility = visibleSqlCtesAt(
+    context.layout,
+    position - context.slot.source.from,
+  );
+  const relations = result.relations.filter((relation) => {
+    const name = relation.path.length === 1
+      ? relation.path[0]
+      : undefined;
+    return name === undefined ||
+      !visibility.ctes.some((cte) =>
+        context.dialect.completion.compareCteIdentifiers(
+          name,
+          cte.name,
+        ) === "equal"
+      );
+  });
+  return relations.length === result.relations.length
+    ? result
+    : Object.freeze({
+        ...result,
+        relations: Object.freeze(relations),
+      });
 }

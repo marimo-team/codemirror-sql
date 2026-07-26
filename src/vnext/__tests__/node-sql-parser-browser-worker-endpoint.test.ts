@@ -161,7 +161,7 @@ describe("node-sql-parser browser worker endpoint", () => {
 
     expect(scope.listenerCount()).toBe(1);
     expect(scope.messages).toStrictEqual([
-      { kind: "ready", protocolVersion: 1 },
+      { kind: "ready", protocolVersion: 2 },
     ]);
     expect(evaluations).toStrictEqual({
       bigquery: 0,
@@ -172,7 +172,8 @@ describe("node-sql-parser browser worker endpoint", () => {
     await waitForMessageCount(scope, 2);
     expect(scope.messages[1]).toStrictEqual({
       kind: "parsed",
-      protocolVersion: 1,
+      queryBindings: expect.any(Object),
+      protocolVersion: 2,
       requestId: 1,
       statementKind: "query",
     });
@@ -185,7 +186,8 @@ describe("node-sql-parser browser worker endpoint", () => {
     await waitForMessageCount(scope, 3);
     expect(scope.messages[2]).toStrictEqual({
       kind: "parsed",
-      protocolVersion: 1,
+      queryBindings: expect.any(Object),
+      protocolVersion: 2,
       requestId: 2,
       statementKind: "insert",
     });
@@ -330,7 +332,8 @@ describe("node-sql-parser browser worker endpoint", () => {
 
     expect(scope.messages[1]).toStrictEqual({
       kind: "parsed",
-      protocolVersion: 1,
+      queryBindings: expect.any(Object),
+      protocolVersion: 2,
       requestId: 19,
       statementKind: "query",
     });
@@ -374,7 +377,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "module-load",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 17,
     });
     expect(JSON.stringify(scope.messages[1])).not.toContain(
@@ -420,7 +423,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "backend",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 1,
     });
     expect(scope.closeCalls()).toBe(1);
@@ -457,7 +460,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "backend",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 8,
     });
     expect(scope.closeCalls()).toBe(1);
@@ -508,7 +511,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "backend",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 10,
     });
     expect(scope.closeCalls()).toBe(1);
@@ -547,7 +550,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "backend",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 11,
     });
     expect(JSON.stringify(scope.messages[1])).not.toContain(
@@ -589,7 +592,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "backend",
       kind: "failed",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 9,
     });
     expect(evaluations).toBe(0);
@@ -623,7 +626,7 @@ describe("node-sql-parser browser worker endpoint", () => {
     expect(scope.messages[1]).toStrictEqual({
       code: "invalid-request",
       kind: "protocol-error",
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
     expect(scope.closeCalls()).toBe(1);
     expect(scope.listenerCount()).toBe(0);
@@ -645,11 +648,11 @@ describe("node-sql-parser browser worker endpoint", () => {
     scope.dispatch({ ...valid, extra: true });
 
     expect(scope.messages).toStrictEqual([
-      { kind: "ready", protocolVersion: 1 },
+      { kind: "ready", protocolVersion: 2 },
       {
         code: "invalid-request",
         kind: "protocol-error",
-        protocolVersion: 1,
+        protocolVersion: 2,
       },
     ]);
     expect(scope.closeCalls()).toBe(1);
@@ -678,7 +681,8 @@ describe("node-sql-parser browser worker endpoint", () => {
 
     expect(scope.messages[1]).toStrictEqual({
       kind: "parsed",
-      protocolVersion: 1,
+      queryBindings: expect.any(Object),
+      protocolVersion: 2,
       requestId: 23,
       statementKind: "query",
     });
@@ -694,7 +698,7 @@ describe("node-sql-parser browser worker endpoint", () => {
       code: undefined,
       expected: {
         kind: "syntax-rejected",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 4,
       },
       moduleValue: parserModule(() => {
@@ -712,7 +716,7 @@ describe("node-sql-parser browser worker endpoint", () => {
       code: undefined,
       expected: {
         kind: "unsupported",
-        protocolVersion: 1,
+        protocolVersion: 2,
         reason: "multiple-statements",
         requestId: 4,
       },
@@ -726,7 +730,7 @@ describe("node-sql-parser browser worker endpoint", () => {
       expected: {
         code: "backend",
         kind: "failed",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 4,
       },
       moduleValue: parserModule(() => {
@@ -738,7 +742,7 @@ describe("node-sql-parser browser worker endpoint", () => {
       expected: {
         code: "malformed-output",
         kind: "failed",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 4,
       },
       moduleValue: {},
@@ -863,11 +867,11 @@ describe("node-sql-parser browser worker endpoint", () => {
     scope.dispatch(request(1));
 
     expect(scope.messages).toStrictEqual([
-      { kind: "ready", protocolVersion: 1 },
+      { kind: "ready", protocolVersion: 2 },
       {
         code: "invalid-request",
         kind: "protocol-error",
-        protocolVersion: 1,
+        protocolVersion: 2,
       },
     ]);
     expect(scope.closeCalls()).toBe(1);

@@ -15,6 +15,7 @@ import {
   Prec,
   StateEffect,
   StateField,
+  type EditorState,
   type EditorSelection,
   type Extension,
   type StateEffectType,
@@ -37,6 +38,12 @@ import type {
   SqlCompletionTask,
 } from "../relation-completion-types.js";
 import type {
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+} from "../statement-boundary-types.js";
+import type {
   SqlContextInput,
   SqlDocumentContext,
   SqlDocumentSession,
@@ -45,6 +52,10 @@ import type {
   SqlRevision,
   SqlTextChange,
 } from "../types.js";
+import {
+  createSqlStatementGutter,
+  type SqlEditorStatementGutterOptions,
+} from "./statement-gutter.js";
 
 export interface SqlEditorAutocompleteOptions {
   readonly activateOnTyping?: boolean;
@@ -53,6 +64,10 @@ export interface SqlEditorAutocompleteOptions {
   readonly defaultKeymap?: boolean;
   readonly externalSources?: readonly CompletionSource[];
   readonly infoResolver?: SqlCompletionInfoResolver;
+  readonly isCompletionPositionAllowed?: (
+    state: EditorState,
+    position: number,
+  ) => boolean;
   readonly maxRenderedOptions?: number;
   readonly selectOnOpen?: boolean;
   readonly updateSyncTime?: number;
@@ -67,6 +82,9 @@ export interface SqlEditorOptions<
     | readonly SqlEmbeddedRegion[]
     | undefined;
   readonly service: SqlLanguageService<Context>;
+  readonly statementGutter?:
+    | false
+    | SqlEditorStatementGutterOptions;
 }
 
 export interface SqlEditorSupport<
@@ -77,6 +95,15 @@ export interface SqlEditorSupport<
     readonly SqlEmbeddedRegion[]
   >;
   readonly extension: Extension;
+  readonly invalidateCatalog: (view: EditorView) => SqlRevision | null;
+  readonly statementBoundariesIntersecting: (
+    view: EditorView,
+    request: SqlStatementBoundariesIntersectingRequest,
+  ) => SqlStatementBoundariesIntersectingResult | null;
+  readonly statementBoundaryAt: (
+    view: EditorView,
+    request: SqlStatementBoundaryAtRequest,
+  ) => SqlStatementBoundaryAtResult | null;
   readonly setContext: (
     view: EditorView,
     context: SqlContextInput<Context>,
@@ -103,6 +130,7 @@ export interface SqlEditorRuntime {
 interface CompletionCapture {
   readonly contextGeneration: number;
   readonly document: Text;
+  readonly embeddedRegions: readonly SqlEmbeddedRegion[];
   readonly selection: EditorSelection;
 }
 
@@ -155,7 +183,12 @@ function loadingLeaseMs(
   result: Extract<SqlCompletionResult, { readonly status: "ready" }>,
 ): number | null {
   for (const issue of result.value.issues) {
-    if (issue.reason === "catalog-loading") {
+    if (
+      (issue.reason === "catalog-loading" ||
+        issue.reason === "column-catalog-loading" ||
+        issue.reason === "namespace-catalog-loading") &&
+      typeof issue.remainingIntentLeaseMs === "number"
+    ) {
       return issue.remainingIntentLeaseMs;
     }
   }
@@ -177,6 +210,8 @@ function haveOneEditRange(items: readonly SqlCompletionItem[]): boolean {
 }
 
 function completionType(item: SqlCompletionItem): string {
+  if (item.kind === "column") return "property";
+  if (item.kind === "namespace") return "namespace";
   return item.relationKind === "cte" ? "type" : "table";
 }
 
@@ -239,6 +274,7 @@ export function createSqlEditorInternal<
   const {
     externalSources = [],
     infoResolver,
+    isCompletionPositionAllowed,
     ...autocompleteOptions
   } = autocomplete;
 
@@ -252,6 +288,7 @@ export function createSqlEditorInternal<
     #contextGeneration = 0;
     #destroyed = false;
     #disposingInfo = false;
+    #completionPositionAllowed: boolean;
     #hasEmbeddedRegions: boolean;
     #info: ActiveCompletionInfo | null = null;
     #intent: CompletionIntent | null = null;
@@ -273,6 +310,11 @@ export function createSqlEditorInternal<
         text: view.state.doc.toString(),
       });
       this.#hasEmbeddedRegions = initialRegions.length > 0;
+      this.#completionPositionAllowed =
+        this.#completionPositionIsAllowed(
+          view.state,
+          view.state.selection.main.head,
+        );
       this.#lastCompletionStatus = completionStatus(view.state);
       this.#lastSelectedCompletion = selectedCompletion(view.state);
       this.#lastSelectedCompletionIndex = selectedCompletionIndex(
@@ -354,8 +396,30 @@ export function createSqlEditorInternal<
         !this.#destroyed &&
         capture.contextGeneration === this.#contextGeneration &&
         capture.document === state.doc &&
+        capture.embeddedRegions === state.field(embeddedRegionsField) &&
         capture.selection.eq(state.selection)
       );
+    }
+
+    #capture(): CompletionCapture {
+      const state = this.#view.state;
+      return {
+        contextGeneration: this.#contextGeneration,
+        document: state.doc,
+        embeddedRegions: state.field(embeddedRegionsField),
+        selection: state.selection,
+      };
+    }
+
+    #completionPositionIsAllowed(
+      state: EditorState,
+      position: number,
+    ): boolean {
+      try {
+        return isCompletionPositionAllowed?.(state, position) ?? true;
+      } catch {
+        return false;
+      }
     }
 
     #scheduleClose(): void {
@@ -368,6 +432,31 @@ export function createSqlEditorInternal<
           return;
         }
         runtime.closeCompletion(this.#view);
+      });
+    }
+
+    #scheduleCompletionGateClose(capture: CompletionCapture): void {
+      runtime.queueMicrotask(() => {
+        if (
+          !this.#captureIsCurrent(capture) ||
+          this.#completionPositionIsAllowed(
+            this.#view.state,
+            this.#view.state.selection.main.head,
+          )
+        ) {
+          return;
+        }
+        runtime.closeCompletion(this.#view);
+        if (
+          externalSources.length > 0 &&
+          this.#captureIsCurrent(capture) &&
+          !this.#completionPositionIsAllowed(
+            this.#view.state,
+            this.#view.state.selection.main.head,
+          )
+        ) {
+          runtime.startCompletion(this.#view);
+        }
       });
     }
 
@@ -518,11 +607,15 @@ export function createSqlEditorInternal<
       context: CompletionContext,
     ): Promise<CompletionResult | null> => {
       this.#clearCompletionState();
-      const capture: CompletionCapture = {
-        contextGeneration: this.#contextGeneration,
-        document: this.#view.state.doc,
-        selection: this.#view.state.selection,
-      };
+      if (
+        !this.#completionPositionIsAllowed(
+          context.state,
+          context.pos,
+        )
+      ) {
+        return null;
+      }
+      const capture = this.#capture();
       const controller = new AbortController();
       let task: SqlCompletionTask;
       try {
@@ -562,6 +655,18 @@ export function createSqlEditorInternal<
           !controller.signal.aborted
         ) {
           this.destroy();
+        }
+        return null;
+      }
+      if (
+        !this.#completionPositionIsAllowed(
+          this.#view.state,
+          context.pos,
+        )
+      ) {
+        if (this.#active === active) {
+          this.#clearCompletionState();
+          this.#scheduleCompletionGateClose(capture);
         }
         return null;
       }
@@ -607,7 +712,51 @@ export function createSqlEditorInternal<
       this.#clearCompletionState();
     };
 
+    readonly invalidateCatalog = (): SqlRevision | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.invalidateCatalog();
+      } catch {
+        return null;
+      }
+    };
+
+    readonly statementBoundariesIntersecting = (
+      request: SqlStatementBoundariesIntersectingRequest,
+    ): SqlStatementBoundariesIntersectingResult | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.statementBoundariesIntersecting(request);
+      } catch {
+        return null;
+      }
+    };
+
+    readonly statementBoundaryAt = (
+      request: SqlStatementBoundaryAtRequest,
+    ): SqlStatementBoundaryAtResult | null => {
+      if (this.#destroyed) return null;
+      try {
+        return this.#session.statementBoundaryAt(request);
+      } catch {
+        return null;
+      }
+    };
+
     readonly update = (update: ViewUpdate): void => {
+      const completionPositionAllowed =
+        this.#completionPositionIsAllowed(
+          update.state,
+          update.state.selection.main.head,
+        );
+      const completionPositionBecameDenied =
+        this.#completionPositionAllowed &&
+        !completionPositionAllowed;
+      this.#completionPositionAllowed = completionPositionAllowed;
+      const completionPositionDenied = !completionPositionAllowed;
+      if (completionPositionDenied) {
+        this.#clearCompletionState();
+      }
       let contextChanged = false;
       let regionsChanged = false;
       for (const transaction of update.transactions) {
@@ -691,6 +840,12 @@ export function createSqlEditorInternal<
         this.#clearCompletionState();
       }
       const nextCompletionStatus = completionStatus(update.state);
+      if (
+        completionPositionBecameDenied &&
+        nextCompletionStatus !== null
+      ) {
+        this.#scheduleCompletionGateClose(this.#capture());
+      }
       const nextSelectedCompletion = selectedCompletion(update.state);
       const nextSelectedCompletionIndex = selectedCompletionIndex(
         update.state,
@@ -744,6 +899,23 @@ export function createSqlEditorInternal<
       },
     }]),
   );
+  const statementGutter = options.statementGutter === false ||
+      options.statementGutter === undefined
+    ? []
+    : createSqlStatementGutter(options.statementGutter, {
+        boundariesIntersecting: (view, range) =>
+          view.plugin(plugin)?.statementBoundariesIntersecting(range) ??
+            null,
+        boundaryAt: (view, position, affinity) =>
+          view.plugin(plugin)?.statementBoundaryAt({
+            affinity,
+            position,
+          }) ?? null,
+        inputKeys: (view) => [
+          view.state.field(contextField),
+          view.state.field(embeddedRegionsField),
+        ],
+      });
   return Object.freeze({
     contextEffect,
     embeddedRegionsEffect,
@@ -752,11 +924,25 @@ export function createSqlEditorInternal<
       embeddedRegionsField,
       plugin,
       escapeKeymap,
+      statementGutter,
       autocompletion({
         ...autocompleteOptions,
         override: [completionSource, ...externalSources],
       }),
     ],
+    invalidateCatalog: (view: EditorView): SqlRevision | null =>
+      view.plugin(plugin)?.invalidateCatalog() ?? null,
+    statementBoundariesIntersecting: (
+      view: EditorView,
+      request: SqlStatementBoundariesIntersectingRequest,
+    ) =>
+      view.plugin(plugin)?.statementBoundariesIntersecting(request) ??
+        null,
+    statementBoundaryAt: (
+      view: EditorView,
+      request: SqlStatementBoundaryAtRequest,
+    ) =>
+      view.plugin(plugin)?.statementBoundaryAt(request) ?? null,
     setContext: (
       view: EditorView,
       context: SqlContextInput<Context>,

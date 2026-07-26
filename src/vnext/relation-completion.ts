@@ -72,7 +72,7 @@ interface RankedCteItem {
 interface RankedCatalogItem {
   readonly completionPathLength: number;
   readonly item: Exclude<
-    SqlCompletionItem,
+    Extract<SqlCompletionItem, { readonly kind: "relation" }>,
     { readonly relationKind: "cte" }
   >;
   readonly label: string;

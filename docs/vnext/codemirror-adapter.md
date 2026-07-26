@@ -70,6 +70,51 @@ const support = sqlEditor({
 });
 ```
 
+## Statement boundaries and gutter
+
+The support object exposes synchronous structural queries without exposing the
+adapter-owned session:
+
+```ts
+const current = support.statementBoundaryAt(view, {
+  affinity: "left",
+  position: view.state.selection.main.head,
+});
+const visible = support.statementBoundariesIntersecting(view, {
+  from: view.viewport.from,
+  to: view.viewport.to,
+});
+```
+
+Both methods return `null` for foreign, destroyed, or unsynchronized views.
+Catalog-backed hosts can invalidate the adapter-owned session without exposing
+it:
+
+```ts
+const revision = support.invalidateCatalog(view);
+```
+
+This returns `null` for foreign or destroyed views. A live view advances its
+revision, cancels stale catalog work, and forces relation, column, and namespace
+providers to be consulted again.
+
+An opt-in structural gutter marks only lines intersecting scanner-owned SQL
+`code` spans. It never parses or copies statement text:
+
+```ts
+const support = sqlEditor({
+  initialContext,
+  service,
+  statementGutter: {
+    hideWhenNotFocused: true,
+    showInactive: true,
+  },
+});
+```
+
+The gutter uses `--cm-sql-statement-color` and
+`--cm-sql-statement-inactive-opacity` CSS variables. It is disabled by default.
+
 ## Atomic inputs
 
 Context and document changes can share one CodeMirror transaction:

@@ -7,6 +7,7 @@ import {
   type NodeSqlParserWireFailureCode,
   type NodeSqlParserWireGrammar,
 } from "./node-sql-parser-wire.js";
+import type { SqlQueryBindingModelData } from "./query-binding-model.js";
 import type { SqlStatementKind } from "./syntax.js";
 
 export interface NodeSqlParserBrowserExecutorLimits {
@@ -68,6 +69,7 @@ export type NodeSqlParserBrowserExecutorFailureCode =
 export type NodeSqlParserBrowserExecutorOutcome =
   | {
       readonly kind: "parsed";
+      readonly queryBindings: SqlQueryBindingModelData | null;
       readonly statementKind: SqlStatementKind;
     }
   | {
@@ -836,6 +838,7 @@ export function createNodeSqlParserBrowserExecutor(
           request,
           Object.freeze({
             kind: "parsed",
+            queryBindings: message.queryBindings,
             statementKind: message.statementKind,
           }),
         );

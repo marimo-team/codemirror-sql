@@ -11,6 +11,7 @@ import { EditorSelection, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bigQueryDialect,
   createSqlLanguageService,
   duckdbDialect,
   type SqlCatalogSearchRequest,
@@ -27,6 +28,7 @@ import {
   type SqlRelationCatalogProvider,
   type SqlRevision,
   type SqlSessionChangeEvent,
+  type SqlTextRange,
 } from "../../index.js";
 import {
   createSqlCompletionRefreshToken,
@@ -46,8 +48,11 @@ interface FakeServiceHarness {
   readonly completeSignals: AbortSignal[];
   readonly emit: (event: SqlSessionChangeEvent) => void;
   readonly getLastToken: () => SqlCompletionRefreshToken | null;
+  readonly invalidations: () => number;
   readonly service: SqlLanguageService<TestContext>;
   readonly sessionDisposals: () => number;
+  readonly statementBoundaryCalls: () => number;
+  readonly statementIntersectionCalls: () => number;
   readonly updates: readonly SqlDocumentUpdate<TestContext>[];
 }
 
@@ -126,6 +131,7 @@ function fakeService(
     token: SqlCompletionRefreshToken,
   ) => SqlCompletionResult | Promise<SqlCompletionResult>,
   rejectUpdates = false,
+  statementCode: SqlTextRange | null = null,
 ): FakeServiceHarness {
   const completeSignals: AbortSignal[] = [];
   const updates: SqlDocumentUpdate<TestContext>[] = [];
@@ -133,7 +139,10 @@ function fakeService(
     | ((event: SqlSessionChangeEvent) => void)
     | null = null;
   let lastToken: SqlCompletionRefreshToken | null = null;
+  let invalidationCount = 0;
   let sessionDisposalCount = 0;
+  let statementBoundaryCallCount = 0;
+  let statementIntersectionCallCount = 0;
   const service: SqlLanguageService<TestContext> = {
     dispose: () => undefined,
     openDocument: () => {
@@ -154,6 +163,11 @@ function fakeService(
           disposed = true;
           sessionDisposalCount += 1;
         },
+        invalidateCatalog: () => {
+          invalidationCount += 1;
+          revision = createSqlRevisionToken();
+          return revision;
+        },
         isCurrent: (candidate) => !disposed && candidate === revision,
         onDidChange: (nextListener) => {
           listener = nextListener;
@@ -166,30 +180,56 @@ function fakeService(
         get revision() {
           return revision;
         },
-        statementBoundaryAt: () => ({
-          boundary: {
-            boundaryQuality: "exact",
-            code: null,
-            endState: { kind: "normal" },
-            extent: { from: 0, to: 0 },
-            hasCode: false,
-            source: { from: 0, to: 0 },
-            terminator: null,
-          },
-          revision,
-        }),
-        statementBoundariesIntersecting: () => ({
-          boundaries: [{
-            boundaryQuality: "exact",
-            code: null,
-            endState: { kind: "normal" },
-            extent: { from: 0, to: 0 },
-            hasCode: false,
-            source: { from: 0, to: 0 },
-            terminator: null,
-          }],
-          revision,
-        }),
+        statementBoundaryAt: () => {
+          statementBoundaryCallCount += 1;
+          return {
+            boundary: statementCode === null
+              ? {
+                  boundaryQuality: "exact",
+                  code: null,
+                  endState: { kind: "normal" },
+                  extent: { from: 0, to: 0 },
+                  hasCode: false,
+                  source: { from: 0, to: 0 },
+                  terminator: null,
+                }
+              : {
+                  boundaryQuality: "exact",
+                  code: statementCode,
+                  endState: { kind: "normal" },
+                  extent: statementCode,
+                  hasCode: true,
+                  source: statementCode,
+                  terminator: null,
+                },
+            revision,
+          };
+        },
+        statementBoundariesIntersecting: () => {
+          statementIntersectionCallCount += 1;
+          return {
+            boundaries: [statementCode === null
+              ? {
+                  boundaryQuality: "exact",
+                  code: null,
+                  endState: { kind: "normal" },
+                  extent: { from: 0, to: 0 },
+                  hasCode: false,
+                  source: { from: 0, to: 0 },
+                  terminator: null,
+                }
+              : {
+                  boundaryQuality: "exact",
+                  code: statementCode,
+                  endState: { kind: "normal" },
+                  extent: statementCode,
+                  hasCode: true,
+                  source: statementCode,
+                  terminator: null,
+                }],
+            revision,
+          };
+        },
         update: (update) => {
           updates.push(update);
           if (rejectUpdates) {
@@ -206,8 +246,12 @@ function fakeService(
     completeSignals,
     emit: (event) => listener?.(event),
     getLastToken: () => lastToken,
+    invalidations: () => invalidationCount,
     service,
     sessionDisposals: () => sessionDisposalCount,
+    statementBoundaryCalls: () => statementBoundaryCallCount,
+    statementIntersectionCalls: () =>
+      statementIntersectionCallCount,
     updates,
   };
 }
@@ -320,6 +364,339 @@ async function resolveCompletionInfo(
 }
 
 describe("sqlEditor", () => {
+  it("exposes session controls only for owned views", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+    });
+    const view = createView(support.extension, "SELECT 1;SELECT 2");
+    const foreign = createView([]);
+
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 9,
+    })?.boundary).toMatchObject({
+      boundaryQuality: "exact",
+      code: { from: 0, to: 8 },
+      hasCode: true,
+    });
+    expect(support.statementBoundariesIntersecting(view, {
+      from: 0,
+      to: view.state.doc.length,
+    })?.boundaries).toHaveLength(2);
+    expect(support.invalidateCatalog(view)).not.toBeNull();
+    expect(support.invalidateCatalog(foreign)).toBeNull();
+    expect(support.statementBoundaryAt(foreign, {
+      affinity: "left",
+      position: 0,
+    })).toBeNull();
+    expect(support.statementBoundariesIntersecting(foreign, {
+      from: 0,
+      to: 0,
+    })).toBeNull();
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 100,
+    })).toBeNull();
+
+    view.destroy();
+    expect(support.invalidateCatalog(view)).toBeNull();
+    expect(support.statementBoundaryAt(view, {
+      affinity: "left",
+      position: 0,
+    })).toBeNull();
+    expect(support.statementBoundariesIntersecting(view, {
+      from: 0,
+      to: 0,
+    })).toBeNull();
+    service.dispose();
+  });
+
+  it("proxies catalog invalidation only to its owned live session", () => {
+    const harness = fakeService((revision) => readyResult(revision, []));
+    const support = sqlEditor({
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    const foreign = createView([]);
+
+    expect(support.invalidateCatalog(view)).not.toBeNull();
+    expect(harness.invalidations()).toBe(1);
+    expect(support.invalidateCatalog(foreign)).toBeNull();
+    expect(harness.invalidations()).toBe(1);
+    view.destroy();
+    expect(support.invalidateCatalog(view)).toBeNull();
+    expect(harness.invalidations()).toBe(1);
+  });
+
+  it("renders an opt-in visible-line statement gutter", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT 1;\n\n/* separator */\nSELECT 2;",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(2);
+    });
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker-active"),
+    ).toHaveLength(1);
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker-inactive"),
+    ).toHaveLength(1);
+    expect(Array.from(
+      view.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).findIndex((marker) =>
+      marker.classList.contains("cm-sql-statement-marker-active")
+    )).toBe(1);
+
+    view.dispatch({ selection: { anchor: 1 } });
+    await vi.waitFor(() => {
+      const markers = view.dom.querySelectorAll(
+        ".cm-sql-statement-marker",
+      );
+      expect(markers).toHaveLength(2);
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+      expect(Array.from(markers).findIndex((marker) =>
+        marker.classList.contains(
+          "cm-sql-statement-marker-active",
+        )
+      )).toBe(0);
+    });
+    service.dispose();
+  });
+
+  it("does not install a statement gutter by default", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+    });
+    const view = createView(support.extension, "SELECT 1");
+
+    expect(
+      view.dom.querySelector(".cm-sql-statement-gutter"),
+    ).toBeNull();
+    service.dispose();
+  });
+
+  it("renders no marker for an empty document", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(support.extension, "");
+
+    expect(
+      view.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).toHaveLength(0);
+    service.dispose();
+  });
+
+  it("supports hidden and active-only gutter policies", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const hidden = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: { hideWhenNotFocused: true },
+    });
+    const hiddenView = createView(hidden.extension, "SELECT 1");
+    expect(
+      hiddenView.dom.querySelectorAll(".cm-sql-statement-marker"),
+    ).toHaveLength(0);
+    hiddenView.focus();
+    await vi.waitFor(() => {
+      expect(
+        hiddenView.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(1);
+    });
+
+    const activeOnly = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: { showInactive: false },
+    });
+    const activeView = createView(
+      activeOnly.extension,
+      "SELECT 1;\nSELECT 2",
+    );
+    await vi.waitFor(() => {
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-inactive",
+        ),
+      ).toHaveLength(0);
+    });
+    activeOnly.setContext(activeView, {
+      dialect: "duckdb",
+      engine: "remote",
+    });
+    await vi.waitFor(() => {
+      expect(
+        activeView.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(1);
+    });
+    service.dispose();
+  });
+
+  it("shows only inactive markers when no code boundary is current", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT 1;\n/* trailing */",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(0);
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-inactive",
+        ),
+      ).toHaveLength(1);
+    });
+    service.dispose();
+    expect(() => {
+      view.dispatch({ selection: { anchor: 0 } });
+    }).not.toThrow();
+  });
+
+  it("accepts an explicit false gutter option", () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: false,
+    });
+    const view = createView(support.extension, "SELECT 1");
+    expect(
+      view.dom.querySelector(".cm-sql-statement-gutter"),
+    ).toBeNull();
+    service.dispose();
+  });
+
+  it("marks internal blank lines but not separator trivia", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const view = createView(
+      support.extension,
+      "SELECT\n\n  1;\n\nSELECT 2",
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(".cm-sql-statement-marker"),
+      ).toHaveLength(4);
+    });
+    service.dispose();
+  });
+
+  it("does not fall back across an opaque right boundary", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [bigQueryDialect()],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "bigquery", engine: "local" },
+      service,
+      statementGutter: {},
+    });
+    const documentText =
+      "SELECT 1; IF condition THEN SELECT 2; END IF;";
+    const sharedBoundary = documentText.indexOf(";") + 1;
+    const view = createView(support.extension, documentText);
+    view.dispatch({ selection: { anchor: sharedBoundary } });
+
+    expect(
+      support.statementBoundaryAt(view, {
+        affinity: "right",
+        position: sharedBoundary,
+      })?.boundary.boundaryQuality,
+    ).toBe("opaque");
+    await vi.waitFor(() => {
+      expect(
+        view.dom.querySelectorAll(
+          ".cm-sql-statement-marker-active",
+        ),
+      ).toHaveLength(0);
+    });
+    service.dispose();
+  });
+
+  it("queries structural boundaries once per relevant redraw", () => {
+    const documentText = "SELECT\n\n  1;\nSELECT 2";
+    const harness = fakeService(
+      (revision) => readyResult(revision, []),
+      false,
+      { from: 0, to: documentText.length },
+    );
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service: harness.service,
+      statementGutter: {},
+    });
+    const view = createView(support.extension, documentText);
+
+    expect(harness.statementBoundaryCalls()).toBe(1);
+    expect(harness.statementIntersectionCalls()).toBe(1);
+    view.dispatch({ selection: { anchor: 1 } });
+    expect(harness.statementBoundaryCalls()).toBe(2);
+    expect(harness.statementIntersectionCalls()).toBe(2);
+    view.dispatch({});
+    expect(harness.statementBoundaryCalls()).toBe(2);
+    expect(harness.statementIntersectionCalls()).toBe(2);
+  });
+
   it("maps current service completions and applies the exact core edit", async () => {
     const service = createSqlLanguageService<TestContext>({
       catalog: {
@@ -748,6 +1125,32 @@ describe("sqlEditor", () => {
     expect(harness.sessionDisposals()).toBe(0);
   });
 
+  it("refuses a completion edit that overlaps an embedded region", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem(14, 16)])
+    );
+    const support = sqlEditor({
+      initialContext: context(),
+      initialEmbeddedRegions: [{
+        from: 15,
+        language: "host",
+        to: 16,
+      }],
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    const completion = currentCompletions(view.state)[0];
+    if (!completion || typeof completion.apply !== "function") {
+      throw new Error("Expected completion apply callback");
+    }
+
+    completion.apply(view, completion, 14, 16);
+    expect(view.state.doc.toString()).toBe("SELECT * FROM us");
+    expect(harness.updates).toEqual([]);
+  });
+
   it("combines document and final context effects into one current input", async () => {
     const requests: SqlCatalogSearchRequest[] = [];
     const service = createSqlLanguageService<TestContext>({
@@ -925,6 +1328,294 @@ describe("sqlEditor", () => {
         expect.objectContaining({ label: "users", type: "type" }),
       ]),
     );
+  });
+
+  it("maps column and namespace completion presentation", async () => {
+    const epoch = { generation: 1, token: "epoch-1" };
+    const items: readonly SqlCompletionItem[] = [{
+      edit: { from: 14, insert: "users_column", to: 16 },
+      kind: "column",
+      label: "users_column",
+      provenance: {
+        columnEntityId: "users:name",
+        epoch,
+        kind: "column-catalog",
+        providerId: "columns",
+        relationEntityId: "users",
+        scope: "connection:fake",
+      },
+      relationRequestKey: "binding:0",
+    }, {
+      edit: { from: 14, insert: "users_namespace", to: 16 },
+      kind: "namespace",
+      label: "users_namespace",
+      provenance: {
+        containerEntityId: "schema:main",
+        epoch,
+        kind: "namespace-catalog",
+        providerId: "namespaces",
+        scope: "connection:fake",
+      },
+      role: "schema",
+    }];
+    const harness = fakeService((revision) =>
+      readyResult(revision, items)
+    );
+    const support = sqlEditor({
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(currentCompletions(view.state)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "users_column",
+          type: "property",
+        }),
+        expect.objectContaining({
+          label: "users_namespace",
+          type: "namespace",
+        }),
+      ]),
+    );
+  });
+
+  it("denies SQL completion at an unmatched template EOF without removing external sources", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const gate = vi.fn((state, position) =>
+      !state.sliceDoc(0, position).endsWith("{")
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 15,
+          options: [{ label: "python_variable" }],
+        })],
+        isCompletionPositionAllowed: gate,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension, "SELECT * FROM {");
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(0);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "python_variable" }),
+    ]);
+    expect(gate).toHaveBeenCalledWith(view.state, 15);
+  });
+
+  it("allows normal SQL completion through the position gate", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const gate = vi.fn(() => true);
+    const support = sqlEditor({
+      autocomplete: {
+        isCompletionPositionAllowed: gate,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(1);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "users" }),
+    ]);
+    expect(gate).toHaveBeenCalledWith(view.state, 16);
+  });
+
+  it("fails a throwing position gate closed while retaining external sources", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 15,
+          options: [{ label: "python_variable" }],
+        })],
+        isCompletionPositionAllowed: () => {
+          throw new Error("host state unavailable");
+        },
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension, "SELECT * FROM {");
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(harness.completeSignals).toHaveLength(0);
+    expect(currentCompletions(view.state)).toEqual([
+      expect.objectContaining({ label: "python_variable" }),
+    ]);
+  });
+
+  it("cancels pending SQL completion when the position gate flips false", async () => {
+    let allowed = true;
+    const harness = fakeService(
+      () => new Promise(() => undefined),
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await vi.waitFor(() => {
+      expect(harness.completeSignals).toHaveLength(1);
+    });
+    allowed = false;
+    view.dispatch({});
+    await vi.waitFor(() => {
+      expect(harness.completeSignals[0]?.aborted).toBe(true);
+      expect(currentCompletions(view.state)).toEqual([]);
+    });
+  });
+
+  it("restarts external sources after the SQL gate closes stale options", async () => {
+    let allowed = true;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 16,
+          options: [{ label: "external_variable" }],
+        })],
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(currentCompletions(view.state).map((item) => item.label).sort())
+      .toEqual(["external_variable", "users"]);
+
+    allowed = false;
+    view.dispatch({});
+    await vi.waitFor(() => {
+      expect(currentCompletions(view.state).map((item) => item.label))
+        .toEqual(["external_variable"]);
+    });
+  });
+
+  it("closes SQL options denied while the provider is resolving", async () => {
+    const runtime = controlledRuntime();
+    let allowed = true;
+    let resolveResult:
+      | ((result: SqlCompletionResult) => void)
+      | undefined;
+    let revision: SqlRevision | null = null;
+    const harness = fakeService((currentRevision) => {
+      revision = currentRevision;
+      return new Promise((resolve) => {
+        resolveResult = resolve;
+      });
+    });
+    const support = createSqlEditorInternal({
+      autocomplete: {
+        closeOnBlur: false,
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    }, runtime.runtime);
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await vi.waitFor(() =>
+      expect(harness.completeSignals).toHaveLength(1)
+    );
+    if (revision === null) {
+      throw new Error("Expected deferred completion revision");
+    }
+    allowed = false;
+    resolveResult?.(readyResult(revision, [completionItem()]));
+    await vi.waitFor(() => expect(runtime.queued).toHaveLength(1));
+
+    runtime.queued[0]?.();
+    expect(runtime.closes).toEqual([view]);
+  });
+
+  it("does not let a stale gate-close task affect a newer editor state", async () => {
+    const runtime = controlledRuntime();
+    let allowed = true;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = createSqlEditorInternal({
+      autocomplete: {
+        closeOnBlur: false,
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    }, runtime.runtime);
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    allowed = false;
+    view.dispatch({});
+    expect(runtime.queued).toHaveLength(1);
+
+    view.dispatch({ selection: { anchor: 15 } });
+    runtime.queued[0]?.();
+    expect(runtime.closes).toEqual([]);
+  });
+
+  it("disposes rich info when the position gate flips false", async () => {
+    let allowed = true;
+    const destroys: Array<ReturnType<typeof vi.fn>> = [];
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        infoResolver: () => {
+          const destroy = vi.fn();
+          destroys.push(destroy);
+          return {
+            destroy,
+            dom: document.createElement("div"),
+          };
+        },
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    await vi.waitFor(() => expect(destroys.length).toBeGreaterThan(0));
+    const currentDestroy = destroys.at(-1);
+    if (!currentDestroy) throw new Error("Expected rich info");
+
+    allowed = false;
+    view.dispatch({});
+    expect(currentDestroy).toHaveBeenCalledTimes(1);
   });
 
   it.each([

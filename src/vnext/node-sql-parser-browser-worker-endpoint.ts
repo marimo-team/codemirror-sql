@@ -4,6 +4,10 @@ import {
   type NodeSqlParserModuleLoadOutcome,
 } from "./node-sql-parser-backend.js";
 import {
+  normalizeNodeSqlParserQueryBindings,
+} from "./node-sql-parser-query-bindings.js";
+import type { SqlQueryBindingModel } from "./query-binding-model.js";
+import {
   decodeNodeSqlParserWireRequest,
   encodeNodeSqlParserWireBackendOutcome,
   encodeNodeSqlParserWireProtocolError,
@@ -250,6 +254,10 @@ export function installNodeSqlParserBrowserWorkerEndpoint(
       createModuleLoader(loaders.postgresql),
     ),
   } satisfies Record<NodeSqlParserWireGrammar, unknown>);
+  const bindingAuthorities = Object.freeze({
+    bigquery: Object.freeze({}),
+    postgresql: Object.freeze({}),
+  } satisfies Record<NodeSqlParserWireGrammar, object>);
 
   function closeEndpoint(): void {
     state = "closed";
@@ -293,11 +301,27 @@ export function installNodeSqlParserBrowserWorkerEndpoint(
         guard,
       );
       state = closeAfterSettlement ? "closed" : "idle";
+      let queryBindings: SqlQueryBindingModel | null = null;
+      if (outcome.kind === "parsed") {
+        const normalized = normalizeNodeSqlParserQueryBindings(
+          outcome.root,
+          request.text,
+          bindingAuthorities[request.grammar],
+          {
+            compatibility: false,
+            grammar: request.grammar,
+          },
+        );
+        if (normalized.status === "ready") {
+          queryBindings = normalized.model;
+        }
+      }
       try {
         scope.postMessage(
           encodeNodeSqlParserWireBackendOutcome(
             request.requestId,
             outcome,
+            queryBindings,
           ),
         );
       } catch {

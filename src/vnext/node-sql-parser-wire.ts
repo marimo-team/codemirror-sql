@@ -2,9 +2,15 @@ import {
   MAX_NODE_SQL_PARSER_STATEMENT_LENGTH,
   type NodeSqlParserBackendOutcome,
 } from "./node-sql-parser-backend.js";
+import {
+  createSqlQueryBindingModel,
+  isSqlQueryBindingModel,
+  type SqlQueryBindingModel,
+  type SqlQueryBindingModelData,
+} from "./query-binding-model.js";
 import type { SqlStatementKind } from "./syntax.js";
 
-export const NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION = 1 as const;
+export const NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION = 2 as const;
 
 // The parse request is the largest closed protocol shape.
 const MAX_NODE_SQL_PARSER_WIRE_RECORD_KEYS = 5;
@@ -17,7 +23,7 @@ export type NodeSqlParserWireFailureCode =
   | "module-load";
 
 export interface NodeSqlParserWireRequest {
-  readonly protocolVersion: 1;
+  readonly protocolVersion: 2;
   readonly kind: "parse";
   readonly requestId: number;
   readonly grammar: NodeSqlParserWireGrammar;
@@ -26,34 +32,35 @@ export interface NodeSqlParserWireRequest {
 
 export type NodeSqlParserWireMessage =
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "ready";
     }
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "parsed";
+      readonly queryBindings: SqlQueryBindingModelData | null;
       readonly requestId: number;
       readonly statementKind: SqlStatementKind;
     }
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "syntax-rejected";
       readonly requestId: number;
     }
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "unsupported";
       readonly requestId: number;
       readonly reason: "multiple-statements" | "resource-limit";
     }
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "failed";
       readonly requestId: number;
       readonly code: NodeSqlParserWireFailureCode;
     }
   | {
-      readonly protocolVersion: 1;
+      readonly protocolVersion: 2;
       readonly kind: "protocol-error";
       readonly code: "invalid-request";
     };
@@ -172,6 +179,62 @@ function isRequestText(value: unknown): value is string {
     typeof value === "string" &&
     value.length <= MAX_NODE_SQL_PARSER_STATEMENT_LENGTH
   );
+}
+
+const wireBindingAuthority = Object.freeze({});
+
+type DecodedWireBindings =
+  | { readonly valid: false }
+  | {
+      readonly model: SqlQueryBindingModel | null;
+      readonly valid: true;
+    };
+
+function decodeWireBindings(value: unknown): DecodedWireBindings {
+  if (value === null) {
+    return { model: null, valid: true };
+  }
+  if (value === null || typeof value !== "object") {
+    return { valid: false };
+  }
+  try {
+    const statementRange = Object.getOwnPropertyDescriptor(
+      value,
+      "statementRange",
+    );
+    if (
+      statementRange === undefined ||
+      !("value" in statementRange) ||
+      statementRange.value === null ||
+      typeof statementRange.value !== "object"
+    ) {
+      return { valid: false };
+    }
+    const to = Object.getOwnPropertyDescriptor(
+      statementRange.value,
+      "to",
+    );
+    if (
+      to === undefined ||
+      !("value" in to) ||
+      typeof to.value !== "number" ||
+      !Number.isSafeInteger(to.value) ||
+      to.value <= 0 ||
+      to.value > MAX_NODE_SQL_PARSER_STATEMENT_LENGTH
+    ) {
+      return { valid: false };
+    }
+    return {
+      model: createSqlQueryBindingModel(
+        " ".repeat(to.value),
+        wireBindingAuthority,
+        value,
+      ),
+      valid: true,
+    };
+  } catch {
+    return { valid: false };
+  }
 }
 
 function requireRequestId(value: number): void {
@@ -299,6 +362,7 @@ export function encodeNodeSqlParserWireProtocolError(): Extract<
 export function encodeNodeSqlParserWireBackendOutcome(
   requestId: number,
   outcome: NodeSqlParserBackendOutcome,
+  queryBindings: SqlQueryBindingModel | null = null,
 ): Exclude<
   NodeSqlParserWireMessage,
   { readonly kind: "protocol-error" | "ready" }
@@ -307,9 +371,18 @@ export function encodeNodeSqlParserWireBackendOutcome(
   switch (outcome.kind) {
     case "parsed":
       requireStatementKind(outcome.statementKind);
+      if (
+        queryBindings !== null &&
+        !isSqlQueryBindingModel(queryBindings)
+      ) {
+        throw new TypeError(
+          "node-sql-parser wire query bindings must be authenticated",
+        );
+      }
       return Object.freeze({
         kind: "parsed",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
+        queryBindings,
         requestId,
         statementKind: outcome.statementKind,
       });
@@ -362,21 +435,27 @@ export function decodeNodeSqlParserWireMessage(
         : null;
     case "parsed": {
       const statementKind = record.values.get("statementKind");
+      const queryBindings = decodeWireBindings(
+        record.values.get("queryBindings"),
+      );
       if (
         !hasExactKeys(record, [
           "protocolVersion",
           "kind",
+          "queryBindings",
           "requestId",
           "statementKind",
         ]) ||
         !isRequestId(requestId) ||
-        !isStatementKind(statementKind)
+        !isStatementKind(statementKind) ||
+        !queryBindings.valid
       ) {
         return null;
       }
       return Object.freeze({
         kind: "parsed",
         protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
+        queryBindings: queryBindings.model,
         requestId,
         statementKind,
       });

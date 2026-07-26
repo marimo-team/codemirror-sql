@@ -294,7 +294,11 @@ function ready(worker: FakeWorker): void {
 function respond(
   worker: FakeWorker,
   outcome:
-    | { readonly kind: "parsed"; readonly statementKind: "query" }
+    | {
+        readonly kind: "parsed";
+        readonly queryBindings: null;
+        readonly statementKind: "query";
+      }
     | { readonly kind: "syntax-rejected" }
     | {
         readonly kind: "unsupported";
@@ -309,8 +313,9 @@ function respond(
   const backendOutcome =
     outcome.kind === "parsed"
       ? {
-          ...outcome,
+          kind: outcome.kind,
           root: Object.freeze({}),
+          statementKind: outcome.statementKind,
         }
       : outcome.kind === "failed"
         ? {
@@ -322,6 +327,7 @@ function respond(
     encodeNodeSqlParserWireBackendOutcome(
       postedRequest(worker, index).requestId,
       backendOutcome,
+      outcome.kind === "parsed" ? outcome.queryBindings : null,
     ),
   );
 }
@@ -366,7 +372,7 @@ describe("node-sql-parser browser executor admission", () => {
     expect(request).toStrictEqual({
       grammar: "postgresql",
       kind: "parse",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: 1,
       text: "SELECT 1",
     });
@@ -374,11 +380,13 @@ describe("node-sql-parser browser executor admission", () => {
 
     respond(worker, {
       kind: "parsed",
+      queryBindings: null,
       statementKind: "query",
     });
     const result = await outcome(submission);
     expect(result).toStrictEqual({
       kind: "parsed",
+      queryBindings: null,
       statementKind: "query",
     });
     expect(Object.isFrozen(result)).toBe(true);
@@ -429,10 +437,12 @@ describe("node-sql-parser browser executor admission", () => {
 
     respond(worker, {
       kind: "parsed",
+      queryBindings: null,
       statementKind: "query",
     }, 2);
     expect(await outcome(third)).toStrictEqual({
       kind: "parsed",
+      queryBindings: null,
       statementKind: "query",
     });
   });
@@ -1210,12 +1220,12 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
     null,
     {},
     { data: null },
-    { data: { kind: "ready", protocolVersion: 2 } },
+    { data: { kind: "ready", protocolVersion: 1 } },
     {
       data: {
         extra: true,
         kind: "ready",
-        protocolVersion: 1,
+        protocolVersion: 2,
       },
     },
   ])("fails closed for malformed message event %#", async (event) => {
@@ -1285,7 +1295,7 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
     worker.emit({
       code: "invalid-request",
       kind: "protocol-error",
-      protocolVersion: 1,
+      protocolVersion: 2,
     } satisfies NodeSqlParserWireMessage);
     expect(await outcome(submission)).toStrictEqual({
       code: "protocol-error",
@@ -1311,7 +1321,7 @@ describe("node-sql-parser browser executor hostile worker handling", () => {
 
     firstWorker.emit({
       kind: "syntax-rejected",
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: activeId + 1,
     } satisfies NodeSqlParserWireMessage);
     expect(await outcome(active)).toStrictEqual({

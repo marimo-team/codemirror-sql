@@ -177,6 +177,7 @@ test(
         ),
       ).resolves.toStrictEqual({
         kind: "parsed",
+        queryBindings: expect.any(Object),
         statementKind: "query",
       });
       await expect(
@@ -187,6 +188,7 @@ test(
         ),
       ).resolves.toStrictEqual({
         kind: "parsed",
+        queryBindings: expect.any(Object),
         statementKind: "query",
       });
       await expect(
@@ -197,6 +199,7 @@ test(
         ),
       ).resolves.toStrictEqual({
         kind: "parsed",
+        queryBindings: expect.any(Object),
         statementKind: "query",
       });
     } finally {
@@ -232,6 +235,7 @@ test(
         submitQuery(executor, "postgresql", "SELECT 2"),
       ).resolves.toStrictEqual({
         kind: "parsed",
+        queryBindings: expect.any(Object),
         statementKind: "query",
       });
       expect(generation).toBe(2);
@@ -268,6 +272,7 @@ test(
         submitQuery(executor, "bigquery", "SELECT 2"),
       ).resolves.toStrictEqual({
         kind: "parsed",
+        queryBindings: expect.any(Object),
         statementKind: "query",
       });
       expect(generation).toBe(2);

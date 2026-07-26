@@ -1,5 +1,15 @@
 const revisionBrand: unique symbol = Symbol("SqlRevision");
 
+export function isDataArray(
+  value: unknown,
+): value is readonly unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 /** Immutable identity issued by a document session. */
 export interface SqlRevision {
   readonly [revisionBrand]: "SqlRevision";
@@ -135,6 +145,8 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 /** Owns all mutable state for one open SQL document. */
 export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
+  /** Invalidates relation, column, and namespace catalog observations. */
+  readonly invalidateCatalog: () => SqlRevision;
   readonly statementBoundaryAt: (
     request: SqlStatementBoundaryAtRequest,
   ) => SqlStatementBoundaryAtResult;
@@ -162,10 +174,12 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
 
 export interface SqlLanguageServiceOptions {
   readonly catalog?: SqlRelationCatalogProvider | undefined;
+  readonly columns?: SqlColumnCatalogProvider | undefined;
   readonly completion?: {
     readonly catalogResponseBudgetMs?: number | undefined;
   } | undefined;
   readonly dialects: readonly SqlDialect[];
+  readonly namespaces?: SqlNamespaceCatalogProvider | undefined;
 }
 
 export type SqlSessionErrorCode =
@@ -192,6 +206,12 @@ export class SqlSessionError extends Error {
     this.code = code;
   }
 }
+import type {
+  SqlColumnCatalogProvider,
+} from "./column-catalog-types.js";
+import type {
+  SqlNamespaceCatalogProvider,
+} from "./namespace-catalog-types.js";
 import type {
   SqlCompletionRequest,
   SqlCompletionTask,
