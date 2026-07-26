@@ -25,6 +25,7 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:worker-placement": "node ./scripts/worker-placement.mjs",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
+    "test:performance": "vitest run --config vitest.config.ts src/codemirror/__tests__/sql-editor-performance.test.ts",
     "bench:catalog-boundary": "vitest bench --run src/__tests__/relation-catalog-boundary.bench.ts",
     "bench:catalog-coordinator": "vitest bench --run src/__tests__/relation-catalog-epoch-coordinator.bench.ts",
     "bench:editor": "vitest bench --run src/codemirror/__tests__/sql-editor.bench.ts",

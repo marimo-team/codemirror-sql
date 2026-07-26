@@ -55,6 +55,9 @@ jobs:
       - name: 🧪 Unit Tests and Coverage
         run: pnpm run test:coverage
 
+      - name: ⚡ Performance Gates
+        run: pnpm run test:performance
+
       - name: 📈 Changed-Code Coverage
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
