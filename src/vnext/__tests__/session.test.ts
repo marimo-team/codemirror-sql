@@ -600,7 +600,7 @@ describe("relation completion session integration", () => {
   });
 
   it("does not correlate catalog invalidation after a soft lease expires", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     let service:
       | ReturnType<typeof createSqlLanguageService<TestContext>>
       | undefined;

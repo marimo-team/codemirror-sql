@@ -1045,7 +1045,9 @@ describe("catalog search ownership and active-slot lifecycle", () => {
 
   it("starts observer-only queued work when an active slot becomes free", async () => {
     const provider = providerHarness();
-    const service = coordinator(provider.captured);
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: new ManualDeadlineScheduler(),
+    });
     const active = Array.from(
       { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
       (_, index) =>
