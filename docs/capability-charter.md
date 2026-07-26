@@ -206,13 +206,12 @@ are recorded in the release capability matrix and exercised through packed
 consumer fixtures. A declared runtime is not supported unless its fixture runs
 in CI.
 
-The exact subpath layout is deferred to a packaging ADR after the walking
-skeleton produces bundle and packed-consumer evidence. Packaging must provide:
+Packed-consumer and bundle evidence established two stable entry points:
 
 - An SSR-safe, framework-independent core entry
 - An explicit CodeMirror entry
-- Explicit dialect entry points
-- Independently importable optional parser/provider integrations
+- Built-in opaque dialect handles exported from core
+- Package-internal parser workers that remain independently chunkable
 - No accidental transitive import of optional parsers or providers into core
 
 ## Provisional performance envelopes

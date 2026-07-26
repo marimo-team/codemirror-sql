@@ -1,5 +1,8 @@
 import { defineConfig } from "vitest/config";
 
+const performanceTests = "src/**/*-performance.test.ts";
+const coverageRun = process.argv.includes("--coverage");
+
 export default defineConfig({
   test: {
     allowOnly: false,
@@ -24,7 +27,10 @@ export default defineConfig({
       },
     },
     environment: "jsdom",
-    exclude: ["src/**/browser_tests/**/*.test.ts"],
+    exclude: [
+      "src/**/browser_tests/**/*.test.ts",
+      ...(coverageRun ? [performanceTests] : []),
+    ],
     include: ["src/**/*.test.ts", "src/**/__tests__/**/*.test.ts"],
     passWithNoTests: false,
     watch: false,

@@ -1,5 +1,7 @@
 import {
+  acceptCompletion,
   currentCompletions,
+  selectedCompletionIndex,
   startCompletion,
 } from "@codemirror/autocomplete";
 import { sql, StandardSQL } from "@codemirror/lang-sql";
@@ -81,6 +83,7 @@ test("standard completion gate routes unmatched template EOF to external sources
     selection: { anchor: 15 },
   });
   onTestFinished(() => view.destroy());
+  view.focus();
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
@@ -144,11 +147,67 @@ test("standard completion gate permits normal SQL in a browser editor", async ()
     selection: { anchor: documentText.length },
   });
   onTestFinished(() => view.destroy());
+  view.focus();
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
     currentCompletions(view.state).map((item) => item.label)
   ).toContain("users");
+});
+
+test("standard editor can accept the first completion immediately", async () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  onTestFinished(() => parent.remove());
+  const service = createSqlLanguageService({
+    catalog: {
+      id: "browser-select-on-open",
+      search: async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "ready" },
+        relations: [{
+          canonicalPath: [{
+            quoted: false,
+            role: "relation",
+            value: "users",
+          }],
+          completionPathStart: 0,
+          entityId: "users",
+          matchQuality: "exact",
+          relationKind: "table",
+        }],
+        status: "ready" as const,
+      }),
+    },
+    dialects: [duckdbDialect()],
+  });
+  onTestFinished(() => service.dispose());
+  const support = sqlEditor({
+    autocomplete: { selectOnOpen: true },
+    initialContext: {
+      catalog: { scope: "browser-select-on-open" },
+      dialect: "duckdb",
+    },
+    service,
+  });
+  const documentText = "SELECT * FROM us";
+  const view = new EditorView({
+    doc: documentText,
+    extensions: support.extension,
+    parent,
+    selection: { anchor: documentText.length },
+  });
+  onTestFinished(() => view.destroy());
+
+  view.focus();
+  expect(startCompletion(view)).toBe(true);
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => item.label)
+  ).toEqual(["users"]);
+  await expect.poll(() => selectedCompletionIndex(view.state)).toBe(0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(acceptCompletion(view)).toBe(true);
+  expect(view.state.doc.toString()).toBe("SELECT * FROM users");
 });
 
 test("standard editor preserves SQL language completions", async () => {

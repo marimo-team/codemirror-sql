@@ -207,6 +207,7 @@ const support = sqlEditor({
       return { destroy: () => undefined, dom };
     },
     maxRenderedOptions: 100,
+    selectOnOpen: true,
   },
   initialContext: context(),
   service,

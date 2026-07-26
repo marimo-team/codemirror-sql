@@ -34,6 +34,7 @@ import type {
 import type {
   SqlCompletionItem,
   SqlCompletionRefreshToken,
+  SqlCompletionTrigger,
   SqlCompletionResult,
   SqlCompletionTask,
 } from "../relation-completion-types.js";
@@ -163,8 +164,20 @@ const defaultRuntime: SqlEditorRuntime = Object.freeze({
   startCompletion,
 });
 
-function completionTrigger(): { readonly kind: "invoked" } {
-  return { kind: "invoked" };
+function completionTrigger(
+  context: CompletionContext,
+): SqlCompletionTrigger {
+  if (context.explicit || context.pos === 0) {
+    return { kind: "invoked" };
+  }
+  const prefix = context.state.sliceDoc(
+    Math.max(0, context.pos - 2),
+    context.pos,
+  );
+  const character = Array.from(prefix).at(-1);
+  return character === undefined
+    ? { kind: "invoked" }
+    : { character, kind: "trigger-character" };
 }
 
 function collectChanges(update: ViewUpdate): readonly SqlTextChange[] {
@@ -622,7 +635,7 @@ export function createSqlEditorInternal<
         task = this.#session.complete({
           position: context.pos,
           signal: controller.signal,
-          trigger: completionTrigger(),
+          trigger: completionTrigger(context),
         });
       } catch {
         this.destroy();

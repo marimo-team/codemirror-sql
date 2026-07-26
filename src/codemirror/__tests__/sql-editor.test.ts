@@ -17,6 +17,7 @@ import {
   type SqlCatalogSearchRequest,
   type SqlCatalogSearchResponse,
   type SqlCompletionItem,
+  type SqlCompletionRequest,
   type SqlCompletionRefreshToken,
   type SqlCompletionResult,
   type SqlCompletionTask,
@@ -45,6 +46,7 @@ interface TestContext extends SqlDocumentContext {
 }
 
 interface FakeServiceHarness {
+  readonly completionRequests: readonly SqlCompletionRequest[];
   readonly completeSignals: AbortSignal[];
   readonly emit: (event: SqlSessionChangeEvent) => void;
   readonly getLastToken: () => SqlCompletionRefreshToken | null;
@@ -134,6 +136,7 @@ function fakeService(
   statementCode: SqlTextRange | null = null,
 ): FakeServiceHarness {
   const completeSignals: AbortSignal[] = [];
+  const completionRequests: SqlCompletionRequest[] = [];
   const updates: SqlDocumentUpdate<TestContext>[] = [];
   let listener:
     | ((event: SqlSessionChangeEvent) => void)
@@ -150,6 +153,7 @@ function fakeService(
       let revision = createSqlRevisionToken();
       const session: SqlDocumentSession<TestContext> = {
         complete: (request): SqlCompletionTask => {
+          completionRequests.push(request);
           completeSignals.push(request.signal ?? new AbortController().signal);
           const token = createSqlCompletionRefreshToken();
           lastToken = token;
@@ -243,6 +247,7 @@ function fakeService(
     },
   };
   return {
+    completionRequests,
     completeSignals,
     emit: (event) => listener?.(event),
     getLastToken: () => lastToken,
@@ -364,6 +369,85 @@ async function resolveCompletionInfo(
 }
 
 describe("sqlEditor", () => {
+  it("distinguishes invoked and typing completion triggers", async () => {
+    const invokedHarness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const invokedSupport = sqlEditor({
+      initialContext: context(),
+      service: invokedHarness.service,
+    });
+    const invokedView = createView(invokedSupport.extension);
+    invokedView.focus();
+    expect(startCompletion(invokedView)).toBe(true);
+    await vi.waitFor(() => {
+      expect(invokedHarness.completionRequests).toHaveLength(1);
+    });
+    expect(invokedHarness.completionRequests[0]?.trigger).toEqual({
+      kind: "invoked",
+    });
+    invokedView.destroy();
+
+    const typingHarness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const typingSupport = sqlEditor({
+      autocomplete: { activateOnTypingDelay: 0 },
+      initialContext: context(),
+      service: typingHarness.service,
+    });
+    const typingView = createView(typingSupport.extension);
+    typingView.focus();
+    typingView.dispatch({
+      changes: { from: typingView.state.doc.length, insert: "e" },
+      selection: { anchor: typingView.state.doc.length + 1 },
+      userEvent: "input.type",
+    });
+    await vi.waitFor(() => {
+      expect(typingHarness.completionRequests).toHaveLength(1);
+    });
+    expect(typingHarness.completionRequests[0]?.trigger).toEqual({
+      character: "e",
+      kind: "trigger-character",
+    });
+  });
+
+  it("cancels superseded completion during rapid typing", async () => {
+    const harness = fakeService(() => new Promise(() => undefined));
+    const support = sqlEditor({
+      autocomplete: { activateOnTypingDelay: 0 },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    view.focus();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "e" },
+      selection: { anchor: view.state.doc.length + 1 },
+      userEvent: "input.type",
+    });
+    await vi.waitFor(() => {
+      expect(harness.completionRequests).toHaveLength(1);
+    });
+    const firstSignal = harness.completeSignals[0];
+    expect(firstSignal?.aborted).toBe(false);
+
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "r" },
+      selection: { anchor: view.state.doc.length + 1 },
+      userEvent: "input.type",
+    });
+    await vi.waitFor(() => {
+      expect(harness.completionRequests).toHaveLength(2);
+    });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(harness.completionRequests.map((request) => request.trigger))
+      .toEqual([
+        { character: "e", kind: "trigger-character" },
+        { character: "r", kind: "trigger-character" },
+      ]);
+  });
+
   it("exposes session controls only for owned views", () => {
     const service = createSqlLanguageService<TestContext>({
       dialects: [duckdbDialect()],

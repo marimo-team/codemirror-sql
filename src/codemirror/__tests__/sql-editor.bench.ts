@@ -8,8 +8,8 @@ import { sqlEditor } from "../index.js";
 
 const statement = "SELECT id, name FROM users WHERE active = true;\n";
 const documentText = statement.repeat(
-  Math.ceil((100 * 1_024) / statement.length),
-).slice(0, 100 * 1_024);
+  Math.ceil((1_024 * 1_024) / statement.length),
+).slice(0, 1_024 * 1_024);
 const service = createSqlLanguageService({
   dialects: [duckdbDialect()],
 });
@@ -42,7 +42,7 @@ afterAll(() => {
 });
 
 describe("CodeMirror editor", () => {
-  bench("100 KiB warmed single-character replacement", () => {
+  bench("1 MiB warmed single-character replacement", () => {
     const current = view.state.sliceDoc(position, position + 1);
     view.dispatch({
       changes: {

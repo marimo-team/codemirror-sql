@@ -23,6 +23,13 @@ npm install @marimo-team/codemirror-sql
 pnpm add @marimo-team/codemirror-sql
 ```
 
+The framework-independent root API needs no CodeMirror packages. For the
+`/codemirror` adapter and the example below, also install:
+
+```bash
+npm install @codemirror/autocomplete @codemirror/lang-sql @codemirror/state @codemirror/view
+```
+
 ## CodeMirror usage
 
 ```ts
