@@ -247,7 +247,10 @@ const editor = new EditorView({
 
 function loadExample(markedSql: string): void {
   const cursor = markedSql.indexOf("|");
-  const text = markedSql.replace("|", "");
+  const text =
+    cursor < 0
+      ? markedSql
+      : markedSql.slice(0, cursor) + markedSql.slice(cursor + 1);
   const position = cursor < 0 ? text.length : cursor;
   closeCompletion(editor);
   editor.dispatch({
