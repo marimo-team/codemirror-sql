@@ -474,7 +474,7 @@ function collectRelations(
     inFrom = true;
     let relationIndex = index + 1;
     if (
-      dialect.id === "postgresql" &&
+      (dialect.id === "postgresql" || dialect.id === "duckdb") &&
       word(source, tokens[relationIndex]) === "lateral"
     ) {
       relationIndex += 1;
@@ -550,7 +550,7 @@ function correlatedParentSelectIndex(
             opening,
           ) === "from";
         if (!inFrom) return [index, false];
-        return dialect.id === "postgresql" &&
+        return (dialect.id === "postgresql" || dialect.id === "duckdb") &&
             word(source, tokens[openingIndex - 1]) === "lateral"
           ? [index, true]
           : null;

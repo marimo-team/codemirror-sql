@@ -7,6 +7,7 @@ import {
 } from "../column-query-site.js";
 import {
   BIGQUERY_SQL_RELATION_DIALECT,
+  DUCKDB_SQL_RELATION_DIALECT,
   POSTGRESQL_SQL_RELATION_DIALECT,
   type SqlRelationDialectRuntime,
 } from "../relation-dialect.js";
@@ -123,17 +124,25 @@ describe("recognizeSqlColumnQuerySite", () => {
     )).toEqual(["inner_table"]);
   });
 
-  it("correlates PostgreSQL LATERAL tables only to preceding relations", () => {
-    for (const expression of ["u.na|", "na|"]) {
-      const result = ready(
-        analyze(
-          `SELECT * FROM users u, LATERAL (SELECT ${expression} FROM orders o) x, secrets s`,
-        ),
-      );
+  it("correlates LATERAL tables only to preceding relations", () => {
+    for (
+      const dialect of [
+        POSTGRESQL_SQL_RELATION_DIALECT,
+        DUCKDB_SQL_RELATION_DIALECT,
+      ]
+    ) {
+      for (const expression of ["u.na|", "na|"]) {
+        const result = ready(
+          analyze(
+            `SELECT * FROM users u, LATERAL (SELECT ${expression} FROM orders o) x, secrets s`,
+            { dialect },
+          ),
+        );
 
-      expect(result.relations.map((relation) =>
-        relation.alias?.value
-      )).toEqual(["o", "u"]);
+        expect(result.relations.map((relation) =>
+          relation.alias?.value
+        )).toEqual(["o", "u"]);
+      }
     }
   });
 

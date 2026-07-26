@@ -352,6 +352,49 @@ describe("node-sql-parser query binding normalization", () => {
     }
   });
 
+  it("does not resolve an uncertain local CTE through an outer namesake", () => {
+    const nested = {
+      from: [relation("shadow")],
+      type: "select",
+      with: [{
+        name: { value: "shadow" },
+        stmt: { from: [relation("shadow")], type: "select" },
+      }],
+    };
+    const result = normalize(
+      {
+        from: [{ as: "d", expr: { ast: nested, parentheses: true } }],
+        type: "select",
+        with: [{
+          name: { value: "shadow" },
+          stmt: { from: [relation("events")], type: "select" },
+        }],
+      },
+      "WITH shadow AS (SELECT * FROM events) SELECT * FROM (" +
+        "WITH RECURSIVE shadow AS (SELECT * FROM shadow) " +
+        "SELECT * FROM shadow) d",
+    );
+    expect(result).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { block: 2, kind: "derived" } },
+          {
+            owner: 1,
+            source: { kind: "named", path: [{ value: "events" }] },
+          },
+          { owner: 2, source: { kind: "cte", name: { value: "shadow" } } },
+          {
+            owner: 3,
+            source: { kind: "unknown", reason: "unknown-correlation" },
+          },
+        ],
+        coverage: { relationBindings: "partial" },
+        issues: [{ code: "recursive-cte-uncertainty" }],
+      },
+      status: "ready",
+    });
+  });
+
   it("keeps non-recursive self and forward names outside CTE visibility", () => {
     const self = normalize(
       {

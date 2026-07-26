@@ -812,13 +812,17 @@ function visibleCteDeclarations(
           forward < clause.declarations.length;
           forward += 1
         ) {
-          childUncertain.add(
-            identifierKey(phaseValue(clause.declarations, forward).name),
+          const key = identifierKey(
+            phaseValue(clause.declarations, forward).name,
           );
+          childUncertain.add(key);
+          childVisible.delete(key);
         }
       } else if (clause.recursion === "uncertain") {
         for (const candidate of clause.declarations) {
-          childUncertain.add(identifierKey(candidate.name));
+          const key = identifierKey(candidate.name);
+          childUncertain.add(key);
+          childVisible.delete(key);
         }
       }
       if (!visit(child, {
