@@ -119,6 +119,8 @@ describe("namespace catalog boundary", () => {
     const valid = request();
     const sparse: unknown[] = [];
     sparse.length = 1;
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
     const cases: unknown[] = [
       null,
       { ...valid, extra: true },
@@ -133,8 +135,11 @@ describe("namespace catalog boundary", () => {
       { ...valid, limit: 1.5 },
       { ...valid, prefix: { quoted: "no", value: "x" } },
       { ...valid, prefix: { quoted: false, value: "x", extra: 1 } },
+      { ...valid, qualifier: [{ quoted: false, value: "" }] },
+      { ...valid, searchPaths: [[{ quoted: false, value: "" }]] },
       { ...valid, qualifier: sparse },
       { ...valid, searchPaths: sparse },
+      { ...valid, qualifier: revoked.proxy },
       { ...valid, qualifier: [{ quoted: false, value: "x".repeat(257) }] },
       { ...valid, searchPaths: Array.from({ length: 33 }, () => []) },
     ];
@@ -163,6 +168,11 @@ describe("namespace catalog boundary", () => {
       expect(createSqlNamespaceCatalogSearchRequest(value).status)
         .toBe("malformed");
     }
+    expect(createSqlNamespaceCatalogSearchRequest({
+      ...valid,
+      prefix: { quoted: false, value: "" },
+      qualifier: [],
+    }).status).toBe("accepted");
   });
 
   it("decodes, deduplicates, orders, and freezes all container roles", () => {
@@ -185,7 +195,9 @@ describe("namespace catalog boundary", () => {
     );
     expect(decoded.status).toBe("accepted");
     if (decoded.status !== "accepted" ||
-      decoded.value.status !== "ready") return;
+      decoded.value.status !== "ready") {
+      throw new Error("Expected a ready namespace response");
+    }
     expect(decoded.value.containers.map((value) =>
       value.canonicalPath[0]?.role
     )).toEqual(["catalog", "dataset", "project", "schema"]);
@@ -266,6 +278,74 @@ describe("namespace catalog boundary", () => {
     });
   });
 
+  it("orders raw identifier values by UTF-16 code units", () => {
+    const decoded = decodeSqlNamespaceCatalogSearchResponse(
+      captured(),
+      request(),
+      {
+        containers: [
+          container("hash", "schema", "#"),
+          container("quote", "schema", "\""),
+          container("slash", "schema", "\\"),
+          container("control", "schema", "\u0000"),
+        ],
+        coverage: "complete",
+        epoch,
+        status: "ready",
+      },
+    );
+    expect(decoded).toMatchObject({
+      status: "accepted",
+      value: {
+        containers: [
+          { containerEntityId: "control" },
+          { containerEntityId: "quote" },
+          { containerEntityId: "hash" },
+          { containerEntityId: "slash" },
+        ],
+      },
+    });
+  });
+
+  it("compares canonical paths structurally when they contain NUL", () => {
+    const provider = captured();
+    const base = {
+      containerEntityId: "same",
+      insertText: "value",
+      matchQuality: "exact",
+    };
+    const decoded = decodeSqlNamespaceCatalogSearchResponse(
+      provider,
+      request(),
+      {
+        containers: [
+          {
+            ...base,
+            canonicalPath: [{
+              quoted: false,
+              role: "schema",
+              value: "a\u0000catalog:u:b",
+            }],
+          },
+          {
+            ...base,
+            canonicalPath: [
+              { quoted: false, role: "schema", value: "a" },
+              { quoted: false, role: "catalog", value: "b" },
+            ],
+          },
+        ],
+        coverage: "complete",
+        epoch,
+        status: "ready",
+      },
+    );
+    expect(decoded).toEqual({
+      reason: "duplicate-entity-id",
+      status: "malformed",
+    });
+  });
+
   it("rejects malformed, conflicting, stale, and oversized responses", () => {
     const provider = captured();
     const valid = {
@@ -281,8 +361,15 @@ describe("namespace catalog boundary", () => {
         container("same", "schema", "other"),
       ],
     };
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
     const malformedContainers = [
       { ...container("x", "schema", "x"), canonicalPath: [] },
+      { ...container("x", "schema", "x"), canonicalPath: [{
+        quoted: false,
+        role: "schema",
+        value: "",
+      }] },
       { ...container("x", "schema", "x"), canonicalPath: [{
         quoted: false,
         role: "table",
@@ -304,6 +391,7 @@ describe("namespace catalog boundary", () => {
       ) },
       conflicting,
       { ...valid, containers: [null] },
+      { ...valid, containers: revoked.proxy },
       { epoch, extra: true, status: "loading" },
       { code: "bad", epoch, retry: "never", status: "failed" },
       { code: "unknown", epoch, retry: "bad", status: "failed" },

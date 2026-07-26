@@ -98,28 +98,30 @@ export type SqlColumnCatalogBatchCoordinatorResult =
     };
 
 interface CoordinatorState {
-  readonly cache: Map<string, ReadyRelation>;
-  readonly capturedProvider: CapturedSqlColumnCatalogProvider;
-  readonly context: SqlCapturedColumnCatalogProviderContext;
-  disposed: boolean;
-  readonly maxCacheEntries: number;
-  readonly owners: Set<OwnerState>;
+  readonly map: Map<string, ReadyRelation>;
+  off: boolean;
+  readonly id: string;
+  readonly limit: number;
+  readonly load: SqlCapturedColumnCatalogProviderContext["loadColumns"];
+  readonly pool: Set<OwnerState>;
+  readonly wire: CapturedSqlColumnCatalogProvider;
 }
 
 interface OwnerState {
-  active: ConsumerState | null;
-  readonly dialectId: string;
-  disposed: boolean;
-  owner: CoordinatorState | null;
-  observedEpoch: SqlCatalogEpoch | null;
+  readonly lang: string;
+  gen: number;
+  job: ConsumerState | null;
+  off: boolean;
+  rev: SqlCatalogEpoch | null;
+  root: CoordinatorState | null;
   readonly scope: string;
 }
 
 interface ConsumerState {
-  readonly controller: AbortController;
-  readonly owner: OwnerState;
-  resolve: ((value: SqlColumnCatalogBatchOutcome) => void) | null;
-  settled: boolean;
+  readonly abort: AbortController;
+  done: boolean;
+  end: ((value: SqlColumnCatalogBatchOutcome) => void) | null;
+  readonly host: OwnerState;
 }
 
 type ReadyRelation = Extract<
@@ -194,10 +196,10 @@ function cacheGet(
   state: CoordinatorState,
   key: string,
 ): ReadyRelation | null {
-  const value = state.cache.get(key);
+  const value = state.map.get(key);
   if (!value) return null;
-  state.cache.delete(key);
-  state.cache.set(key, value);
+  state.map.delete(key);
+  state.map.set(key, value);
   return value;
 }
 
@@ -206,11 +208,11 @@ function cacheSet(
   key: string,
   value: ReadyRelation,
 ): void {
-  state.cache.delete(key);
-  state.cache.set(key, value);
-  while (state.cache.size > state.maxCacheEntries) {
-    for (const oldest of state.cache.keys()) {
-      state.cache.delete(oldest);
+  state.map.delete(key);
+  state.map.set(key, value);
+  while (state.map.size > state.limit) {
+    for (const oldest of state.map.keys()) {
+      state.map.delete(oldest);
       break;
     }
   }
@@ -229,10 +231,13 @@ function settle(
   consumer: ConsumerState,
   outcome: SqlColumnCatalogBatchOutcome,
 ): void {
-  consumer.settled = true;
-  consumer.owner.active = null;
-  const resolve = consumer.resolve;
-  consumer.resolve = null;
+  if (consumer.host.job === consumer) {
+    consumer.host.job = null;
+  }
+  if (consumer.done) return;
+  consumer.done = true;
+  const resolve = consumer.end;
+  consumer.end = null;
   resolve?.(outcome);
 }
 
@@ -240,8 +245,8 @@ function cancelConsumer(
   consumer: ConsumerState,
   outcome: SqlColumnCatalogBatchOutcome,
 ): void {
-  if (consumer.settled) return;
-  consumer.controller.abort();
+  if (consumer.done) return;
+  consumer.abort.abort();
   settle(consumer, outcome);
 }
 
@@ -281,9 +286,9 @@ function startProviderWork(
 ): void {
   let providerResult: unknown;
   try {
-    providerResult = state.context.loadColumns(
+    providerResult = state.load(
       missingRequest,
-      consumer.controller.signal,
+      consumer.abort.signal,
     );
   } catch {
     settle(consumer, unavailable("provider-failed"));
@@ -291,17 +296,25 @@ function startProviderWork(
   }
   Promise.resolve(providerResult).then(
     (value) => {
-      if (consumer.settled) return;
-      const decoded = decodeSqlColumnCatalogBatchResponse(
-        state.capturedProvider,
-        missingRequest,
-        value,
-      );
+      if (consumer.done) return;
+      let decoded: ReturnType<
+        typeof decodeSqlColumnCatalogBatchResponse
+      >;
+      try {
+        decoded = decodeSqlColumnCatalogBatchResponse(
+          state.wire,
+          missingRequest,
+          value,
+        );
+      } catch {
+        settle(consumer, unavailable("malformed-response"));
+        return;
+      }
       if (decoded.status === "malformed") {
         settle(consumer, unavailable("malformed-response"));
         return;
       }
-      owner.observedEpoch = decoded.value.epoch;
+      owner.rev = decoded.value.epoch;
       for (const relation of decoded.value.relations) {
         if (
           relation.status !== "ready" ||
@@ -325,7 +338,7 @@ function startProviderWork(
       settle(
         consumer,
         Object.freeze({
-          providerId: state.context.id,
+          providerId: state.id,
           epoch: decoded.value.epoch,
           relations,
           scope: owner.scope,
@@ -334,7 +347,7 @@ function startProviderWork(
       );
     },
     () => {
-      if (!consumer.settled) {
+      if (!consumer.done) {
         settle(consumer, unavailable("provider-failed"));
       }
     },
@@ -345,8 +358,8 @@ function requestColumns(
   owner: OwnerState,
   input: unknown,
 ): SqlColumnCatalogBatchTicket {
-  const state = owner.owner;
-  if (!state || state.disposed || owner.disposed) {
+  const state = owner.root;
+  if (!state || state.off || owner.off) {
     return makeSettledTicket(unavailable("disposed"));
   }
   const expectedEpoch = dataProperty(input, "expectedEpoch");
@@ -356,9 +369,9 @@ function requestColumns(
     return makeSettledTicket(unavailable("invalid-request"));
   }
   const created = createSqlColumnCatalogBatchRequest({
-    dialectId: owner.dialectId,
+    dialectId: owner.lang,
     expectedEpoch: expectedEpoch.value === null
-      ? owner.observedEpoch
+      ? owner.rev
       : expectedEpoch.value,
     relations: relations.value,
     scope: owner.scope,
@@ -368,7 +381,14 @@ function requestColumns(
     return makeSettledTicket(unavailable("invalid-request"));
   }
   const request = created.value;
-  if (owner.active) cancelConsumer(owner.active, SUPERSEDED);
+  owner.gen += 1;
+  const generation = owner.gen;
+  if (owner.job) cancelConsumer(owner.job, SUPERSEDED);
+  if (generation !== owner.gen) {
+    return makeSettledTicket(
+      owner.off ? unavailable("disposed") : SUPERSEDED,
+    );
+  }
 
   const cached = new Map<string, ReadyRelation>();
   const missing: SqlColumnCatalogRelationReference[] = [];
@@ -387,7 +407,7 @@ function requestColumns(
     return makeSettledTicket(
       Object.freeze({
         epoch: request.expectedEpoch,
-        providerId: state.context.id,
+        providerId: state.id,
         relations: combineRelations(cached, []),
         scope: owner.scope,
         status: "usable",
@@ -405,12 +425,12 @@ function requestColumns(
     resolveResult = resolve;
   });
   const consumer: ConsumerState = {
-    controller: new AbortController(),
-    owner,
-    resolve: resolveResult,
-    settled: false,
+    abort: new AbortController(),
+    done: false,
+    end: resolveResult,
+    host: owner,
   };
-  owner.active = consumer;
+  owner.job = consumer;
   const ticket = Object.freeze({
     cancel: (): void => cancelConsumer(consumer, CANCELLED),
     result,
@@ -426,20 +446,21 @@ function requestColumns(
 }
 
 function disposeOwner(owner: OwnerState): void {
-  if (owner.disposed) return;
-  owner.disposed = true;
-  if (owner.active) {
-    cancelConsumer(owner.active, unavailable("disposed"));
+  if (owner.off) return;
+  owner.off = true;
+  owner.gen += 1;
+  if (owner.job) {
+    cancelConsumer(owner.job, unavailable("disposed"));
   }
-  owner.owner?.owners.delete(owner);
-  owner.owner = null;
+  owner.root?.pool.delete(owner);
+  owner.root = null;
 }
 
 function prepareOwner(
   state: CoordinatorState,
   input: unknown,
 ): SqlColumnCatalogBatchOwnerResult {
-  if (state.disposed) {
+  if (state.off) {
     return Object.freeze({ reason: "disposed", status: "unavailable" });
   }
   const scopeProperty = dataProperty(input, "scope");
@@ -459,14 +480,15 @@ function prepareOwner(
     });
   }
   const owner: OwnerState = {
-    active: null,
-    dialectId,
-    disposed: false,
-    owner: state,
-    observedEpoch: null,
+    gen: 0,
+    job: null,
+    lang: dialectId,
+    off: false,
+    rev: null,
+    root: state,
     scope,
   };
-  state.owners.add(owner);
+  state.pool.add(owner);
   return Object.freeze({
     owner: Object.freeze({
       dispose: (): void => disposeOwner(owner),
@@ -478,10 +500,10 @@ function prepareOwner(
 }
 
 function disposeCoordinator(state: CoordinatorState): void {
-  if (state.disposed) return;
-  state.disposed = true;
-  state.cache.clear();
-  for (const owner of state.owners) disposeOwner(owner);
+  if (state.off) return;
+  state.off = true;
+  state.map.clear();
+  for (const owner of state.pool) disposeOwner(owner);
 }
 
 export function createSqlColumnCatalogBatchCoordinator(
@@ -524,19 +546,20 @@ export function createSqlColumnCatalogBatchCoordinator(
     });
   }
   const state: CoordinatorState = {
-    cache: new Map(),
-    capturedProvider: captured.value,
-    context,
-    disposed: false,
-    maxCacheEntries: maximum,
-    owners: new Set(),
+    id: context.id,
+    limit: maximum,
+    load: context.loadColumns,
+    map: new Map(),
+    off: false,
+    pool: new Set(),
+    wire: captured.value,
   };
   return Object.freeze({
     coordinator: Object.freeze({
       dispose: (): void => disposeCoordinator(state),
       prepareOwner: (options: SqlColumnCatalogOwnerOptions) =>
         prepareOwner(state, options),
-      providerId: context.id,
+      providerId: state.id,
     }),
     status: "created",
   });

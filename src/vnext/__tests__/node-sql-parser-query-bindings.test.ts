@@ -184,6 +184,130 @@ describe("node-sql-parser query binding normalization", () => {
     }
   });
 
+  it("preserves quoted CTE identity and case semantics", () => {
+    const cteStatement = {
+      from: [relation("events")],
+      type: "select",
+    };
+    const quoted = normalize(
+      {
+        from: [relation("Recent")],
+        type: "select",
+        with: [
+          {
+            name: { type: "default", value: "Recent" },
+            stmt: cteStatement,
+          },
+        ],
+      },
+      'WITH "Recent" AS (SELECT * FROM events) SELECT * FROM "Recent"',
+    );
+    expect(quoted).toMatchObject({
+      model: {
+        bindings: [
+          { source: { kind: "cte", name: { quoted: true, value: "Recent" } } },
+          { source: { kind: "named" } },
+        ],
+      },
+      status: "ready",
+    });
+
+    const differentlyQuoted = normalize(
+      {
+        from: [relation("recent")],
+        type: "select",
+        with: [
+          {
+            name: { type: "default", value: "Recent" },
+            stmt: cteStatement,
+          },
+        ],
+      },
+      'WITH "Recent" AS (SELECT * FROM events) SELECT * FROM recent',
+    );
+    expect(differentlyQuoted).toMatchObject({
+      model: {
+        bindings: [
+          { source: { kind: "named", path: [{ value: "recent" }] } },
+          { source: { kind: "named" } },
+        ],
+      },
+      status: "ready",
+    });
+  });
+
+  it("applies parent and preceding-sibling CTE visibility per block", () => {
+    const first = {
+      from: [relation("later")],
+      type: "select",
+    };
+    const later = {
+      from: [relation("events")],
+      type: "select",
+    };
+    const result = normalize(
+      {
+        from: [relation("first")],
+        type: "select",
+        with: [
+          { name: { value: "first" }, stmt: first },
+          { name: { value: "later" }, stmt: later },
+        ],
+      },
+      "WITH first AS (SELECT * FROM later), " +
+        "later AS (SELECT * FROM events) SELECT * FROM first",
+    );
+    expect(result).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { kind: "cte", name: { value: "first" } } },
+          {
+            owner: 1,
+            source: { kind: "named", path: [{ value: "later" }] },
+          },
+          {
+            owner: 2,
+            source: { kind: "named", path: [{ value: "events" }] },
+          },
+        ],
+      },
+      status: "ready",
+    });
+  });
+
+  it("resolves a nested WITH inside its derived query block", () => {
+    const nestedCte = {
+      from: [relation("events")],
+      type: "select",
+    };
+    const nested = {
+      from: [relation("local")],
+      type: "select",
+      with: [{ name: { value: "local" }, stmt: nestedCte }],
+    };
+    const result = normalize(
+      {
+        from: [{ as: "d", expr: { ast: nested, parentheses: true } }],
+        type: "select",
+      },
+      "SELECT * FROM (WITH local AS (SELECT * FROM events) " +
+        "SELECT * FROM local) d",
+    );
+    expect(result).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { block: 1, kind: "derived" } },
+          { owner: 1, source: { kind: "cte", name: { value: "local" } } },
+          {
+            owner: 2,
+            source: { kind: "named", path: [{ value: "events" }] },
+          },
+        ],
+      },
+      status: "ready",
+    });
+  });
+
   it("normalizes BigQuery multipart paths and QUALIFY", () => {
     const text =
       "SELECT a.id FROM `project.dataset.users` a " +
@@ -305,12 +429,209 @@ describe("node-sql-parser query binding normalization", () => {
       { from: [relation("users", "u")], type: "select" },
       "SELECT * FROM users",
     );
-    for (const result of [lexicalOnly, astOnly]) {
+    const differentValues = normalize(
+      { from: [relation("users", "x")], type: "select" },
+      "SELECT * FROM users u",
+    );
+    const differentQuotes = normalize(
+      { from: [relation("users", "U")], type: "select" },
+      'SELECT * FROM users AS "u"',
+    );
+    for (const result of [
+      lexicalOnly,
+      astOnly,
+      differentValues,
+      differentQuotes,
+    ]) {
       expect(result).toMatchObject({
         model: {
+          bindings: [{ alias: null }],
           coverage: { relationBindings: "partial" },
           issues: [{ code: "unsupported-relation-source" }],
         },
+        status: "ready",
+      });
+    }
+  });
+
+  it("never publishes AST relation names absent from the SQL text", () => {
+    const table = normalize(
+      { from: [relation("events")], type: "select" },
+      "SELECT * FROM users",
+    );
+    const schema = normalize(
+      {
+        from: [{ as: null, db: "private", table: "users" }],
+        type: "select",
+      },
+      "SELECT * FROM public.users",
+    );
+    for (const result of [table, schema]) {
+      expect(result).toMatchObject({
+        model: {
+          bindings: [
+            {
+              source: {
+                kind: "unknown",
+                reason: "unsupported-relation-source",
+              },
+            },
+          ],
+          coverage: { relationBindings: "partial" },
+          issues: [{ code: "unsupported-relation-source" }],
+        },
+        status: "ready",
+      });
+    }
+    expect(
+      normalize(
+        { from: [relation("private.dataset.users")], type: "select" },
+        "SELECT * FROM `public.dataset.users`",
+        BQ,
+      ),
+    ).toMatchObject({
+      model: {
+        bindings: [{ source: { kind: "unknown" } }],
+        coverage: { relationBindings: "partial" },
+      },
+      status: "ready",
+    });
+  });
+
+  it("keeps ON and USING join visibility aligned with relation sites", () => {
+    const onText = "SELECT a.id, b.id FROM a JOIN b ON a.id=b.id";
+    const onResult = normalize(
+      {
+        from: [
+          relation("a"),
+          { ...relation("b"), join: "JOIN", on: {} },
+        ],
+        type: "select",
+      },
+      onText,
+    );
+    const usingText = "SELECT * FROM a JOIN b USING (id)";
+    const usingResult = normalize(
+      {
+        from: [
+          relation("a"),
+          { ...relation("b"), join: "JOIN" },
+        ],
+        type: "select",
+      },
+      usingText,
+    );
+    for (const [result, position] of [
+      [onResult, onText.indexOf("a.id", onText.indexOf("ON"))],
+      [usingResult, usingText.indexOf("id")],
+    ] as const) {
+      expect(result.status).toBe("ready");
+      if (result.status === "ready") {
+        expect(result.model.coverage.visibility).toBe("complete");
+        expect(visibleSqlRelationBindingsAt(result.model, position)).toMatchObject({
+          bindings: [{}, {}],
+          region: { kind: "join-condition" },
+          status: "ready",
+        });
+      }
+    }
+  });
+
+  it("does not assign a later join condition to an earlier relation", () => {
+    const text = "SELECT * FROM a JOIN b JOIN c ON c.id=b.id";
+    const result = normalize(
+      {
+        from: [
+          relation("a"),
+          { ...relation("b"), join: "JOIN" },
+          { ...relation("c"), join: "JOIN", on: {} },
+        ],
+        type: "select",
+      },
+      text,
+    );
+    expect(result.status).toBe("ready");
+    if (result.status === "ready") {
+      const regions = result.model.regions.filter((region) =>
+        region.kind === "join-condition"
+      );
+      expect(regions).toHaveLength(1);
+      expect(visibleSqlRelationBindingsAt(
+        result.model,
+        text.indexOf("c.id"),
+      )).toMatchObject({
+        bindings: [{}, {}, {}],
+        status: "ready",
+      });
+    }
+  });
+
+  it.each([
+    ["WHERE true", { where: {} }],
+    ["GROUP BY a.id", { groupby: [{ expr: {} }] }],
+    ["HAVING true", { having: {} }],
+    ["QUALIFY true", { qualify: {} }],
+    ["ORDER BY a.id", { orderby: [{ expr: {} }] }],
+    ["LIMIT 1", { limit: {} }],
+  ])(
+    "stops a conditionless join before %s",
+    (suffix, clause) => {
+      const result = normalize(
+        {
+          ...clause,
+          from: [
+            relation("a"),
+            { ...relation("b"), join: "CROSS JOIN" },
+          ],
+          type: "select",
+        },
+        `SELECT * FROM a CROSS JOIN b ${suffix}`,
+      );
+      expect(result.status).toBe("ready");
+      if (result.status === "ready") {
+        expect(
+          result.model.regions.some((region) =>
+            region.kind === "join-condition"
+          ),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    "WHERE true",
+    "GROUP BY a.id",
+    "HAVING true",
+    "QUALIFY true",
+    "ORDER BY a.id",
+    "LIMIT 1",
+  ])("ends an ON region before %s", (suffix) => {
+    const text = `SELECT * FROM a JOIN b ON true ${suffix}`;
+    const result = normalize(
+      {
+        from: [
+          relation("a"),
+          { ...relation("b"), join: "JOIN", on: {} },
+        ],
+        type: "select",
+      },
+      text,
+    );
+    expect(result.status).toBe("ready");
+    if (result.status === "ready") {
+      const join = result.model.regions.find((region) =>
+        region.kind === "join-condition"
+      );
+      expect(join?.range.to).toBe(
+        text.indexOf(suffix.split(" ")[0] ?? suffix),
+      );
+    }
+  });
+
+  it("emits compound query block kinds", () => {
+    for (const type of ["union", "intersect", "except"]) {
+      expect(normalize({ type }, "SELECT 1")).toMatchObject({
+        model: { blocks: [{ kind: "compound" }] },
         status: "ready",
       });
     }
@@ -409,6 +730,15 @@ describe("node-sql-parser query binding hostile boundaries", () => {
       reason: "malformed-ast",
       status: "unavailable",
     });
+
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    expect(
+      normalize({ from: revoked.proxy, type: "select" }, "SELECT 1"),
+    ).toEqual({
+      reason: "malformed-ast",
+      status: "unavailable",
+    });
   });
 
   it("rejects malformed known AST properties and CTE entries", () => {
@@ -442,6 +772,85 @@ describe("node-sql-parser query binding hostile boundaries", () => {
     for (const { root, text } of cases) {
       expect(normalize(root, text).status).toBe("unavailable");
     }
+  });
+
+  it("rejects CTE structures that change across safe inspections", () => {
+    const child = { type: "select" };
+    const item = { name: "x", stmt: child };
+    function changingRoot(secondWith: unknown) {
+      let reads = 0;
+      return new Proxy(
+        { type: "select", with: [item] },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+            if (key !== "with" || descriptor === undefined) {
+              return descriptor;
+            }
+            reads += 1;
+            return { ...descriptor, value: reads === 1 ? [item] : secondWith };
+          },
+        },
+      );
+    }
+    for (const root of [changingRoot({}), changingRoot([])]) {
+      expect(
+        normalize(root, "WITH x AS (SELECT 1) SELECT 1"),
+      ).toEqual({ reason: "malformed-ast", status: "unavailable" });
+    }
+
+    let itemReads = 0;
+    const changingItems = new Proxy([item], {
+      getOwnPropertyDescriptor(target, key) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+        if (key !== "0" || descriptor === undefined) {
+          return descriptor;
+        }
+        itemReads += 1;
+        return { ...descriptor, value: itemReads === 1 ? item : null };
+      },
+    });
+    expect(
+      normalize(
+        { type: "select", with: changingItems },
+        "WITH x AS (SELECT 1) SELECT 1",
+      ),
+    ).toEqual({ reason: "malformed-ast", status: "unavailable" });
+
+    function changingChild() {
+      let reads = 0;
+      return new Proxy(
+        { type: "select", with: [] },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+            if (key !== "with" || descriptor === undefined) {
+              return descriptor;
+            }
+            reads += 1;
+            return { ...descriptor, value: reads === 1 ? [] : {} };
+          },
+        },
+      );
+    }
+    expect(
+      normalize(
+        {
+          type: "select",
+          with: [{ name: "x", stmt: changingChild() }],
+        },
+        "WITH x AS (SELECT 1) SELECT 1",
+      ),
+    ).toEqual({ reason: "malformed-ast", status: "unavailable" });
+    expect(
+      normalize(
+        {
+          from: [{ as: "d", expr: { ast: changingChild() } }],
+          type: "select",
+        },
+        "SELECT * FROM (SELECT 1) d",
+      ),
+    ).toEqual({ reason: "malformed-ast", status: "unavailable" });
   });
 
   it("handles comments, incomplete relation sites, and nesting limits", () => {

@@ -1,4 +1,4 @@
-import { bench, describe } from "vitest";
+import { beforeAll, bench, describe } from "vitest";
 import {
   createSqlNamespaceCatalogCoordinator,
 } from "../namespace-catalog-coordinator.js";
@@ -61,9 +61,11 @@ describe("namespace catalog coordinator", () => {
 
   const warm = owner();
   const primed = warm.request(search).result;
+  beforeAll(async () => {
+    await primed;
+  });
 
   bench("warm 100-container cache lookup", async () => {
-    await primed;
     await warm.request(search).result;
   });
 });

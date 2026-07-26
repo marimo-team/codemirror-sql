@@ -3,6 +3,9 @@ import {
   composeSqlColumnCompletion,
   prepareSqlColumnCatalogRelations,
 } from "../column-completion.js";
+import {
+  MAX_COLUMN_BATCH_RELATIONS,
+} from "../column-catalog-boundary.js";
 import type {
   SqlColumnCatalogBatchOutcome,
 } from "../column-catalog-batch-coordinator.js";
@@ -91,6 +94,51 @@ function usable(
 }
 
 describe("column completion", () => {
+  it("bounds relation batches and reports the omitted bindings", () => {
+    const relations = Array.from(
+      { length: MAX_COLUMN_BATCH_RELATIONS + 1 },
+      (_, index) => Object.freeze({
+        alias: Object.freeze({
+          quoted: false,
+          value: `t_${index}`,
+        }),
+        path: Object.freeze([
+          Object.freeze({
+            quoted: false,
+            value: `table_${index}`,
+          }),
+        ]),
+        range: Object.freeze({ from: index, to: index + 1 }),
+      }),
+    );
+    const current = Object.freeze({
+      ...site(),
+      relations: Object.freeze(relations),
+    });
+    const prepared = prepareSqlColumnCatalogRelations(
+      current,
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    );
+
+    expect(prepared).toMatchObject({
+      coverage: "partial",
+      references: { length: MAX_COLUMN_BATCH_RELATIONS },
+    });
+    expect(composeSqlColumnCompletion({
+      dialect: POSTGRESQL_SQL_RELATION_DIALECT,
+      outcome: usable([]),
+      prepared,
+      providerId: "columns",
+      site: current,
+    })).toMatchObject({
+      sources: [{ coverage: "partial", outcome: "ready" }],
+      value: {
+        isIncomplete: true,
+        issues: [{ reason: "query-binding-partial" }],
+      },
+    });
+  });
+
   it("batches only the relation selected by an alias qualifier", () => {
     const current = site([{ quoted: false, value: "u" }], "na");
     const prepared = prepareSqlColumnCatalogRelations(

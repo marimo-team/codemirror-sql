@@ -7,9 +7,10 @@ import type {
   SqlColumnCatalogRelationResult,
   SqlColumnCatalogResolvedColumn,
 } from "./column-catalog-types.js";
-import type {
-  SqlIdentifierComponent,
-  SqlIdentifierPath,
+import {
+  isDataArray,
+  type SqlIdentifierComponent,
+  type SqlIdentifierPath,
 } from "./types.js";
 
 export const MAX_COLUMN_PROVIDER_ID_LENGTH = 256;
@@ -121,7 +122,7 @@ function readRecord(
   value: unknown,
   allowedKeys: ReadonlySet<string>,
 ): DataRecord | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object") {
     return null;
   }
   let keys: readonly PropertyKey[];
@@ -210,7 +211,7 @@ function readArrayElement(
 }
 
 function readArrayLength(value: unknown, maximum: number): number | null {
-  if (!Array.isArray(value)) return null;
+  if (!isDataArray(value)) return null;
   let descriptor: PropertyDescriptor | undefined;
   try {
     descriptor = Object.getOwnPropertyDescriptor(value, "length");
@@ -497,16 +498,11 @@ function decodeColumn(
   });
 }
 
-function columnKey(column: SqlColumnCatalogResolvedColumn): string {
-  return [
-    column.columnEntityId,
-    column.ordinal,
-    column.identifier.quoted ? "q" : "u",
-    column.identifier.value,
-    column.insertText,
-    column.dataType ?? "",
-    column.detail ?? "",
-  ].join("\u0000");
+function sameColumn(
+  left: SqlColumnCatalogResolvedColumn,
+  right: SqlColumnCatalogResolvedColumn,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function decodeReadyRelation(
@@ -526,7 +522,7 @@ function decodeReadyRelation(
   if (
     (coverage !== "complete" && coverage !== "partial") ||
     columnCount === null ||
-    !Array.isArray(columnsValue)
+    !isDataArray(columnsValue)
   ) {
     return malformed("invalid-shape");
   }
@@ -543,7 +539,7 @@ function decodeReadyRelation(
     );
     if (!column) return malformed("invalid-shape");
     const previous = byId.get(column.columnEntityId);
-    if (previous && columnKey(previous) !== columnKey(column)) {
+    if (previous && !sameColumn(previous, column)) {
       return malformed("duplicate-column-entity-id");
     }
     byId.set(column.columnEntityId, column);
@@ -592,7 +588,10 @@ function decodeRelation(
       required(record, "relationEntityId"),
       MAX_COLUMN_ENTITY_ID_LENGTH,
     );
-    if (relationEntityId === null) return malformed("invalid-shape");
+    if (
+      relationEntityId === null ||
+      record.fields.size !== 5
+    ) return malformed("invalid-shape");
     return decodeReadyRelation(
       record,
       providerId,
@@ -603,6 +602,7 @@ function decodeRelation(
     );
   }
   if (status === "loading") {
+    if (record.fields.size !== 2) return malformed("invalid-shape");
     return accepted(Object.freeze({
       requestKey,
       status,
@@ -612,6 +612,7 @@ function decodeRelation(
   const retry = required(record, "retry");
   if (
     status !== "failed" ||
+    record.fields.size !== 4 ||
     !isFailureCode(code) ||
     !isRetryPolicy(retry)
   ) {

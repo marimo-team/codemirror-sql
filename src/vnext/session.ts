@@ -578,6 +578,36 @@ function cancelCompletionTickets(
   for (const ticket of request.tickets) ticket.cancel();
 }
 
+async function raceCatalogResponse<Outcome>(
+  result: Promise<Outcome>,
+  timeoutMs: number,
+): Promise<
+  | { readonly kind: "outcome"; readonly outcome: Outcome }
+  | { readonly kind: "timeout" }
+> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const raced = await Promise.race([
+    result.then((outcome) =>
+      Object.freeze({ kind: "outcome" as const, outcome })
+    ),
+    new Promise<{ readonly kind: "timeout" }>((resolve) => {
+      timer = setTimeout(
+        () => resolve(Object.freeze({ kind: "timeout" })),
+        timeoutMs,
+      );
+    }),
+  ]);
+  clearTimeout(timer);
+  return raced;
+}
+
+function remainingCatalogBudget(
+  startedAt: number,
+  budgetMs: number,
+): number {
+  return Math.max(0, budgetMs - Math.max(0, performance.now() - startedAt));
+}
+
 function namespaceCompletionList(
   composition: SqlNamespaceCompletionComposition,
 ): SqlCompletionList {
@@ -1723,15 +1753,13 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       token: refreshToken,
     };
     this.#activeCompletion = active;
+    const isCurrent = (): boolean =>
+      this.#activeCompletion === active &&
+      active.cancelReason === null &&
+      snapshot.revision === this.#snapshot.revision;
     const cancellationIfNotCurrent =
       (): SqlCompletionResult | null => {
-        if (
-          this.#activeCompletion === active &&
-          active.cancelReason === null &&
-          snapshot.revision === this.#snapshot.revision
-        ) {
-          return null;
-        }
+        if (isCurrent()) return null;
         cancelPrevious();
         return completionCancellation(
           snapshot.revision,
@@ -1882,11 +1910,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               status: "unavailable",
             });
           }
-          if (
-            this.#activeCompletion !== active ||
-            active.cancelReason !== null ||
-            snapshot.revision !== this.#snapshot.revision
-          ) {
+          if (!isCurrent()) {
             return completionCancellation(
               snapshot.revision,
               completionCancellationReason(active),
@@ -1898,29 +1922,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             searchPaths: catalog.searchPaths,
           });
           active.tickets.add(ticket);
-          let responseTimer:
-            | ReturnType<typeof setTimeout>
-            | undefined;
-          const raced = await Promise.race([
-            ticket.result.then((outcome) =>
-              Object.freeze({
-                kind: "outcome" as const,
-                outcome,
-              }),
+          const raced = await raceCatalogResponse(
+            ticket.result,
+            remainingCatalogBudget(
+              completionStartedAt,
+              this.#catalogResponseBudgetMs,
             ),
-            new Promise<{ readonly kind: "timeout" }>((resolve) => {
-              responseTimer = setTimeout(
-                () => resolve(Object.freeze({ kind: "timeout" })),
-                this.#catalogResponseBudgetMs,
-              );
-            }),
-          ]);
-          clearTimeout(responseTimer);
-          if (
-            this.#activeCompletion !== active ||
-            active.cancelReason !== null ||
-            snapshot.revision !== this.#snapshot.revision
-          ) {
+          );
+          if (!isCurrent()) {
             ticket.cancel();
             return completionCancellation(
               snapshot.revision,
@@ -2005,11 +2014,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           status: "unavailable",
         });
       }
-      if (
-        this.#activeCompletion !== active ||
-        active.cancelReason !== null ||
-        snapshot.revision !== this.#snapshot.revision
-      ) {
+      if (!isCurrent()) {
         return completionCancellation(
           snapshot.revision,
           completionCancellationReason(active),
@@ -2036,11 +2041,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             status: "unavailable",
           });
         } else {
-          if (
-            this.#activeCompletion !== active ||
-            active.cancelReason !== null ||
-            snapshot.revision !== this.#snapshot.revision
-          ) {
+          if (!isCurrent()) {
             cancelPrevious();
             return completionCancellation(
               snapshot.revision,
@@ -2058,37 +2059,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             this.#refreshIntent = null;
           }
           active.tickets.add(ticket);
-          const elapsed = Math.max(
-            0,
-            performance.now() - completionStartedAt,
-          );
-          const remaining = Math.max(
-            0,
-            this.#catalogResponseBudgetMs - elapsed,
-          );
-          let responseTimer:
-            | ReturnType<typeof setTimeout>
-            | undefined;
-          const raced = await Promise.race([
-            ticket.result.then((outcome) =>
-              Object.freeze({
-                kind: "outcome" as const,
-                outcome,
-              }),
+          const raced = await raceCatalogResponse(
+            ticket.result,
+            remainingCatalogBudget(
+              completionStartedAt,
+              this.#catalogResponseBudgetMs,
             ),
-            new Promise<{ readonly kind: "timeout" }>((resolve) => {
-              responseTimer = setTimeout(
-                () => resolve(Object.freeze({ kind: "timeout" })),
-                remaining,
-              );
-            }),
-          ]);
-          clearTimeout(responseTimer);
-          if (
-            this.#activeCompletion !== active ||
-            active.cancelReason !== null ||
-            snapshot.revision !== this.#snapshot.revision
-          ) {
+          );
+          if (!isCurrent()) {
             ticket.cancel();
             return completionCancellation(
               snapshot.revision,
@@ -2251,37 +2229,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           ),
         );
         active.tickets.add(ticket);
-        const elapsed = Math.max(
-          0,
-          performance.now() - completionStartedAt,
-        );
-        const remaining = Math.max(
-          0,
-          this.#catalogResponseBudgetMs - elapsed,
-        );
-        let responseTimer:
-          | ReturnType<typeof setTimeout>
-          | undefined;
-        const raced = await Promise.race([
-          ticket.result.then((outcome) =>
-            Object.freeze({
-              kind: "outcome" as const,
-              outcome,
-            }),
+        const raced = await raceCatalogResponse(
+          ticket.result,
+          remainingCatalogBudget(
+            completionStartedAt,
+            this.#catalogResponseBudgetMs,
           ),
-          new Promise<{ readonly kind: "timeout" }>((resolve) => {
-            responseTimer = setTimeout(
-              () => resolve(Object.freeze({ kind: "timeout" })),
-              remaining,
-            );
-          }),
-        ]);
-        clearTimeout(responseTimer);
-        if (
-          this.#activeCompletion !== active ||
-          active.cancelReason !== null ||
-          snapshot.revision !== this.#snapshot.revision
-        ) {
+        );
+        if (!isCurrent()) {
           ticket.cancel();
           return completionCancellation(
             snapshot.revision,
@@ -2356,11 +2311,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
         replacementRange,
         statementOffset,
       });
-      if (
-        this.#activeCompletion !== active ||
-        active.cancelReason !== null ||
-        snapshot.revision !== this.#snapshot.revision
-      ) {
+      if (!isCurrent()) {
         return completionCancellation(
           snapshot.revision,
           completionCancellationReason(active),

@@ -177,6 +177,83 @@ describe("namespace catalog coordinator", () => {
     await Promise.resolve();
   });
 
+  it("preserves the newest request across reentrant abort handlers", async () => {
+    const signals: AbortSignal[] = [];
+    let owner: ReturnType<typeof setup>["owner"] | null = null;
+    const reentrant: {
+      ticket:
+        | ReturnType<ReturnType<typeof setup>["owner"]["request"]>
+        | null;
+    } = { ticket: null };
+    const configured = setup((_request, signal) => {
+      signals.push(signal);
+      if (signals.length === 1) {
+        signal.addEventListener("abort", () => {
+          reentrant.ticket = owner?.request(input("reentrant")) ?? null;
+        }, { once: true });
+      }
+      return new Promise(() => undefined);
+    });
+    owner = configured.owner;
+    const first = owner.request(input("first"));
+    const interrupted = owner.request(input("interrupted"));
+
+    await expect(first.result).resolves.toEqual({
+      status: "superseded",
+    });
+    await expect(interrupted.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(signals.map((signal) => signal.aborted)).toEqual([
+      true,
+      false,
+    ]);
+
+    const newest = owner.request(input("newest"));
+    expect(signals.map((signal) => signal.aborted)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    await expect(reentrant.ticket?.result).resolves.toEqual({
+      status: "superseded",
+    });
+    newest.cancel();
+  });
+
+  it.each(["owner", "coordinator"] as const)(
+    "does not resurrect work after reentrant %s disposal",
+    async (target) => {
+      const signals: AbortSignal[] = [];
+      let dispose = (): void => {};
+      const configured = setup((_request, signal) => {
+        signals.push(signal);
+        if (signals.length === 1) {
+          signal.addEventListener("abort", () => dispose(), {
+            once: true,
+          });
+        }
+        return new Promise(() => undefined);
+      });
+      dispose = target === "owner"
+        ? configured.owner.dispose
+        : configured.coordinator.dispose;
+      const first = configured.owner.request(input("first"));
+      const interrupted = configured.owner.request(input("interrupted"));
+
+      await expect(first.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      await expect(interrupted.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(true);
+    },
+  );
+
   it("isolates owners and settles disposal", async () => {
     const pending: Array<ReturnType<typeof deferred<unknown>>> = [];
     const { coordinator, owner } = setup(() => {

@@ -4,6 +4,9 @@ import {
   isSqlQueryBindingModel,
   isSqlQueryBindingModelError,
   MAX_QUERY_BINDING_BLOCKS,
+  MAX_QUERY_BINDINGS,
+  MAX_QUERY_BINDING_SCOPES,
+  MAX_QUERY_VISIBILITY_REGIONS,
   resolveSqlRelationQualifier,
   sqlQueryBindingModelMatches,
   visibleSqlRelationBindingsAt,
@@ -715,6 +718,117 @@ describe("query binding model validation", () => {
       fixture().bindings[1],
     ];
     expectError(() => model({ bindings, blocks }), "invalid-model");
+  });
+
+  it("rejects a derived binding that points at a sibling outside its range", () => {
+    const text = "x".repeat(20);
+    expectError(
+      () =>
+        createSqlQueryBindingModel(text, {}, {
+          bindings: [
+            {
+              alias: null,
+              owner: 0,
+              range: range(1, 5),
+              source: { block: 2, kind: "derived" },
+            },
+          ],
+          blocks: [
+            {
+              baseScope: 0,
+              kind: "select",
+              parentBlock: null,
+              range: range(0, 20),
+            },
+            {
+              baseScope: 0,
+              kind: "select",
+              parentBlock: 0,
+              range: range(1, 5),
+            },
+            {
+              baseScope: 0,
+              kind: "select",
+              parentBlock: 0,
+              range: range(10, 15),
+            },
+          ],
+          coverage: completeCoverage(),
+          issues: [],
+          regions: [],
+          scopes: [
+            { addedBinding: null, parentScope: null },
+            { addedBinding: 0, parentScope: 0 },
+          ],
+          statementRange: range(0, text.length),
+        }),
+      "invalid-model",
+    );
+  });
+
+  it("bounds maximum relationship validation work", () => {
+    const text = "x".repeat(MAX_QUERY_VISIBILITY_REGIONS * 2);
+    const blocks = Array.from(
+      { length: MAX_QUERY_BINDING_BLOCKS },
+      (_, index) => ({
+        baseScope: 0,
+        kind: "select",
+        parentBlock: index === 0 ? null : index - 1,
+        range: range(0, text.length),
+      }),
+    );
+    const bindings = Array.from(
+      { length: MAX_QUERY_BINDINGS },
+      (_, index) => ({
+        alias: null,
+        owner: index % MAX_QUERY_BINDING_BLOCKS,
+        range: range(0, 1),
+        source: {
+          kind: "named",
+          path: [component(`r${index}`)],
+        },
+      }),
+    );
+    const scopes: {
+      addedBinding: number | null;
+      parentScope: number | null;
+    }[] = [
+      { addedBinding: null, parentScope: null },
+      ...bindings.map((_binding, index) => ({
+        addedBinding: index,
+        parentScope: index,
+      })),
+    ];
+    while (scopes.length < MAX_QUERY_BINDING_SCOPES) {
+      scopes.push({
+        addedBinding: null,
+        parentScope: scopes.length - 1,
+      });
+    }
+    const regions = Array.from(
+      { length: MAX_QUERY_VISIBILITY_REGIONS },
+      (_, index) => ({
+        block: MAX_QUERY_BINDING_BLOCKS - 1,
+        kind: "where",
+        range: range(index * 2, index * 2 + 1),
+        scope: MAX_QUERY_BINDING_SCOPES - 1,
+      }),
+    );
+    const start = performance.now();
+    const result = createSqlQueryBindingModel(text, {}, {
+      bindings,
+      blocks,
+      coverage: completeCoverage(),
+      issues: [],
+      regions,
+      scopes,
+      statementRange: range(0, text.length),
+    });
+    const duration = performance.now() - start;
+
+    expect(result.bindings).toHaveLength(MAX_QUERY_BINDINGS);
+    expect(result.regions).toHaveLength(MAX_QUERY_VISIBILITY_REGIONS);
+    expect(duration).toBeLessThan(500);
   });
 
   it("requires partial relation coverage for unknown sources", () => {

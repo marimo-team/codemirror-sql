@@ -99,30 +99,32 @@ export type SqlNamespaceCatalogCoordinatorResult =
     };
 
 interface CoordinatorState {
-  readonly cache: Map<string, SqlNamespaceCatalogSearchResponse>;
-  readonly capturedProvider: CapturedSqlNamespaceCatalogProvider;
-  readonly context: SqlCapturedNamespaceCatalogProviderContext;
-  disposed: boolean;
-  readonly maxCacheEntries: number;
-  readonly owners: Set<OwnerState>;
+  readonly map: Map<string, SqlNamespaceCatalogSearchResponse>;
+  off: boolean;
+  readonly id: string;
+  readonly limit: number;
+  readonly load: SqlCapturedNamespaceCatalogProviderContext["search"];
+  readonly pool: Set<OwnerState>;
+  readonly wire: CapturedSqlNamespaceCatalogProvider;
 }
 
 interface OwnerState {
-  active: ConsumerState | null;
-  readonly dialectId: string;
-  disposed: boolean;
-  observedEpoch: SqlCatalogEpoch | null;
-  owner: CoordinatorState | null;
+  job: ConsumerState | null;
+  readonly lang: string;
+  gen: number;
+  off: boolean;
+  rev: SqlCatalogEpoch | null;
+  root: CoordinatorState | null;
   readonly scope: string;
 }
 
 interface ConsumerState {
-  readonly controller: AbortController;
-  readonly owner: OwnerState;
-  resolve:
+  readonly abort: AbortController;
+  done: boolean;
+  end:
     | ((value: SqlNamespaceCatalogSearchOutcome) => void)
     | null;
-  settled: boolean;
+  readonly host: OwnerState;
 }
 
 const CANCELLED: SqlNamespaceCatalogSearchOutcome =
@@ -197,10 +199,10 @@ function cacheGet(
   state: CoordinatorState,
   key: string,
 ): SqlNamespaceCatalogSearchResponse | null {
-  const value = state.cache.get(key);
+  const value = state.map.get(key);
   if (!value) return null;
-  state.cache.delete(key);
-  state.cache.set(key, value);
+  state.map.delete(key);
+  state.map.set(key, value);
   return value;
 }
 
@@ -209,12 +211,13 @@ function cacheSet(
   key: string,
   value: SqlNamespaceCatalogSearchResponse,
 ): void {
-  state.cache.delete(key);
-  state.cache.set(key, value);
-  while (state.cache.size > state.maxCacheEntries) {
-    const oldest = state.cache.keys().next().value;
-    if (typeof oldest !== "string") break;
-    state.cache.delete(oldest);
+  state.map.delete(key);
+  state.map.set(key, value);
+  while (state.map.size > state.limit) {
+    for (const oldest of state.map.keys()) {
+      state.map.delete(oldest);
+      break;
+    }
   }
 }
 
@@ -222,13 +225,13 @@ function settle(
   consumer: ConsumerState,
   outcome: SqlNamespaceCatalogSearchOutcome,
 ): void {
-  if (consumer.settled) return;
-  consumer.settled = true;
-  if (consumer.owner.active === consumer) {
-    consumer.owner.active = null;
+  if (consumer.host.job === consumer) {
+    consumer.host.job = null;
   }
-  const resolve = consumer.resolve;
-  consumer.resolve = null;
+  if (consumer.done) return;
+  consumer.done = true;
+  const resolve = consumer.end;
+  consumer.end = null;
   resolve?.(outcome);
 }
 
@@ -236,8 +239,8 @@ function cancel(
   consumer: ConsumerState,
   outcome: SqlNamespaceCatalogSearchOutcome,
 ): void {
-  if (consumer.settled) return;
-  consumer.controller.abort();
+  if (consumer.done) return;
+  consumer.abort.abort();
   settle(consumer, outcome);
 }
 
@@ -258,9 +261,9 @@ function providerWork(
 ): void {
   let pending: unknown;
   try {
-    pending = state.context.search(
+    pending = state.load(
       request,
-      consumer.controller.signal,
+      consumer.abort.signal,
     );
   } catch {
     settle(consumer, unavailable("provider-failed"));
@@ -269,16 +272,16 @@ function providerWork(
   Promise.resolve(pending).then(
     (value) => {
       if (
-        consumer.settled ||
-        consumer.controller.signal.aborted ||
-        state.disposed ||
-        owner.disposed ||
-        owner.owner !== state
+        consumer.done ||
+        consumer.abort.signal.aborted ||
+        state.off ||
+        owner.off ||
+        owner.root !== state
       ) {
         return;
       }
       const decoded = decodeSqlNamespaceCatalogSearchResponse(
-        state.capturedProvider,
+        state.wire,
         request,
         value,
       );
@@ -286,7 +289,7 @@ function providerWork(
         settle(consumer, unavailable("malformed-response"));
         return;
       }
-      owner.observedEpoch = decoded.value.epoch;
+      owner.rev = decoded.value.epoch;
       if (
         decoded.value.status === "ready" &&
         decoded.value.coverage === "complete"
@@ -298,14 +301,14 @@ function providerWork(
         );
       }
       settle(consumer, Object.freeze({
-        providerId: state.context.id,
+        providerId: state.id,
         response: decoded.value,
         scope: owner.scope,
         status: "usable",
       }));
     },
     () => {
-      if (!consumer.settled) {
+      if (!consumer.done) {
         settle(consumer, unavailable("provider-failed"));
       }
     },
@@ -316,8 +319,8 @@ function request(
   owner: OwnerState,
   input: unknown,
 ): SqlNamespaceCatalogSearchTicket {
-  const state = owner.owner;
-  if (!state || state.disposed || owner.disposed) {
+  const state = owner.root;
+  if (!state || state.off || owner.off) {
     return settledTicket(unavailable("disposed"));
   }
   const expected = property(input, "expectedEpoch");
@@ -329,9 +332,9 @@ function request(
     return settledTicket(unavailable("invalid-request"));
   }
   const created = createSqlNamespaceCatalogSearchRequest({
-    dialectId: owner.dialectId,
+    dialectId: owner.lang,
     expectedEpoch: expected.value === null
-      ? owner.observedEpoch
+      ? owner.rev
       : expected.value,
     limit: limit.value,
     prefix: prefix.value,
@@ -342,7 +345,14 @@ function request(
   if (created.status === "malformed") {
     return settledTicket(unavailable("invalid-request"));
   }
-  if (owner.active) cancel(owner.active, SUPERSEDED);
+  owner.gen += 1;
+  const generation = owner.gen;
+  if (owner.job) cancel(owner.job, SUPERSEDED);
+  if (generation !== owner.gen) {
+    return settledTicket(
+      owner.off ? unavailable("disposed") : SUPERSEDED,
+    );
+  }
   const normalized = created.value;
   const key = normalized.expectedEpoch === null
     ? null
@@ -350,29 +360,27 @@ function request(
   const cached = key === null ? null : cacheGet(state, key);
   if (cached) {
     return settledTicket(Object.freeze({
-      providerId: state.context.id,
+      providerId: state.id,
       response: cached,
       scope: owner.scope,
       status: "usable",
     }));
   }
-  const resolver: {
-    value:
-      | ((value: SqlNamespaceCatalogSearchOutcome) => void)
-      | null;
-  } = { value: null };
+  let resolveResult: (
+    value: SqlNamespaceCatalogSearchOutcome
+  ) => void = (): void => {};
   const result = new Promise<SqlNamespaceCatalogSearchOutcome>(
     (resolve) => {
-      resolver.value = resolve;
+      resolveResult = resolve;
     },
   );
   const consumer: ConsumerState = {
-    controller: new AbortController(),
-    owner,
-    resolve: resolver.value,
-    settled: false,
+    abort: new AbortController(),
+    done: false,
+    end: resolveResult,
+    host: owner,
   };
-  owner.active = consumer;
+  owner.job = consumer;
   const ticket = Object.freeze({
     cancel: (): void => cancel(consumer, CANCELLED),
     result,
@@ -382,18 +390,19 @@ function request(
 }
 
 function disposeOwner(owner: OwnerState): void {
-  if (owner.disposed) return;
-  owner.disposed = true;
-  if (owner.active) cancel(owner.active, unavailable("disposed"));
-  owner.owner?.owners.delete(owner);
-  owner.owner = null;
+  if (owner.off) return;
+  owner.off = true;
+  owner.gen += 1;
+  if (owner.job) cancel(owner.job, unavailable("disposed"));
+  owner.root?.pool.delete(owner);
+  owner.root = null;
 }
 
 function prepareOwner(
   state: CoordinatorState,
   value: unknown,
 ): SqlNamespaceCatalogOwnerResult {
-  if (state.disposed) {
+  if (state.off) {
     return Object.freeze({ reason: "disposed", status: "unavailable" });
   }
   const dialectId = boundedString(
@@ -411,14 +420,15 @@ function prepareOwner(
     });
   }
   const owner: OwnerState = {
-    active: null,
-    dialectId,
-    disposed: false,
-    observedEpoch: null,
-    owner: state,
+    job: null,
+    gen: 0,
+    lang: dialectId,
+    off: false,
+    rev: null,
+    root: state,
     scope,
   };
-  state.owners.add(owner);
+  state.pool.add(owner);
   return Object.freeze({
     owner: Object.freeze({
       dispose: (): void => disposeOwner(owner),
@@ -430,10 +440,10 @@ function prepareOwner(
 }
 
 function dispose(state: CoordinatorState): void {
-  if (state.disposed) return;
-  state.disposed = true;
-  state.cache.clear();
-  for (const owner of state.owners) disposeOwner(owner);
+  if (state.off) return;
+  state.off = true;
+  state.map.clear();
+  for (const owner of state.pool) disposeOwner(owner);
 }
 
 export function createSqlNamespaceCatalogCoordinator(
@@ -471,19 +481,20 @@ export function createSqlNamespaceCatalogCoordinator(
     });
   }
   const state: CoordinatorState = {
-    cache: new Map(),
-    capturedProvider: captured.value,
-    context,
-    disposed: false,
-    maxCacheEntries: maximum,
-    owners: new Set(),
+    id: context.id,
+    limit: maximum,
+    load: context.search,
+    map: new Map(),
+    off: false,
+    pool: new Set(),
+    wire: captured.value,
   };
   return Object.freeze({
     coordinator: Object.freeze({
       dispose: (): void => dispose(state),
       prepareOwner: (options: SqlNamespaceCatalogOwnerOptions) =>
         prepareOwner(state, options),
-      providerId: context.id,
+      providerId: state.id,
     }),
     status: "created",
   });

@@ -327,6 +327,89 @@ describe("column catalog batch coordinator", () => {
     other.cancel();
   });
 
+  it("preserves the newest request across reentrant abort handlers", async () => {
+    const signals: AbortSignal[] = [];
+    let owner: ReturnType<typeof setup>["owner"] | null = null;
+    const reentrant: {
+      ticket:
+        | ReturnType<ReturnType<typeof setup>["owner"]["request"]>
+        | null;
+    } = { ticket: null };
+    const configured = setup((_request, signal) => {
+      signals.push(signal);
+      if (signals.length === 1) {
+        signal.addEventListener("abort", () => {
+          reentrant.ticket =
+            owner?.request(input([reference("reentrant")])) ?? null;
+        }, { once: true });
+      }
+      return new Promise(() => undefined);
+    });
+    owner = configured.owner;
+    const first = owner.request(input([reference("first")]));
+    const interrupted = owner.request(input([reference("interrupted")]));
+
+    await expect(first.result).resolves.toEqual({
+      status: "superseded",
+    });
+    await expect(interrupted.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(signals).toHaveLength(2);
+    expect(signals.map((signal) => signal.aborted)).toEqual([
+      true,
+      false,
+    ]);
+
+    const newest = owner.request(input([reference("newest")]));
+    expect(signals.map((signal) => signal.aborted)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    await expect(reentrant.ticket?.result).resolves.toEqual({
+      status: "superseded",
+    });
+    newest.cancel();
+  });
+
+  it.each(["owner", "coordinator"] as const)(
+    "does not resurrect work after reentrant %s disposal",
+    async (target) => {
+      const signals: AbortSignal[] = [];
+      let dispose = (): void => {};
+      const configured = setup((_request, signal) => {
+        signals.push(signal);
+        if (signals.length === 1) {
+          signal.addEventListener("abort", () => dispose(), {
+            once: true,
+          });
+        }
+        return new Promise(() => undefined);
+      });
+      dispose = target === "owner"
+        ? configured.owner.dispose
+        : configured.coordinator.dispose;
+      const first = configured.owner.request(
+        input([reference("first")]),
+      );
+      const interrupted = configured.owner.request(
+        input([reference("interrupted")]),
+      );
+
+      await expect(first.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      await expect(interrupted.result).resolves.toEqual({
+        reason: "disposed",
+        status: "unavailable",
+      });
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(true);
+    },
+  );
+
   it("disposes owners and coordinator with prompt aborts", async () => {
     const signals: AbortSignal[] = [];
     const { coordinator, owner } = setup((_request, signal) => {
@@ -384,6 +467,34 @@ describe("column catalog batch coordinator", () => {
       reason: expected,
       status: "unavailable",
     });
+  });
+
+  it("settles a revoked-array provider response as malformed", async () => {
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    const { owner } = setup(() => ({
+      epoch,
+      relations: revoked.proxy,
+    }));
+    await expect(owner.request(input()).result).resolves.toEqual({
+      reason: "malformed-response",
+      status: "unavailable",
+    });
+  });
+
+  it("contains an unexpected decoder exception", async () => {
+    const integerCheck = vi.spyOn(Number, "isSafeInteger");
+    const { owner } = setup((request) => {
+      integerCheck.mockImplementationOnce(() => {
+        throw new Error("decoder");
+      });
+      return ready(request);
+    });
+    await expect(owner.request(input()).result).resolves.toEqual({
+      reason: "malformed-response",
+      status: "unavailable",
+    });
+    integerCheck.mockRestore();
   });
 
   it("bounds cache entries with deterministic LRU eviction", async () => {

@@ -97,7 +97,7 @@ describe("recognizeSqlColumnQuerySite", () => {
       .toEqual(["u", "i", "o"]);
   });
 
-  it("uses the innermost query block", () => {
+  it("includes correlated outer-query relations", () => {
     const result = ready(
       analyze(
         "SELECT * FROM outer_table o WHERE EXISTS (SELECT i.na| FROM inner_table i)",
@@ -105,10 +105,61 @@ describe("recognizeSqlColumnQuerySite", () => {
     );
 
     expect(result.qualifier[0]?.value).toBe("i");
-    expect(result.relations).toHaveLength(1);
-    expect(result.relations[0]?.path.at(-1)?.value).toBe(
-      "inner_table",
+    expect(result.coverage).toBe("partial");
+    expect(result.relations.map((relation) =>
+      relation.path.at(-1)?.value
+    )).toEqual(["inner_table", "outer_table"]);
+  });
+
+  it("does not correlate an ordinary derived table", () => {
+    const result = ready(
+      analyze(
+        "SELECT * FROM (SELECT i.na| FROM inner_table i) d JOIN outer_table o ON true",
+      ),
     );
+
+    expect(result.relations.map((relation) =>
+      relation.path.at(-1)?.value
+    )).toEqual(["inner_table"]);
+  });
+
+  it("limits correlation in a JOIN condition to prior relations", () => {
+    const result = ready(
+      analyze(
+        "SELECT * FROM users u JOIN orders o ON EXISTS (SELECT u.|) JOIN secrets s ON true",
+      ),
+    );
+
+    expect(result.relations.map((relation) =>
+      relation.alias?.value
+    )).toEqual(["u", "o"]);
+  });
+
+  it("walks nested correlation without adopting a closed sibling", () => {
+    const nested = ready(
+      analyze(
+        "SELECT * FROM root_table r WHERE EXISTS (SELECT * FROM mid_table m WHERE EXISTS (SELECT r.|))",
+      ),
+    );
+    expect(nested.relations.map((relation) =>
+      relation.alias?.value
+    )).toEqual(["m", "r"]);
+
+    const sibling = ready(
+      analyze(
+        "SELECT * FROM root_table r WHERE EXISTS (SELECT 1) AND EXISTS (SELECT r.|)",
+      ),
+    );
+    expect(sibling.relations.map((relation) =>
+      relation.alias?.value
+    )).toEqual(["r"]);
+  });
+
+  it("allows a parenthesized top-level query without an outer scope", () => {
+    const result = ready(analyze("(SELECT | FROM inner_table)"));
+    expect(result.relations.map((relation) =>
+      relation.path.at(-1)?.value
+    )).toEqual(["inner_table"]);
   });
 
   it("keeps set-operation arms and JOIN visibility isolated", () => {
@@ -236,6 +287,23 @@ describe("recognizeSqlColumnQuerySite", () => {
       issues: ["incomplete-relation"],
       relations: [],
     });
+    expect(ready(analyze("SELECT | FROM users AS"))).toMatchObject({
+      coverage: "partial",
+      issues: ["incomplete-relation"],
+      relations: [{
+        alias: null,
+        path: [{ value: "users" }],
+      }],
+    });
+    expect(ready(analyze("SELECT | FROM users AS WHERE true")))
+      .toMatchObject({
+        coverage: "partial",
+        issues: ["incomplete-relation"],
+      });
+    expect(ready(analyze('SELECT | FROM users AS "u"')).relations[0])
+      .toMatchObject({
+        alias: { quoted: true, value: "u" },
+      });
   });
 
   it("fails closed for malformed typed paths and line comments", () => {
@@ -244,6 +312,22 @@ describe("recognizeSqlColumnQuerySite", () => {
       status: "inactive",
     });
     expect(analyze("SELECT 1 -- co|mment\nFROM users")).toMatchObject({
+      reason: "cursor-in-comment",
+      status: "inactive",
+    });
+    expect(analyze("SELECT 1 -- comment|")).toMatchObject({
+      reason: "cursor-in-comment",
+      status: "inactive",
+    });
+    expect(analyze("SELECT 1 -- comment|\nFROM users")).toMatchObject({
+      reason: "cursor-in-comment",
+      status: "inactive",
+    });
+    expect(
+      analyze("SELECT 1 # comment|", {
+        dialect: BIGQUERY_SQL_RELATION_DIALECT,
+      }),
+    ).toMatchObject({
       reason: "cursor-in-comment",
       status: "inactive",
     });
@@ -269,6 +353,11 @@ describe("recognizeSqlColumnQuerySite", () => {
       reason: "resource-limit",
       status: "unavailable",
     });
+    expect(analyze(`SELECT (SELECT |) FROM base b${joins}`))
+      .toMatchObject({
+        reason: "resource-limit",
+        status: "unavailable",
+      });
   });
 
   it("rejects foreign contract values without inspecting them", () => {
@@ -321,6 +410,30 @@ describe("recognizeSqlColumnQuerySite", () => {
         status: "unavailable",
       });
     }
+  });
+
+  it("rejects a cursor outside its authenticated exact slot", () => {
+    const text =
+      "SELECT x FROM first_table WHERE ; SELECT y FROM second_table";
+    const source = createIdentitySqlSource(text);
+    const index = buildSqlStatementIndex(
+      text,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const first = findSqlStatementSlot(index, 0, "right");
+    const secondPosition = text.indexOf("y FROM");
+
+    expect(
+      recognizeSqlColumnQuerySite(
+        source,
+        first,
+        secondPosition,
+        POSTGRESQL_SQL_RELATION_DIALECT,
+      ),
+    ).toEqual({
+      reason: "not-column-position",
+      status: "inactive",
+    });
   });
 
   it("preserves opaque statement failures", () => {

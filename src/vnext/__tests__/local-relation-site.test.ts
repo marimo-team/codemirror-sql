@@ -412,6 +412,34 @@ describe("local relation-site evidence", () => {
     );
   });
 
+  it("fails column analysis closed outside the prepared statement", () => {
+    const text =
+      "SELECT x FROM first_table WHERE ; SELECT y FROM second_table";
+    const source = createIdentitySqlSource(text);
+    const index = buildSqlStatementIndex(
+      text,
+      POSTGRESQL_SQL_RELATION_DIALECT.querySite.lexicalProfile,
+    );
+    const first = findSqlStatementSlot(index, 0, "right");
+    const preparation = prepareSqlLocalRelationStatement(
+      source,
+      index,
+      first,
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    );
+    if (preparation.status !== "ready") {
+      throw new Error("Expected exact first-statement preparation");
+    }
+
+    expect(analyzeSqlLocalColumnSite(
+      preparation.statement,
+      text.indexOf("y FROM"),
+    )).toEqual({
+      reason: "not-column-position",
+      status: "inactive",
+    });
+  });
+
   it("separates qualified sites from irrelevant CTE uncertainty", () => {
     const ready = expectReady(
       analyzeMarked(

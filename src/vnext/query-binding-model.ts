@@ -358,43 +358,56 @@ function authenticatedItem<Value>(
   return value;
 }
 
-function isBlockAncestorOrSelf(
-  model: SqlQueryBindingModel,
-  ancestor: number,
-  block: number,
-): boolean {
-  let cursor: number | null = block;
-  while (cursor !== null) {
-    if (cursor === ancestor) {
-      return true;
-    }
-    cursor = authenticatedItem(model.blocks, cursor).parentBlock;
-  }
-  return false;
+interface RelationshipValidationIndex {
+  readonly ancestors: readonly Uint8Array[];
+  readonly scopesIncludingLocal: readonly Uint8Array[];
+  readonly scopesWithoutLocal: readonly Uint8Array[];
 }
 
-function validateScopeOwners(
+function relationshipValidationIndex(
   model: SqlQueryBindingModel,
-  scopeIndex: number,
-  blockIndex: number,
-  includeLocal: boolean,
-  subject: string,
-): void {
-  let cursor: number | null = scopeIndex;
-  while (cursor !== null) {
-    const scope: SqlRelationScope =
-      authenticatedItem<SqlRelationScope>(model.scopes, cursor);
-    if (scope.addedBinding !== null) {
-      const binding = authenticatedItem(model.bindings, scope.addedBinding);
-      const visible =
-        isBlockAncestorOrSelf(model, binding.owner, blockIndex) &&
-        (includeLocal || binding.owner !== blockIndex);
-      if (!visible) {
-        throw invalid(`${subject} contains an unrelated relation binding`);
-      }
+): RelationshipValidationIndex {
+  const ancestors = model.blocks.map((_block, blockIndex) => {
+    const result = new Uint8Array(model.blocks.length);
+    let cursor: number | null = blockIndex;
+    while (cursor !== null) {
+      result[cursor] = 1;
+      cursor = authenticatedItem(model.blocks, cursor).parentBlock;
     }
-    cursor = scope.parentScope;
+    return result;
+  });
+  const scopesIncludingLocal: Uint8Array[] = [];
+  const scopesWithoutLocal: Uint8Array[] = [];
+  for (let blockIndex = 0; blockIndex < model.blocks.length; blockIndex += 1) {
+    const includingLocal = new Uint8Array(model.scopes.length);
+    const withoutLocal = new Uint8Array(model.scopes.length);
+    const blockAncestors = authenticatedItem(ancestors, blockIndex);
+    for (let scopeIndex = 0; scopeIndex < model.scopes.length; scopeIndex += 1) {
+      const scope = authenticatedItem(model.scopes, scopeIndex);
+      const parentIncluding = scope.parentScope === null ||
+        includingLocal[scope.parentScope] === 1;
+      const parentWithout = scope.parentScope === null ||
+        withoutLocal[scope.parentScope] === 1;
+      if (scope.addedBinding === null) {
+        includingLocal[scopeIndex] = parentIncluding ? 1 : 0;
+        withoutLocal[scopeIndex] = parentWithout ? 1 : 0;
+        continue;
+      }
+      const binding = authenticatedItem(model.bindings, scope.addedBinding);
+      const ownerVisible = blockAncestors[binding.owner] === 1;
+      includingLocal[scopeIndex] =
+        parentIncluding && ownerVisible ? 1 : 0;
+      withoutLocal[scopeIndex] =
+        parentWithout && ownerVisible && binding.owner !== blockIndex ? 1 : 0;
+    }
+    scopesIncludingLocal.push(includingLocal);
+    scopesWithoutLocal.push(withoutLocal);
   }
+  return {
+    ancestors,
+    scopesIncludingLocal,
+    scopesWithoutLocal,
+  };
 }
 
 function wellFormedString(value: string): boolean {
@@ -756,6 +769,7 @@ function issueValue(
 }
 
 function validateRelationships(model: SqlQueryBindingModel): void {
+  const validation = relationshipValidationIndex(model);
   for (let index = 0; index < model.blocks.length; index += 1) {
     const block = authenticatedItem(model.blocks, index);
     if (block.parentBlock !== null) {
@@ -764,13 +778,14 @@ function validateRelationships(model: SqlQueryBindingModel): void {
         throw invalid(`query block ${index} is outside its parent`);
       }
     }
-    validateScopeOwners(
-      model,
-      block.baseScope,
-      index,
-      false,
-      `query block ${index} base scope`,
-    );
+    if (
+      authenticatedItem(validation.scopesWithoutLocal, index)[block.baseScope] !==
+        1
+    ) {
+      throw invalid(
+        `query block ${index} base scope contains an unrelated relation binding`,
+      );
+    }
     for (let sibling = 0; sibling < index; sibling += 1) {
       const other = authenticatedItem(model.blocks, sibling);
       const overlaps =
@@ -778,8 +793,8 @@ function validateRelationships(model: SqlQueryBindingModel): void {
         other.range.from < block.range.to;
       if (
         overlaps &&
-        !isBlockAncestorOrSelf(model, sibling, index) &&
-        !isBlockAncestorOrSelf(model, index, sibling)
+        authenticatedItem(validation.ancestors, index)[sibling] !== 1 &&
+        authenticatedItem(validation.ancestors, sibling)[index] !== 1
       ) {
         throw invalid(`query block ${index} overlaps an unrelated block`);
       }
@@ -793,7 +808,10 @@ function validateRelationships(model: SqlQueryBindingModel): void {
     }
     if (binding.source.kind === "derived") {
       const derived = authenticatedItem(model.blocks, binding.source.block);
-      if (derived.parentBlock !== binding.owner) {
+      if (
+        derived.parentBlock !== binding.owner ||
+        !rangeContains(binding.range, derived.range)
+      ) {
         throw invalid(`derived relation binding ${index} has an unrelated block`);
       }
     }
@@ -827,13 +845,16 @@ function validateRelationships(model: SqlQueryBindingModel): void {
     if (!rangeContains(block.range, region.range)) {
       throw invalid(`visibility region ${index} is outside its block`);
     }
-    validateScopeOwners(
-      model,
-      region.scope,
-      region.block,
-      true,
-      `visibility region ${index} scope`,
-    );
+    if (
+      authenticatedItem(
+        validation.scopesIncludingLocal,
+        region.block,
+      )[region.scope] !== 1
+    ) {
+      throw invalid(
+        `visibility region ${index} scope contains an unrelated relation binding`,
+      );
+    }
     previousEnd = region.range.to;
   }
 }

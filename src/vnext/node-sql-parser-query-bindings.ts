@@ -59,7 +59,9 @@ interface SelectSkeleton {
 }
 
 interface AstSelect {
-  readonly children: AstSelect[];
+  readonly cteChildren: AstSelect[];
+  readonly derivedChildren: AstSelect[];
+  readonly kind: "compound" | "select";
   readonly node: object;
   skeleton: SelectSkeleton | null;
 }
@@ -160,7 +162,11 @@ function arrayProperty(
   if (property.value === null) {
     return [];
   }
-  if (!Array.isArray(property.value)) {
+  try {
+    if (!Array.isArray(property.value)) {
+      return null;
+    }
+  } catch {
     return null;
   }
   const length = ownProperty(property.value, "length");
@@ -259,9 +265,27 @@ function selectSkeletons(
         break;
       }
     }
+    let from = 0;
+    if (token.depth > 0) {
+      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+        const candidate = tokens[cursor];
+        if (
+          candidate?.text !== "(" ||
+          candidate.depth !== token.depth - 1
+        ) {
+          continue;
+        }
+        const close = matchingClose(tokens, cursor, candidate.depth);
+        if (close !== null && phaseValue(tokens, close).from < token.from) {
+          continue;
+        }
+        from = candidate.to;
+        break;
+      }
+    }
     skeletons.push(Object.freeze({
       depth: token.depth,
-      from: token.from,
+      from,
       selectToken: index,
       to,
     }));
@@ -276,9 +300,17 @@ function astSelectNode(value: unknown): object | null {
   const type = stringProperty(value, "type");
   return type !== null &&
     (type.toLowerCase() === "select" ||
-      type.toLowerCase() === "union")
+      type.toLowerCase() === "union" ||
+      type.toLowerCase() === "intersect" ||
+      type.toLowerCase() === "except")
     ? value
     : null;
+}
+
+function astSelectKind(value: object): "compound" | "select" {
+  return stringProperty(value, "type")?.toLowerCase() === "select"
+    ? "select"
+    : "compound";
 }
 
 function derivedAst(value: object): object | null {
@@ -303,7 +335,9 @@ function buildAstTree(
     seen.add(node);
     count += 1;
     const result: AstSelect = {
-      children: [],
+      cteChildren: [],
+      derivedChildren: [],
+      kind: astSelectKind(node),
       node,
       skeleton: null,
     };
@@ -323,7 +357,7 @@ function buildAstTree(
       if (child === null) {
         return null;
       }
-      result.children.push(child);
+      result.cteChildren.push(child);
     }
     textual.push(result);
     const fromItems = arrayProperty(node, "from");
@@ -340,7 +374,7 @@ function buildAstTree(
         if (child === null) {
           return null;
         }
-        result.children.push(child);
+        result.derivedChildren.push(child);
       }
     }
     return result;
@@ -389,7 +423,7 @@ function emitBlocks(
       ),
       skeleton,
     });
-    for (const child of ast.children) {
+    for (const child of [...ast.cteChildren, ...ast.derivedChildren]) {
       emit(child, id);
     }
   }
@@ -579,25 +613,94 @@ function pathFromAst(
     return null;
   }
   const lexicalIdentifiers = site.lexicalIdentifiers;
-  const allQuoted =
+  const singleQuotedBigQueryPath =
     grammar === "bigquery" &&
     lexicalIdentifiers.length === 1 &&
     lexicalIdentifiers[0]?.quoted === true;
-  return Object.freeze(values.map((value, index) =>
-    Object.freeze({
-      quoted: allQuoted || lexicalIdentifiers[index]?.quoted === true,
-      value,
+  if (singleQuotedBigQueryPath) {
+    if (lexicalIdentifiers[0]?.value !== values.join(".")) {
+      return null;
+    }
+    return Object.freeze(values.map((value) =>
+      Object.freeze({ quoted: true, value })
+    ));
+  }
+  if (
+    values.length !== lexicalIdentifiers.length ||
+    values.some((value, index) => {
+      const lexical = lexicalIdentifiers[index];
+      return lexical === undefined ||
+        !identifierMatchesAst(value, lexical);
     })
-  ));
+  ) {
+    return null;
+  }
+  return Object.freeze([...lexicalIdentifiers]);
 }
 
-function cteDeclarations(root: object, tokens: readonly Token[]) {
-  const declarations = new Map<string, SqlTextRange>();
-  const withItems = arrayProperty(root, "with");
+interface CteDeclaration {
+  readonly name: SqlIdentifierComponent;
+  readonly range: SqlTextRange;
+}
+
+interface IdentifierToken {
+  readonly identifier: SqlIdentifierComponent;
+  readonly token: Token;
+}
+
+function identifierMatchesAst(
+  astValue: string,
+  lexical: SqlIdentifierComponent,
+): boolean {
+  return lexical.quoted
+    ? astValue === lexical.value
+    : astValue.toLowerCase() === lexical.value.toLowerCase();
+}
+
+function identifierKey(identifier: SqlIdentifierComponent): string {
+  return identifier.quoted
+    ? `quoted:${identifier.value}`
+    : `unquoted:${identifier.value.toLowerCase()}`;
+}
+
+function findIdentifierToken(
+  tokens: readonly Token[],
+  from: number,
+  to: number,
+  depth: number,
+  astName: string,
+): IdentifierToken | null {
+  for (const token of tokens) {
+    const identifier = tokenIdentifier(token);
+    if (
+      token.from >= from &&
+      token.from < to &&
+      token.depth === depth &&
+      identifier !== null &&
+      identifierMatchesAst(astName, identifier)
+    ) {
+      return { identifier, token };
+    }
+  }
+  return null;
+}
+
+function ownCteDeclarations(
+  ast: AstSelect,
+  tokens: readonly Token[],
+): readonly CteDeclaration[] | null {
+  const withItems = arrayProperty(ast.node, "with");
   if (withItems === null) {
     return null;
   }
-  for (const item of withItems) {
+  if (withItems.length !== ast.cteChildren.length) {
+    return null;
+  }
+  const declarations: CteDeclaration[] = [];
+  let searchFrom = assignedSkeleton(ast).from;
+  for (let index = 0; index < withItems.length; index += 1) {
+    const item = withItems[index];
+    const child = phaseValue(ast.cteChildren, index);
     if (item === null || typeof item !== "object") {
       return null;
     }
@@ -608,19 +711,59 @@ function cteDeclarations(root: object, tokens: readonly Token[]) {
     if (name === null) {
       return null;
     }
-    const token = tokens.find((candidate) =>
-      candidate.kind === "word" &&
-      candidate.text.toLowerCase() === name.toLowerCase()
+    const declaration = findIdentifierToken(
+      tokens,
+      searchFrom,
+      assignedSkeleton(child).from,
+      assignedSkeleton(ast).depth,
+      name,
     );
-    if (token === undefined) {
+    if (declaration === null) {
       return null;
     }
-    declarations.set(
-      name.toLowerCase(),
-      Object.freeze({ from: token.from, to: token.to }),
-    );
+    declarations.push(Object.freeze({
+      name: declaration.identifier,
+      range: Object.freeze({
+        from: declaration.token.from,
+        to: declaration.token.to,
+      }),
+    }));
+    searchFrom = assignedSkeleton(child).to;
   }
-  return declarations;
+  return Object.freeze(declarations);
+}
+
+function visibleCteDeclarations(
+  root: AstSelect,
+  tokens: readonly Token[],
+): ReadonlyMap<object, ReadonlyMap<string, CteDeclaration>> | null {
+  const result = new Map<object, ReadonlyMap<string, CteDeclaration>>();
+  function visit(
+    ast: AstSelect,
+    inherited: ReadonlyMap<string, CteDeclaration>,
+  ): boolean {
+    const own = ownCteDeclarations(ast, tokens);
+    if (own === null) {
+      return false;
+    }
+    const visible = new Map(inherited);
+    for (let index = 0; index < ast.cteChildren.length; index += 1) {
+      const child = phaseValue(ast.cteChildren, index);
+      if (!visit(child, visible)) {
+        return false;
+      }
+      const declaration = phaseValue(own, index);
+      visible.set(identifierKey(declaration.name), declaration);
+    }
+    result.set(ast.node, visible);
+    for (const child of ast.derivedChildren) {
+      if (!visit(child, visible)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return visit(root, new Map()) ? result : null;
 }
 
 function addIssue(
@@ -702,37 +845,59 @@ function clauseRegions(
 function joinRegions(
   tokens: readonly Token[],
   block: BlockBuild,
+  sites: readonly RelationSite[],
   scopesAfterRelations: readonly number[],
 ): SqlVisibilityRegion[] {
   const result: SqlVisibilityRegion[] = [];
-  let relationIndex = -1;
-  for (
-    let index = block.skeleton.selectToken;
-    index < tokens.length;
-    index += 1
-  ) {
-    const token = tokens[index];
-    if (!token || token.from >= block.skeleton.to) {
-      break;
-    }
-    if (token.depth !== block.skeleton.depth) {
+  for (let relationIndex = 1; relationIndex < sites.length; relationIndex += 1) {
+    const site = phaseValue(sites, relationIndex);
+    const scope = scopesAfterRelations[relationIndex];
+    if (scope === undefined) {
       continue;
     }
-    if (word(token, "from") || word(token, "join") || token.text === ",") {
-      relationIndex += 1;
+    let conditionIndex = -1;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const candidate = phaseValue(tokens, index);
+      if (
+        candidate.from < site.to ||
+        candidate.depth !== block.skeleton.depth
+      ) {
+        continue;
+      }
+      if (candidate.from >= block.skeleton.to) {
+        break;
+      }
+      if (word(candidate, "on") || word(candidate, "using")) {
+        conditionIndex = index;
+        break;
+      }
+      if (
+        word(candidate, "join") ||
+        candidate.text === "," ||
+        word(candidate, "where") ||
+        word(candidate, "group") ||
+        word(candidate, "having") ||
+        word(candidate, "qualify") ||
+        word(candidate, "order") ||
+        word(candidate, "limit")
+      ) {
+        break;
+      }
     }
-    if (!word(token, "on")) {
+    const token = tokens[conditionIndex];
+    if (token === undefined) {
       continue;
     }
     let to = block.skeleton.to;
-    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-      const next = tokens[cursor];
-      if (!next || next.from >= block.skeleton.to) {
+    for (let cursor = conditionIndex + 1; cursor < tokens.length; cursor += 1) {
+      const next = phaseValue(tokens, cursor);
+      if (next.from >= block.skeleton.to) {
         break;
       }
       if (
         next.depth === block.skeleton.depth &&
         (word(next, "join") ||
+          next.text === "," ||
           word(next, "where") ||
           word(next, "group") ||
           word(next, "having") ||
@@ -744,8 +909,7 @@ function joinRegions(
         break;
       }
     }
-    const scope = scopesAfterRelations[relationIndex];
-    if (scope !== undefined && token.to < to) {
+    if (token.to < to) {
       result.push(Object.freeze({
         block: block.id,
         kind: "join-condition",
@@ -792,7 +956,7 @@ export function normalizeNodeSqlParserQueryBindings(
   if (emitted === null) {
     return Object.freeze({ reason: "unsupported-shape", status: "unavailable" });
   }
-  const declarations = cteDeclarations(astRoot, tokens);
+  const declarations = visibleCteDeclarations(tree.root, tokens);
   if (declarations === null) {
     return Object.freeze({ reason: "malformed-ast", status: "unavailable" });
   }
@@ -823,7 +987,7 @@ export function normalizeNodeSqlParserQueryBindings(
   const publicBlocks = emitted.blocks.map((block) =>
     Object.freeze({
       baseScope: 0,
-      kind: "select" as const,
+      kind: block.ast.kind,
       parentBlock: block.parent,
       range: block.range,
     }),
@@ -848,11 +1012,10 @@ export function normalizeNodeSqlParserQueryBindings(
         return Object.freeze({ reason: "resource-limit", status: "unavailable" });
       }
       const rawRelation = fromItems[index];
-      const site = sites[index];
+      const site = phaseValue(sites, index);
       if (
         rawRelation === null ||
-        typeof rawRelation !== "object" ||
-        site === undefined
+        typeof rawRelation !== "object"
       ) {
         return Object.freeze({ reason: "malformed-ast", status: "unavailable" });
       }
@@ -860,21 +1023,25 @@ export function normalizeNodeSqlParserQueryBindings(
       const aliasToken = site.aliasToken;
       const aliasName =
         aliasToken === null ? null : tokenIdentifier(aliasToken);
+      const aliasMatches =
+        aliasText !== null &&
+        aliasName !== null &&
+        identifierMatchesAst(aliasText, aliasName);
       const alias =
-        aliasText !== null && aliasName !== null && aliasToken !== null
+        aliasMatches && aliasName !== null && aliasToken !== null
           ? Object.freeze({
               explicit: site.explicitAlias,
-              name: Object.freeze({
-                quoted: aliasName.quoted,
-                value: aliasText,
-              }),
+              name: aliasName,
               range: Object.freeze({
                 from: aliasToken.from,
                 to: aliasToken.to,
               }),
             })
           : null;
-      if ((aliasText === null) !== (site.aliasToken === null)) {
+      if (
+        (aliasText === null) !== (site.aliasToken === null) ||
+        (aliasText !== null && aliasName !== null && !aliasMatches)
+      ) {
         coverage.relationBindings = "partial";
         addIssue(issues, "unsupported-relation-source", {
           from: site.from,
@@ -902,20 +1069,25 @@ export function normalizeNodeSqlParserQueryBindings(
         );
         if (path === null || site.derived) {
           coverage.relationBindings = "partial";
+          addIssue(issues, "unsupported-relation-source", {
+            from: site.from,
+            to: site.to,
+          });
           source = Object.freeze({
             kind: "unknown",
             reason: "unsupported-relation-source",
           });
         } else {
           const last = phaseValue(path, path.length - 1);
-          const declaration = declarations.get(last.value.toLowerCase());
+          const blockDeclarations = declarations.get(block.ast.node);
+          const declaration = blockDeclarations?.get(identifierKey(last));
           source =
             declaration === undefined
               ? Object.freeze({ kind: "named", path })
               : Object.freeze({
-                  declarationRange: declaration,
+                  declarationRange: declaration.range,
                   kind: "cte",
-                  name: last,
+                  name: declaration.name,
                 });
         }
       }
@@ -942,7 +1114,7 @@ export function normalizeNodeSqlParserQueryBindings(
       after.push(currentScope);
     }
     regions.push(...clauseRegions(tokens, block, currentScope));
-    regions.push(...joinRegions(tokens, block, after));
+    regions.push(...joinRegions(tokens, block, sites, after));
   }
 
   regions.sort((left, right) =>

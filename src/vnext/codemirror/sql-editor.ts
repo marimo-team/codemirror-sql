@@ -130,6 +130,7 @@ export interface SqlEditorRuntime {
 interface CompletionCapture {
   readonly contextGeneration: number;
   readonly document: Text;
+  readonly embeddedRegions: readonly SqlEmbeddedRegion[];
   readonly selection: EditorSelection;
 }
 
@@ -287,6 +288,7 @@ export function createSqlEditorInternal<
     #contextGeneration = 0;
     #destroyed = false;
     #disposingInfo = false;
+    #completionPositionAllowed: boolean;
     #hasEmbeddedRegions: boolean;
     #info: ActiveCompletionInfo | null = null;
     #intent: CompletionIntent | null = null;
@@ -308,6 +310,11 @@ export function createSqlEditorInternal<
         text: view.state.doc.toString(),
       });
       this.#hasEmbeddedRegions = initialRegions.length > 0;
+      this.#completionPositionAllowed =
+        this.#completionPositionIsAllowed(
+          view.state,
+          view.state.selection.main.head,
+        );
       this.#lastCompletionStatus = completionStatus(view.state);
       this.#lastSelectedCompletion = selectedCompletion(view.state);
       this.#lastSelectedCompletionIndex = selectedCompletionIndex(
@@ -389,8 +396,19 @@ export function createSqlEditorInternal<
         !this.#destroyed &&
         capture.contextGeneration === this.#contextGeneration &&
         capture.document === state.doc &&
+        capture.embeddedRegions === state.field(embeddedRegionsField) &&
         capture.selection.eq(state.selection)
       );
+    }
+
+    #capture(): CompletionCapture {
+      const state = this.#view.state;
+      return {
+        contextGeneration: this.#contextGeneration,
+        document: state.doc,
+        embeddedRegions: state.field(embeddedRegionsField),
+        selection: state.selection,
+      };
     }
 
     #completionPositionIsAllowed(
@@ -414,6 +432,31 @@ export function createSqlEditorInternal<
           return;
         }
         runtime.closeCompletion(this.#view);
+      });
+    }
+
+    #scheduleCompletionGateClose(capture: CompletionCapture): void {
+      runtime.queueMicrotask(() => {
+        if (
+          !this.#captureIsCurrent(capture) ||
+          this.#completionPositionIsAllowed(
+            this.#view.state,
+            this.#view.state.selection.main.head,
+          )
+        ) {
+          return;
+        }
+        runtime.closeCompletion(this.#view);
+        if (
+          externalSources.length > 0 &&
+          this.#captureIsCurrent(capture) &&
+          !this.#completionPositionIsAllowed(
+            this.#view.state,
+            this.#view.state.selection.main.head,
+          )
+        ) {
+          runtime.startCompletion(this.#view);
+        }
       });
     }
 
@@ -572,11 +615,7 @@ export function createSqlEditorInternal<
       ) {
         return null;
       }
-      const capture: CompletionCapture = {
-        contextGeneration: this.#contextGeneration,
-        document: this.#view.state.doc,
-        selection: this.#view.state.selection,
-      };
+      const capture = this.#capture();
       const controller = new AbortController();
       let task: SqlCompletionTask;
       try {
@@ -627,6 +666,7 @@ export function createSqlEditorInternal<
       ) {
         if (this.#active === active) {
           this.#clearCompletionState();
+          this.#scheduleCompletionGateClose(capture);
         }
         return null;
       }
@@ -704,12 +744,17 @@ export function createSqlEditorInternal<
     };
 
     readonly update = (update: ViewUpdate): void => {
-      if (
-        !this.#completionPositionIsAllowed(
+      const completionPositionAllowed =
+        this.#completionPositionIsAllowed(
           update.state,
           update.state.selection.main.head,
-        )
-      ) {
+        );
+      const completionPositionBecameDenied =
+        this.#completionPositionAllowed &&
+        !completionPositionAllowed;
+      this.#completionPositionAllowed = completionPositionAllowed;
+      const completionPositionDenied = !completionPositionAllowed;
+      if (completionPositionDenied) {
         this.#clearCompletionState();
       }
       let contextChanged = false;
@@ -795,6 +840,12 @@ export function createSqlEditorInternal<
         this.#clearCompletionState();
       }
       const nextCompletionStatus = completionStatus(update.state);
+      if (
+        completionPositionBecameDenied &&
+        nextCompletionStatus !== null
+      ) {
+        this.#scheduleCompletionGateClose(this.#capture());
+      }
       const nextSelectedCompletion = selectedCompletion(update.state);
       const nextSelectedCompletionIndex = selectedCompletionIndex(
         update.state,

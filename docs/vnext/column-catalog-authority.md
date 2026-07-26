@@ -3,10 +3,13 @@
 Status: internal vertical-slice contract
 
 Column discovery is lazy, provider-owned, and batched. A completion request
-sends every unresolved relation reference in one provider invocation. Each
-reference carries a caller-local `requestKey`, a decoded identifier path, and
-no unauthenticated entity identity. The provider resolves paths against the
-supplied catalog scope, search paths, and dialect.
+sends at most 64 unresolved relation references in one provider invocation.
+The deterministic first batch is useful but explicitly partial when more
+visible relations match; completion reports `query-binding-partial` and never
+claims the omitted relations were searched. Each reference carries a
+caller-local `requestKey`, a decoded identifier path, and no unauthenticated
+entity identity. The provider resolves paths against the supplied catalog
+scope, search paths, and dialect.
 
 The provider returns stable relation and column entity IDs. Every accepted
 column contains:

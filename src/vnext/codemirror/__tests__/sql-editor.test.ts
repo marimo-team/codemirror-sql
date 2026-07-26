@@ -1484,7 +1484,104 @@ describe("sqlEditor", () => {
     view.dispatch({});
     await vi.waitFor(() => {
       expect(harness.completeSignals[0]?.aborted).toBe(true);
+      expect(currentCompletions(view.state)).toEqual([]);
     });
+  });
+
+  it("restarts external sources after the SQL gate closes stale options", async () => {
+    let allowed = true;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = sqlEditor({
+      autocomplete: {
+        externalSources: [() => ({
+          from: 16,
+          options: [{ label: "external_variable" }],
+        })],
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(currentCompletions(view.state).map((item) => item.label).sort())
+      .toEqual(["external_variable", "users"]);
+
+    allowed = false;
+    view.dispatch({});
+    await vi.waitFor(() => {
+      expect(currentCompletions(view.state).map((item) => item.label))
+        .toEqual(["external_variable"]);
+    });
+  });
+
+  it("closes SQL options denied while the provider is resolving", async () => {
+    const runtime = controlledRuntime();
+    let allowed = true;
+    let resolveResult:
+      | ((result: SqlCompletionResult) => void)
+      | undefined;
+    let revision: SqlRevision | null = null;
+    const harness = fakeService((currentRevision) => {
+      revision = currentRevision;
+      return new Promise((resolve) => {
+        resolveResult = resolve;
+      });
+    });
+    const support = createSqlEditorInternal({
+      autocomplete: {
+        closeOnBlur: false,
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    }, runtime.runtime);
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await vi.waitFor(() =>
+      expect(harness.completeSignals).toHaveLength(1)
+    );
+    if (revision === null) {
+      throw new Error("Expected deferred completion revision");
+    }
+    allowed = false;
+    resolveResult?.(readyResult(revision, [completionItem()]));
+    await vi.waitFor(() => expect(runtime.queued).toHaveLength(1));
+
+    runtime.queued[0]?.();
+    expect(runtime.closes).toEqual([view]);
+  });
+
+  it("does not let a stale gate-close task affect a newer editor state", async () => {
+    const runtime = controlledRuntime();
+    let allowed = true;
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem()])
+    );
+    const support = createSqlEditorInternal({
+      autocomplete: {
+        closeOnBlur: false,
+        isCompletionPositionAllowed: () => allowed,
+      },
+      initialContext: context(),
+      service: harness.service,
+    }, runtime.runtime);
+    const view = createView(support.extension);
+
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    allowed = false;
+    view.dispatch({});
+    expect(runtime.queued).toHaveLength(1);
+
+    view.dispatch({ selection: { anchor: 15 } });
+    runtime.queued[0]?.();
+    expect(runtime.closes).toEqual([]);
   });
 
   it("disposes rich info when the position gate flips false", async () => {

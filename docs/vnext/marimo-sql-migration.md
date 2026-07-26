@@ -42,6 +42,11 @@ The column authority resolves each canonical relation path within the same
 scope and search paths as relation completion. Column IDs and returned relation
 IDs are stable within that connection incarnation.
 
+The library sends at most 64 matching physical relations in one request.
+Larger visible sets are deterministically truncated and reported as partial;
+the provider must not interpret one batch as exhaustive when completion carries
+`query-binding-partial`.
+
 Each column supplies a canonical identifier and provider-rendered
 `insertText`; these are intentionally separate so quoted or dialect-sensitive
 names insert correctly. The provider also supplies ordinal, data type, and
@@ -128,7 +133,12 @@ stable provenance, cancellation, and batched column work.
 
 The remaining feature gaps are:
 
-- the dialect coverage described above.
+- the dialect coverage described above; and
+- output-column inference for CTEs and derived relations. vNext completes CTE
+  relation names but deliberately does not send a visible CTE name to the
+  physical column provider. Keep the legacy column source for those sites, or
+  defer full source replacement, until projection/output-column inference
+  lands.
 
 The fixture feeds marimo's immutable namespace projection—stable entity ID,
 scope, canonical identifier path, and namespace kind—through one public,
@@ -146,8 +156,8 @@ scoped namespace provider on the shared service.
 4. Compare relation and column results with the golden corpus, including
    quoted insert text, aliases, ambiguity, partial/loading/failure states, and
    cold epoch behavior.
-5. Cut over the four supported dialects as one source replacement, preserving
-   variable and keyword external sources.
+5. Cut over supported physical-relation sites while preserving variable,
+   keyword, and legacy CTE/derived-output column sources.
 6. Add dialect coverage, expand the router, and remove completion-only legacy
    schema code. Keep legacy schema data while hover or diagnostics still use
    it.
@@ -169,10 +179,13 @@ The compile-only marimo fixture proves:
 - preservation of variable and keyword sources; and
 - supported-dialect vNext routing with exclusive legacy fallback.
 
-Library tests cover relation and column completion for `FROM`, `JOIN`,
-`alias.`, unqualified projections and predicates, `USING`, nested queries,
-CTEs, quoted identifiers, ambiguous columns, provider loading/invalidations,
-bounded batching, and template barriers.
+Library tests cover relation and physical-column completion for `FROM`, `JOIN`,
+`alias.`, unqualified projections and predicates, `USING`, correlated nested
+queries, quoted identifiers, ambiguous columns, provider
+loading/invalidations, bounded batching, and template barriers. CTE tests prove
+declaration-order relation visibility and that CTE names are not incorrectly
+resolved through the physical column provider; they do not prove CTE
+output-column inference.
 
 Marimo integration tests cover:
 

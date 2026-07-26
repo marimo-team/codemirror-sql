@@ -8,9 +8,10 @@ import type {
   SqlNamespaceContainerRole,
   SqlNamespacePathComponent,
 } from "./namespace-catalog-types.js";
-import type {
-  SqlIdentifierComponent,
-  SqlIdentifierPath,
+import {
+  isDataArray,
+  type SqlIdentifierComponent,
+  type SqlIdentifierPath,
 } from "./types.js";
 
 export const MAX_NAMESPACE_PROVIDER_ID_LENGTH = 256;
@@ -84,7 +85,10 @@ function record(
   value: unknown,
   allowed: ReadonlySet<string>,
 ): DataRecord | null {
-  if (value === null || typeof value !== "object") return null;
+  if (
+    value === null ||
+    typeof value !== "object"
+  ) return null;
   let keys: readonly PropertyKey[];
   try {
     keys = Reflect.ownKeys(value);
@@ -131,7 +135,7 @@ function arrayLength(
   value: unknown,
   maximum: number,
 ): number | null {
-  if (!Array.isArray(value)) return null;
+  if (!isDataArray(value)) return null;
   let descriptor: PropertyDescriptor | undefined;
   try {
     descriptor = Object.getOwnPropertyDescriptor(value, "length");
@@ -153,7 +157,7 @@ function arrayElement(
   value: unknown,
   index: number,
 ): unknown | null {
-  if (!Array.isArray(value)) return null;
+  if (!isDataArray(value)) return null;
   let descriptor: PropertyDescriptor | undefined;
   try {
     descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -167,6 +171,7 @@ function arrayElement(
 
 function identifier(
   value: unknown,
+  allowEmpty = false,
 ): SqlIdentifierComponent | null {
   const source = record(value, new Set(["quoted", "value"]));
   if (!source) return null;
@@ -174,7 +179,7 @@ function identifier(
   const text = boundedString(
     required(source, "value"),
     MAX_NAMESPACE_IDENTIFIER_LENGTH,
-    true,
+    allowEmpty,
   );
   return typeof quoted === "boolean" && text !== null
     ? Object.freeze({ quoted, value: text })
@@ -275,10 +280,22 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function pathKey(path: SqlCanonicalNamespacePath): string {
-  return path.map((component) =>
-    `${component.role}:${component.quoted ? "q" : "u"}:${component.value}`
-  ).join("\u0000");
+function comparePath(
+  left: SqlCanonicalNamespacePath,
+  right: SqlCanonicalNamespacePath,
+): number {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftComponent = left[index];
+    const rightComponent = right[index];
+    if (!leftComponent || !rightComponent) continue;
+    const compared =
+      compareText(leftComponent.role, rightComponent.role) ||
+      Number(rightComponent.quoted) - Number(leftComponent.quoted) ||
+      compareText(leftComponent.value, rightComponent.value);
+    if (compared !== 0) return compared;
+  }
+  return left.length - right.length;
 }
 
 function sameContainer(
@@ -289,7 +306,7 @@ function sameContainer(
     left.detail === right.detail &&
     left.insertText === right.insertText &&
     left.matchQuality === right.matchQuality &&
-    pathKey(left.canonicalPath) === pathKey(right.canonicalPath);
+    comparePath(left.canonicalPath, right.canonicalPath) === 0;
 }
 
 export function captureSqlNamespaceCatalogProvider(
@@ -359,7 +376,7 @@ export function createSqlNamespaceCatalogSearchRequest(
     ? null
     : epoch(expectedValue);
   const limit = required(source, "limit");
-  const prefix = identifier(required(source, "prefix"));
+  const prefix = identifier(required(source, "prefix"), true);
   const qualifier = identifierPath(
     required(source, "qualifier"),
     MAX_NAMESPACE_PATH_COMPONENTS,
@@ -546,7 +563,7 @@ export function decodeSqlNamespaceCatalogSearchResponse(
         ? -1
         : 1) ||
     left.canonicalPath.length - right.canonicalPath.length ||
-    compareText(pathKey(left.canonicalPath), pathKey(right.canonicalPath)) ||
+    comparePath(left.canonicalPath, right.canonicalPath) ||
     compareText(left.containerEntityId, right.containerEntityId)
   );
   return accepted(Object.freeze({

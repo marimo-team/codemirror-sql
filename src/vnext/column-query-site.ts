@@ -244,8 +244,7 @@ function parseNamedRelation(
   if (
     isIdentifier(aliasToken) &&
     aliasToken?.depth === depth &&
-    (maybeAs === "as" ||
-      aliasWord === null ||
+    (aliasWord === null ||
       !RELATION_END_WORDS.has(aliasWord))
   ) {
     const aliasPath = decodePath(
@@ -260,7 +259,10 @@ function parseNamedRelation(
     }
   }
   return {
-    issue: null,
+    issue:
+      maybeAs === "as" && alias === null
+        ? "incomplete-relation"
+        : null,
     next: end,
     relation: Object.freeze({
       alias,
@@ -382,7 +384,10 @@ function cursorTokenReason(
   { status: "inactive" }
 >["reason"] | null {
   const token = tokens.find((candidate) =>
-    candidate.from <= position && position < candidate.to
+    candidate.from <= position &&
+    (position < candidate.to ||
+      (candidate.kind === "line-comment" &&
+        position === candidate.to))
   );
   switch (token?.kind) {
     case "barrier":
@@ -397,66 +402,24 @@ function cursorTokenReason(
   }
 }
 
-export function recognizeSqlColumnQuerySite(
+function collectRelations(
   source: SqlSourceSnapshot,
-  slot: SqlStatementSlot,
-  position: number,
   dialect: SqlRelationDialectRuntime,
-): SqlColumnQuerySiteResult {
-  if (
-    !isSqlSourceSnapshot(source) ||
-    !isSqlStatementSlotSnapshot(slot) ||
-    !isSqlRelationDialectRuntime(dialect) ||
-    !Number.isSafeInteger(position) ||
-    position < 0 ||
-    position > source.analysisText.length
-  ) {
-    return unavailable("ambiguous-query-site");
-  }
-  if (slot.boundaryQuality === "opaque") {
-    return unavailable("opaque-statement");
-  }
-  const tokens = tokenize(source, slot, dialect);
-  if (tokens === null) return unavailable("resource-limit");
-  const cursorReason = cursorTokenReason(tokens, position);
-  if (cursorReason !== null) return inactive(cursorReason);
-
-  let cursorDepth = 0;
-  for (const token of tokens) {
-    if (token.from >= position) break;
-    cursorDepth = token.depth;
-    if (punctuation(source, token, "(")) cursorDepth += 1;
-  }
-  let selectIndex = -1;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (
-      token.from <= position &&
-      token.depth <= cursorDepth &&
-      word(source, token) === "select"
-    ) {
-      selectIndex = index;
-    }
-  }
-  if (selectIndex < 0) return inactive("not-select-query");
-  const selectDepth = tokens[selectIndex]!.depth;
+  tokens: readonly Token[],
+  selectIndex: number,
+  visibilityPosition: number,
+  relations: SqlColumnQueryRelation[],
+  issues: Set<SqlColumnQuerySiteIssue>,
+): boolean {
+  const selectDepth = tokens[selectIndex]?.depth;
+  if (selectDepth === undefined) return false;
   const clause = clauseAt(
     source,
     tokens,
     selectIndex,
     selectDepth,
-    position,
+    visibilityPosition,
   );
-  if (clause === "from" || clause === "limit") {
-    return inactive("not-column-position");
-  }
-  const path = typedPath(source, tokens, position, dialect);
-  if (path === null) {
-    return inactive("not-column-position");
-  }
-
-  const relations: SqlColumnQueryRelation[] = [];
-  const issues = new Set<SqlColumnQuerySiteIssue>();
   let commaStartsRelation = false;
   let inFrom = false;
   for (
@@ -467,7 +430,7 @@ export function recognizeSqlColumnQuerySite(
     const token = tokens[index]!;
     if (
       clause === "join-condition" &&
-      token.from >= position
+      token.from >= visibilityPosition
     ) {
       break;
     }
@@ -518,12 +481,172 @@ export function recognizeSqlColumnQuerySite(
     if (parsed.issue !== null) issues.add(parsed.issue);
     if (parsed.relation !== null) {
       relations.push(parsed.relation);
-      if (relations.length > MAX_COLUMN_QUERY_RELATIONS) {
-        return unavailable("resource-limit");
-      }
+      if (relations.length > MAX_COLUMN_QUERY_RELATIONS) return false;
     }
     commaStartsRelation = true;
     index = Math.max(index, parsed.next - 1);
+  }
+  return true;
+}
+
+function openingBefore(
+  source: SqlSourceSnapshot,
+  tokens: readonly Token[],
+  beforeIndex: number,
+  depth: number,
+): number {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const token = tokens[index]!;
+    if (
+      token.depth === depth &&
+      punctuation(source, token, "(")
+    ) {
+      return token.from;
+    }
+  }
+  return -1;
+}
+
+function correlatedParentSelectIndex(
+  source: SqlSourceSnapshot,
+  tokens: readonly Token[],
+  childIndex: number,
+): number {
+  const child = tokens[childIndex];
+  if (!child || child.depth === 0) return -1;
+  for (let depth = child.depth - 1; depth >= 0; depth -= 1) {
+    const lowerBound = depth === 0
+      ? -1
+      : openingBefore(source, tokens, childIndex, depth - 1);
+    for (let index = childIndex - 1; index >= 0; index -= 1) {
+      const token = tokens[index]!;
+      if (token.from <= lowerBound) break;
+      if (token.depth === depth && word(source, token) === "select") {
+        const opening = openingBefore(
+          source,
+          tokens,
+          childIndex,
+          depth,
+        );
+        return opening > token.from &&
+            clauseAt(
+              source,
+              tokens,
+              index,
+              depth,
+              opening,
+            ) !== "from"
+          ? index
+          : -1;
+      }
+    }
+  }
+  return -1;
+}
+
+export function recognizeSqlColumnQuerySite(
+  source: SqlSourceSnapshot,
+  slot: SqlStatementSlot,
+  position: number,
+  dialect: SqlRelationDialectRuntime,
+): SqlColumnQuerySiteResult {
+  if (
+    !isSqlSourceSnapshot(source) ||
+    !isSqlStatementSlotSnapshot(slot) ||
+    !isSqlRelationDialectRuntime(dialect) ||
+    !Number.isSafeInteger(position) ||
+    position < 0 ||
+    position > source.analysisText.length
+  ) {
+    return unavailable("ambiguous-query-site");
+  }
+  if (slot.boundaryQuality === "opaque") {
+    return unavailable("opaque-statement");
+  }
+  if (
+    position < slot.source.from ||
+    position > slot.source.to
+  ) {
+    return inactive("not-column-position");
+  }
+  const tokens = tokenize(source, slot, dialect);
+  if (tokens === null) return unavailable("resource-limit");
+  const cursorReason = cursorTokenReason(tokens, position);
+  if (cursorReason !== null) return inactive(cursorReason);
+
+  let cursorDepth = 0;
+  for (const token of tokens) {
+    if (token.from >= position) break;
+    cursorDepth = token.depth;
+    if (punctuation(source, token, "(")) cursorDepth += 1;
+  }
+  let selectIndex = -1;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (
+      token.from <= position &&
+      token.depth <= cursorDepth &&
+      word(source, token) === "select"
+    ) {
+      selectIndex = index;
+    }
+  }
+  if (selectIndex < 0) return inactive("not-select-query");
+  const selectDepth = tokens[selectIndex]!.depth;
+  const clause = clauseAt(
+    source,
+    tokens,
+    selectIndex,
+    selectDepth,
+    position,
+  );
+  if (clause === "from" || clause === "limit") {
+    return inactive("not-column-position");
+  }
+  const path = typedPath(source, tokens, position, dialect);
+  if (path === null) {
+    return inactive("not-column-position");
+  }
+
+  const relations: SqlColumnQueryRelation[] = [];
+  const issues = new Set<SqlColumnQuerySiteIssue>();
+  if (
+    !collectRelations(
+      source,
+      dialect,
+      tokens,
+      selectIndex,
+      position,
+      relations,
+      issues,
+    )
+  ) {
+    return unavailable("resource-limit");
+  }
+  let childIndex = selectIndex;
+  for (;;) {
+    const parentIndex = correlatedParentSelectIndex(
+      source,
+      tokens,
+      childIndex,
+    );
+    if (parentIndex < 0) break;
+    const childPosition = tokens[childIndex]?.from;
+    if (
+      childPosition === undefined ||
+      !collectRelations(
+        source,
+        dialect,
+        tokens,
+        parentIndex,
+        childPosition,
+        relations,
+        issues,
+      )
+    ) {
+      return unavailable("resource-limit");
+    }
+    childIndex = parentIndex;
   }
   const issueList = Object.freeze(Array.from(issues).sort());
   return Object.freeze({

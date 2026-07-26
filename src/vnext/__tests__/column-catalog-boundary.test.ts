@@ -571,6 +571,120 @@ describe("column catalog response boundary", () => {
     expect(invalid.status).toBe("malformed");
   });
 
+  it("rejects revoked response arrays without throwing", () => {
+    const captured = provider(() => undefined);
+    for (const response of [
+      (() => {
+        const revoked = Proxy.revocable([], {});
+        revoked.revoke();
+        return { epoch, relations: revoked.proxy };
+      })(),
+      (() => {
+        const revoked = Proxy.revocable([], {});
+        revoked.revoke();
+        return {
+          epoch,
+          relations: [
+            {
+              ...readyResponse().relations[0],
+              columns: revoked.proxy,
+            },
+            readyResponse().relations[1],
+          ],
+        };
+      })(),
+    ]) {
+      expect(() =>
+        decodeSqlColumnCatalogBatchResponse(
+          captured,
+          request(),
+          response,
+        )
+      ).not.toThrow();
+      expect(decodeSqlColumnCatalogBatchResponse(
+        captured,
+        request(),
+        response,
+      )).toEqual({
+        reason: "invalid-shape",
+        status: "malformed",
+      });
+    }
+  });
+
+  it("rejects cross-variant relation fields", () => {
+    const captured = provider(() => undefined);
+    const invalid = [
+      {
+        code: "unknown",
+        requestKey: "users",
+        retry: "never",
+        status: "loading",
+      },
+      {
+        code: "unknown",
+        ...readyResponse().relations[0],
+        retry: "never",
+      },
+      {
+        code: "unknown",
+        columns: [],
+        coverage: "complete",
+        relationEntityId: "relation-users",
+        requestKey: "users",
+        retry: "never",
+        status: "failed",
+      },
+    ];
+    for (const relation of invalid) {
+      expect(decodeSqlColumnCatalogBatchResponse(
+        captured,
+        request(),
+        {
+          epoch,
+          relations: [relation, readyResponse().relations[1]],
+        },
+      ).status).toBe("malformed");
+    }
+  });
+
+  it("rejects NUL-delimited conflicting column identities", () => {
+    const result = decodeSqlColumnCatalogBatchResponse(
+      provider(() => undefined),
+      request(),
+      {
+        epoch,
+        relations: [
+          {
+            columns: [
+              {
+                columnEntityId: "same",
+                identifier: { quoted: false, value: "x\u0000y" },
+                insertText: "z",
+                ordinal: 0,
+              },
+              {
+                columnEntityId: "same",
+                identifier: { quoted: false, value: "x" },
+                insertText: "y\u0000z",
+                ordinal: 0,
+              },
+            ],
+            coverage: "complete",
+            relationEntityId: "relation-users",
+            requestKey: "users",
+            status: "ready",
+          },
+          readyResponse().relations[1],
+        ],
+      },
+    );
+    expect(result).toEqual({
+      reason: "duplicate-column-entity-id",
+      status: "malformed",
+    });
+  });
+
   it("rejects malformed relation and column state combinations", () => {
     const captured = provider(() => undefined);
     const request_ = request();

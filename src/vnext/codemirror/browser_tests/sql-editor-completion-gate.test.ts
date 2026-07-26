@@ -3,7 +3,7 @@ import {
   startCompletion,
 } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test } from "vitest";
 import {
   createSqlLanguageService,
   duckdbDialect,
@@ -13,6 +13,7 @@ import { sqlEditor } from "../index.js";
 test("vNext completion gate routes unmatched template EOF to external sources", async () => {
   const parent = document.createElement("div");
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   let catalogSearches = 0;
   const service = createSqlLanguageService({
     catalog: {
@@ -46,6 +47,7 @@ test("vNext completion gate routes unmatched template EOF to external sources", 
     },
     dialects: [duckdbDialect()],
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     autocomplete: {
       externalSources: [(context) => ({
@@ -77,21 +79,19 @@ test("vNext completion gate routes unmatched template EOF to external sources", 
     parent,
     selection: { anchor: 15 },
   });
+  onTestFinished(() => view.destroy());
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
     currentCompletions(view.state).map((item) => item.label)
   ).toEqual(["python_variable"]);
   expect(catalogSearches).toBe(0);
-
-  view.destroy();
-  service.dispose();
-  parent.remove();
 });
 
 test("vNext completion gate permits normal SQL in a browser editor", async () => {
   const parent = document.createElement("div");
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   const service = createSqlLanguageService({
     catalog: {
       id: "browser-catalog",
@@ -121,6 +121,7 @@ test("vNext completion gate permits normal SQL in a browser editor", async () =>
     },
     dialects: [duckdbDialect()],
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     autocomplete: {
       isCompletionPositionAllowed: () => true,
@@ -141,20 +142,88 @@ test("vNext completion gate permits normal SQL in a browser editor", async () =>
     parent,
     selection: { anchor: documentText.length },
   });
+  onTestFinished(() => view.destroy());
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
     currentCompletions(view.state).map((item) => item.label)
   ).toContain("users");
+});
 
-  view.destroy();
-  service.dispose();
-  parent.remove();
+test("vNext completion gate preserves external sources when it closes SQL options", async () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  onTestFinished(() => parent.remove());
+  let allowed = true;
+  const service = createSqlLanguageService({
+    catalog: {
+      id: "browser-gate-transition",
+      search: async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "ready" },
+        relations: [{
+          canonicalPath: [
+            {
+              quoted: false,
+              role: "schema",
+              value: "main",
+            },
+            {
+              quoted: false,
+              role: "relation",
+              value: "users",
+            },
+          ],
+          completionPathStart: 1,
+          entityId: "main.users",
+          matchQuality: "exact",
+          relationKind: "table",
+        }],
+        status: "ready" as const,
+      }),
+    },
+    dialects: [duckdbDialect()],
+  });
+  onTestFinished(() => service.dispose());
+  const support = sqlEditor({
+    autocomplete: {
+      externalSources: [(context) => ({
+        from: context.pos,
+        options: [{ label: "python_variable" }],
+      })],
+      isCompletionPositionAllowed: () => allowed,
+    },
+    initialContext: {
+      catalog: { scope: "browser-gate-transition" },
+      dialect: "duckdb",
+    },
+    service,
+  });
+  const documentText = "SELECT * FROM us";
+  const view = new EditorView({
+    doc: documentText,
+    extensions: support.extension,
+    parent,
+    selection: { anchor: documentText.length },
+  });
+  onTestFinished(() => view.destroy());
+
+  expect(startCompletion(view)).toBe(true);
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => item.label).sort()
+  ).toEqual(["python_variable", "users"]);
+
+  allowed = false;
+  view.dispatch({});
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => item.label)
+  ).toEqual(["python_variable"]);
 });
 
 test("vNext editor applies a batched column completion", async () => {
   const parent = document.createElement("div");
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   let columnCalls = 0;
   const service = createSqlLanguageService({
     catalog: {
@@ -192,6 +261,7 @@ test("vNext editor applies a batched column completion", async () => {
     },
     dialects: [duckdbDialect()],
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     initialContext: {
       catalog: { scope: "browser-columns" },
@@ -206,6 +276,7 @@ test("vNext editor applies a batched column completion", async () => {
     parent,
     selection: { anchor: "SELECT u.na".length },
   });
+  onTestFinished(() => view.destroy());
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
@@ -215,15 +286,12 @@ test("vNext editor applies a batched column completion", async () => {
     }))
   ).toEqual([{ label: "name", type: "property" }]);
   expect(columnCalls).toBe(1);
-
-  view.destroy();
-  service.dispose();
-  parent.remove();
 });
 
 test("vNext editor exposes namespace containers at relation sites", async () => {
   const parent = document.createElement("div");
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   let namespaceCalls = 0;
   const service = createSqlLanguageService({
     dialects: [duckdbDialect()],
@@ -249,6 +317,7 @@ test("vNext editor exposes namespace containers at relation sites", async () => 
       },
     },
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     initialContext: {
       catalog: { scope: "browser-namespaces" },
@@ -263,6 +332,7 @@ test("vNext editor exposes namespace containers at relation sites", async () => 
     parent,
     selection: { anchor: documentText.length },
   });
+  onTestFinished(() => view.destroy());
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
@@ -272,8 +342,4 @@ test("vNext editor exposes namespace containers at relation sites", async () => 
     }))
   ).toEqual([{ label: "main", type: "namespace" }]);
   expect(namespaceCalls).toBe(1);
-
-  view.destroy();
-  service.dispose();
-  parent.remove();
 });

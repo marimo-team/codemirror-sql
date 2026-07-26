@@ -1394,6 +1394,59 @@ describe("column completion session integration", () => {
     service.dispose();
   });
 
+  it("completes a qualified correlated outer relation", async () => {
+    const requests: Parameters<
+      SqlColumnCatalogProvider["loadColumns"]
+    >[0][] = [];
+    const service = serviceWithColumns(async (request) => {
+      requests.push(request);
+      const relation = request.relations[0];
+      if (!relation) throw new Error("Expected the correlated relation");
+      return {
+        epoch: { generation: 1, token: "epoch-1" },
+        relations: [{
+          columns: [{
+            columnEntityId: "users:id",
+            identifier: { quoted: false, value: "id" },
+            insertText: "id",
+            ordinal: 0,
+          }],
+          coverage: "complete",
+          relationEntityId: "users",
+          requestKey: relation.requestKey,
+          status: "ready",
+        }],
+      };
+    });
+    const text =
+      "SELECT * FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.)";
+    const position = text.indexOf("u.)") + 2;
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:correlated" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [{ label: "id" }],
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.relations).toEqual([{
+      path: [{ quoted: false, value: "users" }],
+      requestKey: "binding:1",
+    }]);
+    service.dispose();
+  });
+
   it("never resolves a visible CTE as a physical relation", async () => {
     let calls = 0;
     const service = serviceWithColumns(async () => {
@@ -1459,6 +1512,47 @@ describe("column completion session integration", () => {
       });
       service.dispose();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("charges column analysis against the total response budget", async () => {
+    vi.useFakeTimers();
+    const performanceNow = vi.spyOn(performance, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(30);
+    try {
+      const service = serviceWithColumns(() => new Promise(() => {}));
+      const text = "SELECT u. FROM users u";
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: "connection:column-total-budget" },
+          dialect: "duckdb",
+          engine: "local",
+        },
+        text,
+      });
+      let settled = false;
+      const completion = session.complete({
+        position: "SELECT u.".length,
+        trigger: { kind: "invoked" },
+      });
+      void completion.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(9);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(completion).resolves.toMatchObject({
+        status: "ready",
+        value: {
+          issues: [{ reason: "column-catalog-loading" }],
+        },
+      });
+      service.dispose();
+    } finally {
+      performanceNow.mockRestore();
       vi.useRealTimers();
     }
   });

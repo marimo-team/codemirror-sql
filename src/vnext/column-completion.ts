@@ -1,6 +1,9 @@
 import type {
   SqlColumnCatalogBatchOutcome,
 } from "./column-catalog-batch-coordinator.js";
+import {
+  MAX_COLUMN_BATCH_RELATIONS,
+} from "./column-catalog-boundary.js";
 import type {
   SqlColumnCatalogRelationReference,
   SqlColumnCatalogRelationResult,
@@ -28,6 +31,7 @@ type ReadyColumnSite = Extract<
 >;
 
 export interface SqlPreparedColumnCatalogRelations {
+  readonly coverage: "complete" | "partial";
   readonly references: readonly SqlColumnCatalogRelationReference[];
   readonly relationsByRequestKey: ReadonlyMap<
     string,
@@ -89,6 +93,7 @@ export function prepareSqlColumnCatalogRelations(
     string,
     SqlColumnQueryRelation
   >();
+  let coverage: "complete" | "partial" = "complete";
   for (let index = 0; index < site.relations.length; index += 1) {
     const relation = site.relations[index];
     if (
@@ -101,6 +106,10 @@ export function prepareSqlColumnCatalogRelations(
     ) {
       continue;
     }
+    if (references.length === MAX_COLUMN_BATCH_RELATIONS) {
+      coverage = "partial";
+      break;
+    }
     const requestKey = `binding:${index}`;
     references.push(Object.freeze({
       path: relation.path,
@@ -109,6 +118,7 @@ export function prepareSqlColumnCatalogRelations(
     relationsByRequestKey.set(requestKey, relation);
   }
   return Object.freeze({
+    coverage,
     references: Object.freeze(references),
     relationsByRequestKey,
   });
@@ -222,12 +232,12 @@ export function composeSqlColumnCompletion(
   }
   const items: SqlCompletionItem[] = [];
   const issues: SqlCompletionIssue[] = [];
-  if (input.site.coverage === "partial") {
-    issues.push(issue("query-binding-partial"));
-  }
+  let hasPartial =
+    input.site.coverage === "partial" ||
+    input.prepared.coverage === "partial";
+  if (hasPartial) issues.push(issue("query-binding-partial"));
   let hasLoading = false;
   let hasFailure = false;
-  let hasPartial = input.site.coverage === "partial";
   const seen = new Set<string>();
   const failures: SqlColumnCatalogFailure[] = [];
   for (const result of input.outcome.relations) {

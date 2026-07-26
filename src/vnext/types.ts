@@ -1,5 +1,15 @@
 const revisionBrand: unique symbol = Symbol("SqlRevision");
 
+export function isDataArray(
+  value: unknown,
+): value is readonly unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 /** Immutable identity issued by a document session. */
 export interface SqlRevision {
   readonly [revisionBrand]: "SqlRevision";

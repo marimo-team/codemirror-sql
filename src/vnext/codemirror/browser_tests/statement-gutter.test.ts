@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test } from "vitest";
 import {
   createSqlLanguageService,
   duckdbDialect,
@@ -10,9 +10,11 @@ test("vNext statement gutter follows the current statement", async () => {
   const parent = document.createElement("div");
   parent.style.height = "240px";
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   const service = createSqlLanguageService({
     dialects: [duckdbDialect()],
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     initialContext: { dialect: "duckdb" },
     service,
@@ -25,6 +27,7 @@ test("vNext statement gutter follows the current statement", async () => {
     parent,
     selection: { anchor: documentText.length },
   });
+  onTestFinished(() => view.destroy());
   view.focus();
 
   await expect.poll(() =>
@@ -48,10 +51,6 @@ test("vNext statement gutter follows the current statement", async () => {
       marker.classList.contains("cm-sql-statement-marker-active")
     );
   }).toBe(0);
-
-  view.destroy();
-  service.dispose();
-  parent.remove();
 });
 
 test("vNext statement gutter virtualizes a tall focused editor", async () => {
@@ -62,9 +61,11 @@ test("vNext statement gutter virtualizes a tall focused editor", async () => {
     "rgb(1, 2, 3)",
   );
   document.body.append(parent);
+  onTestFinished(() => parent.remove());
   const service = createSqlLanguageService({
     dialects: [duckdbDialect()],
   });
+  onTestFinished(() => service.dispose());
   const support = sqlEditor({
     initialContext: { dialect: "duckdb" },
     service,
@@ -79,6 +80,7 @@ test("vNext statement gutter virtualizes a tall focused editor", async () => {
     extensions: support.extension,
     parent,
   });
+  onTestFinished(() => view.destroy());
 
   expect(
     view.dom.querySelectorAll(".cm-sql-statement-marker"),
@@ -115,8 +117,4 @@ test("vNext statement gutter virtualizes a tall focused editor", async () => {
   expect(
     view.dom.querySelectorAll(".cm-sql-statement-marker").length,
   ).toBeLessThan(200);
-
-  view.destroy();
-  service.dispose();
-  parent.remove();
 });
