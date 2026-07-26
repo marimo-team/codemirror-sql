@@ -10,7 +10,7 @@ import {
   type SqlRevision,
   type SqlTextChange,
   type SqlTextRange,
-} from "../../src/vnext/index.js";
+} from "../../src/index.js";
 
 interface HostContext extends SqlDocumentContext {
   readonly engine: string;
@@ -120,13 +120,13 @@ const objectRevision: SqlRevision = {};
 const numberRevision: SqlRevision = 1;
 // @ts-expect-error updates require a non-empty state change
 session.update({ baseRevision: revision });
-const legacyUpdate = {
+const forbiddenUpdate = {
   baseRevision: revision,
   context: { dialect: "duckdb", engine: "local" },
   kind: "context" as const,
 };
 // @ts-expect-error the removed update discriminant stays forbidden through variables
-session.update(legacyUpdate);
+session.update(forbiddenUpdate);
 // @ts-expect-error document mutations require complete post-edit regions
 session.update({
   baseRevision: session.revision,

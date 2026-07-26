@@ -1,13 +1,13 @@
 import type {
   CapturedSqlRelationCatalogProvider,
   SqlValidatedCatalogSearchResponse,
-} from "../../src/vnext/relation-catalog-boundary.js";
+} from "../../src/relation-catalog-boundary.js";
 import type {
   SqlCatalogRevisionTarget,
-} from "../../src/vnext/relation-catalog-epoch-coordinator.js";
+} from "../../src/relation-catalog-epoch-coordinator.js";
 import {
   createSqlCatalogEpochCoordinator,
-} from "../../src/vnext/relation-catalog-epoch-coordinator.js";
+} from "../../src/relation-catalog-epoch-coordinator.js";
 import type {
   SqlCatalogSearchWorkCoordinator,
   SqlCatalogSearchWorkInput,
@@ -15,13 +15,13 @@ import type {
   SqlCatalogSearchWorkOwner,
   SqlCatalogSearchWorkOwnerResult,
   SqlCatalogSearchWorkTicket,
-} from "../../src/vnext/relation-catalog-search-work.js";
+} from "../../src/relation-catalog-search-work.js";
 import {
   createSqlCatalogSearchWorkCoordinator,
-} from "../../src/vnext/relation-catalog-search-work.js";
+} from "../../src/relation-catalog-search-work.js";
 import type {
   SqlRelationDialectRuntime,
-} from "../../src/vnext/relation-dialect.js";
+} from "../../src/relation-dialect.js";
 
 declare const capturedProvider: CapturedSqlRelationCatalogProvider;
 declare const coordinator: SqlCatalogSearchWorkCoordinator;

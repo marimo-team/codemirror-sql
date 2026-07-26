@@ -170,14 +170,14 @@ try {
     throw new Error("Packed manifest does not declare node-sql-parser");
   }
   const privateWorkerArtifacts = [
-    "dist/vnext/node-sql-parser-browser-executor.d.ts",
-    "dist/vnext/node-sql-parser-browser-executor.js",
-    "dist/vnext/node-sql-parser-browser-worker.d.ts",
-    "dist/vnext/node-sql-parser-browser-worker.js",
-    "dist/vnext/node-sql-parser-browser-worker-endpoint.d.ts",
-    "dist/vnext/node-sql-parser-browser-worker-endpoint.js",
-    "dist/vnext/node-sql-parser-wire.d.ts",
-    "dist/vnext/node-sql-parser-wire.js",
+    "dist/node-sql-parser-browser-executor.d.ts",
+    "dist/node-sql-parser-browser-executor.js",
+    "dist/node-sql-parser-browser-worker.d.ts",
+    "dist/node-sql-parser-browser-worker.js",
+    "dist/node-sql-parser-browser-worker-endpoint.d.ts",
+    "dist/node-sql-parser-browser-worker-endpoint.js",
+    "dist/node-sql-parser-wire.d.ts",
+    "dist/node-sql-parser-wire.js",
   ];
   for (const artifact of privateWorkerArtifacts) {
     if (!existsSync(join(packageDirectory, artifact))) {
@@ -188,11 +188,11 @@ try {
   }
 
   writeFileSync(
-    join(temporaryDirectory, "vnext-consumer.mjs"),
+    join(temporaryDirectory, "session-consumer.mjs"),
     `import {
   createSqlLanguageService,
   duckdbDialect,
-} from "@marimo-team/codemirror-sql/vnext";
+} from "@marimo-team/codemirror-sql";
 
 const service = createSqlLanguageService({
   dialects: [duckdbDialect()],
@@ -213,36 +213,18 @@ service.dispose();
 
   writeFileSync(
     join(temporaryDirectory, "consumer.mts"),
-    `import type { Extension } from "@codemirror/state";
-import {
-  NodeSqlParser,
-  sqlCompletion,
-  sqlExtension,
-} from "@marimo-team/codemirror-sql";
-import {
-  BigQueryDialect,
-  DremioDialect,
-  DuckDBDialect,
-} from "@marimo-team/codemirror-sql/dialects";
-import {
+    `import {
   createSqlLanguageService,
   duckdbDialect,
   type SqlDocumentContext,
   type SqlEmbeddedRegion,
   type SqlTextRange,
-} from "@marimo-team/codemirror-sql/vnext";
-import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
-import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
+} from "@marimo-team/codemirror-sql";
 
 interface HostContext extends SqlDocumentContext {
   readonly engine: string;
 }
 
-const extensions: Extension[] = [
-  sqlCompletion({ dialect: DuckDBDialect }),
-  sqlExtension(),
-];
-const parser = new NodeSqlParser();
 const service = createSqlLanguageService<HostContext>({
   dialects: [duckdbDialect()],
 });
@@ -261,46 +243,29 @@ session.update({
   document: { kind: "changes", changes: [] },
 });
 
-void extensions;
-void parser;
 void range;
 void session;
-void BigQueryDialect;
-void DremioDialect;
-void commonKeywords;
-void duckdbKeywords;
 `,
   );
 
   writeFileSync(
     join(temporaryDirectory, "consumer.mjs"),
-    `import { EditorState } from "@codemirror/state";
-import * as api from "@marimo-team/codemirror-sql";
-import * as dialects from "@marimo-team/codemirror-sql/dialects";
-import * as vnext from "@marimo-team/codemirror-sql/vnext";
-import commonKeywords from "@marimo-team/codemirror-sql/data/common-keywords.json" with { type: "json" };
-import duckdbKeywords from "@marimo-team/codemirror-sql/data/duckdb-keywords.json" with { type: "json" };
+    `import * as api from "@marimo-team/codemirror-sql";
 
-if (typeof api.sqlExtension !== "function" || typeof api.NodeSqlParser !== "function") {
-  throw new Error("Root package exports are incomplete");
-}
-if (!dialects.BigQueryDialect || !dialects.DremioDialect || !dialects.DuckDBDialect) {
-  throw new Error("Dialect package exports are incomplete");
-}
 if (
-  typeof vnext.createSqlLanguageService !== "function" ||
-  typeof vnext.bigQueryDialect !== "function" ||
-  typeof vnext.dremioDialect !== "function" ||
-  typeof vnext.duckdbDialect !== "function" ||
-  typeof vnext.postgresDialect !== "function"
+  typeof api.createSqlLanguageService !== "function" ||
+  typeof api.bigQueryDialect !== "function" ||
+  typeof api.dremioDialect !== "function" ||
+  typeof api.duckdbDialect !== "function" ||
+  typeof api.postgresDialect !== "function"
 ) {
-  throw new Error("vNext package exports are incomplete");
+  throw new Error("Package exports are incomplete");
 }
 for (const dialect of [
-  vnext.bigQueryDialect(),
-  vnext.dremioDialect(),
-  vnext.duckdbDialect(),
-  vnext.postgresDialect(),
+  api.bigQueryDialect(),
+  api.dremioDialect(),
+  api.duckdbDialect(),
+  api.postgresDialect(),
 ]) {
   if (
     Object.keys(dialect).join(",") !== "displayName,id" ||
@@ -309,21 +274,12 @@ for (const dialect of [
     "relationDialect" in dialect ||
     "renderRelationPath" in dialect
   ) {
-    throw new Error("vNext dialect implementation policy leaked publicly");
+    throw new Error("Dialect implementation policy leaked publicly");
   }
 }
-if (!commonKeywords.keywords || !duckdbKeywords.keywords) {
-  throw new Error("Keyword data exports are incomplete");
-}
 
-const state = EditorState.create({ doc: "SELECT 1" });
-const parseResult = await new api.NodeSqlParser().parse("SELECT 1", { state });
-if (!parseResult.success || !parseResult.ast) {
-  throw new Error("The packaged parser could not load its runtime dependency");
-}
-
-const service = vnext.createSqlLanguageService({
-  dialects: [vnext.duckdbDialect()],
+const service = api.createSqlLanguageService({
+  dialects: [api.duckdbDialect()],
 });
 const session = service.openDocument({
   context: { dialect: "duckdb" },
@@ -337,7 +293,7 @@ const updatedRevision = session.update({
   document: { kind: "replace", text: "SELECT * FROM {next_df}" },
 });
 if (session.isCurrent(originalRevision) || !session.isCurrent(updatedRevision)) {
-  throw new Error("The packaged vNext session violated revision identity");
+  throw new Error("The packaged session violated revision identity");
 }
 service.dispose();
 `,
@@ -368,7 +324,7 @@ service.dispose();
     join(temporaryDirectory, "node_modules", "@codemirror"),
   ];
   withRenamedPaths(isolatedDependencies, () => {
-    run(process.execPath, ["vnext-consumer.mjs"], temporaryDirectory);
+    run(process.execPath, ["session-consumer.mjs"], temporaryDirectory);
   });
   run(process.execPath, ["consumer.mjs"], temporaryDirectory);
 } finally {

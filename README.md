@@ -1,20 +1,19 @@
 # codemirror-sql
 
-A CodeMirror extension for SQL linting and visual gutter indicators. Built by and used in [marimo](https://github.com/marimo-team/marimo).
+SQL language service for document sessions, dialects, and schema-aware analysis.
+Built by and used in [marimo](https://github.com/marimo-team/marimo).
+
+Published as [`@marimo-team/codemirror-sql`](https://www.npmjs.com/package/@marimo-team/codemirror-sql).
 
 ## Features
 
-- ⚡ **Real-time validation** - Per-statement SQL syntax checking as you type, with detailed error messages for every broken statement
-- 🧠 **Schema-aware linting** - Warns about unknown tables, unknown columns, and ambiguous column references based on your schema
-- 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
-- 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
-- 🔮 **CTE autocomplete** - Statement-scoped completion of CTE names and their output columns
-- 🏷️ **Alias resolution** - Hover and completion understand table aliases (`SELECT u.name FROM users u`)
-- 📇 **FROM-aware column completion** - Unqualified prefixes complete the columns of the tables in the statement's FROM clause (`SELECT e` -> `email` with `FROM users`), even with many tables in the schema
-- 🧭 **Navigation** - Go-to-definition, reference highlighting, and rename for CTEs and aliases
-- 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
-- 🔍 **Additional dialects** - DuckDB, BigQuery, Dremio
-- 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
+- **Document sessions** — open SQL documents, apply atomic text and context updates, and track opaque revisions
+- **Built-in dialects** — PostgreSQL, DuckDB, BigQuery, and Dremio
+- **Embedded regions** — mask non-SQL spans (for example notebook interpolations) in document coordinates
+- **Isolated parsing** — optional browser-worker parser execution kept off the public API surface
+
+Editor integrations (completion, diagnostics, hover, navigation) build on this
+session API and will ship as focused vertical slices.
 
 ## Installation
 
@@ -26,142 +25,59 @@ pnpm add @marimo-team/codemirror-sql
 
 ## Usage
 
-### Basic Setup
-
 ```ts
-import { sql, StandardSQL } from "@codemirror/lang-sql";
-import { basicSetup, EditorView } from "codemirror";
-import { sqlExtension, cteCompletionSource, aliasColumnCompletionSource, unqualifiedColumnCompletionSource } from "@marimo-team/codemirror-sql";
+import {
+  createSqlLanguageService,
+  duckdbDialect,
+  type SqlDocumentContext,
+} from "@marimo-team/codemirror-sql";
 
-const schema = {
-  users: ["id", "name", "email", "active"],
-  posts: ["id", "title", "content", "user_id"],
-};
+interface AppSqlContext extends SqlDocumentContext {
+  readonly engine: string;
+}
 
-const editor = new EditorView({
-  doc: "SELECT * FROM users WHERE active = true",
-  extensions: [
-    basicSetup,
-    sql({
-      dialect: StandardSQL,
-      schema: schema,
-      upperCaseKeywords: true,
-    }),
-    StandardSQL.language.data.of({
-      autocomplete: cteCompletionSource,
-    }),
-    StandardSQL.language.data.of({
-      // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
-      autocomplete: aliasColumnCompletionSource({ schema }),
-    }),
-    StandardSQL.language.data.of({
-      // Complete `SELECT e` -> `email` because `FROM users` is in the statement
-      autocomplete: unqualifiedColumnCompletionSource({ schema }),
-    }),
-    sqlExtension({
-      // Shared by hover tooltips and semantic linting
-      schema: schema,
-      linterConfig: {
-        delay: 250, // Validation delay in ms
-      },
-      gutterConfig: {
-        backgroundColor: "#3b82f6", // Current statement color
-        errorBackgroundColor: "#ef4444", // Error highlight color
-        hideWhenNotFocused: true,
-      },
-      enableHover: true,
-      hoverConfig: {
-        hoverTime: 300,
-        enableKeywords: true,
-        enableTables: true,
-        enableColumns: true,
-      },
-    }),
-  ],
-  parent: document.querySelector("#editor"),
+const dialect = duckdbDialect();
+const service = createSqlLanguageService<AppSqlContext>({
+  dialects: [dialect],
 });
-```
 
-### Schema-aware semantic linting
-
-When a schema is provided (via the top-level `schema` option, the
-`sqlSchemaFacet`, or `semanticLinterConfig.schema`), queries are validated
-against it: unknown tables, unknown columns, and ambiguous column references
-are reported as warnings (configurable per check). Without a schema the
-semantic linter is inert.
-
-```ts
-import { EditorView } from "codemirror";
-import { sqlSemanticLinter } from "@marimo-team/codemirror-sql";
-
-const editor = new EditorView({
-  extensions: [
-    sqlSemanticLinter({
-      schema: { users: ["id", "name"], posts: ["id", "user_id"] },
-      severity: {
-        unknownTable: "error", // "error" | "warning" | "off" (default: "warning")
-        unknownColumn: "warning",
-        ambiguousColumn: "warning",
-      },
-    }),
-  ],
-  parent: document.querySelector("#editor"),
+const session = service.openDocument({
+  text: "SELECT * FROM users",
+  context: { dialect: dialect.id, engine: "local" },
 });
-```
 
-Checks only run on statements that parse cleanly, and skip anything that
-can't be confidently resolved (CTE outputs, subquery results, aliases from
-outer scopes), preferring under-reporting over false positives. Semantic
-diagnostics carry `source: "sql-schema"`; syntax diagnostics use
-`source: "sql-parser"`. If the schema is provided as a function, it is called
-on every lint pass and should be cheap/memoized.
-
-### Navigation: go-to-definition, highlights, rename
-
-`sqlExtension` includes navigation for statement-local identifiers (CTE names,
-table aliases, select aliases) by default: the references of the identifier
-under the cursor are highlighted, and Mod-click (Cmd/Ctrl-click) on a
-resolvable identifier jumps to its definition. Keybindings (`F12`/`Mod-b` for
-go-to-definition, `F2` for rename) are opt-in:
-
-```ts
-import { renameSqlIdentifier, sqlExtension } from "@marimo-team/codemirror-sql";
-
-sqlExtension({
-  enableNavigation: true, // default
-  navigationConfig: {
-    keymap: true, // enable F12 / Mod-b / F2
-    // Supply your own rename UI (defaults to window.prompt)
-    prompt: (currentName) => window.prompt(`Rename '${currentName}' to:`, currentName),
+const revision = session.update({
+  baseRevision: session.revision,
+  document: {
+    kind: "changes",
+    changes: [{ from: 14, to: 19, insert: "customers" }],
   },
+  embeddedRegions: [],
 });
 
-// Rename programmatically: rewrites the definition and all references
-// in a single undo step
-await renameSqlIdentifier(view, { prompt: () => "new_name" });
+if (session.isCurrent(revision)) {
+  // Results produced for this revision may still be applied.
+}
+
+session.dispose();
+service.dispose();
 ```
 
-The pieces are also exported individually: `sqlHighlightReferences`,
-`sqlGotoDefinition`, `sqlNavigationKeymap`, `gotoSqlDefinition`, and
-`findReferences`. Rename returns `false` when the identifier can't be
-confidently resolved — it never falls back to text search-and-replace.
+Use `{ kind: "replace", text }` for full replacement and
+`{ baseRevision, context }` for a context-only update. Document mutations also
+supply the complete embedded-region set for the resulting text.
 
-## Additional Dialects
-
-This extension adds support for additional dialects:
-
-- **DuckDB**
-- **BigQuery**
-- **Dremio**
-
-## Keyword Completion
-
-The extension includes keyword documentation for common **SQL keywords** including used in hover and completion,
-which can be found in the `src/data` directory.
+See [session primitives](./docs/session-primitives.md) for the full contract.
 
 ## Demo
 
-See the [demo](https://marimo-team.github.io/codemirror-sql/) for a full example.
+```bash
+pnpm install
+pnpm dev
+```
+
+The demo wires a CodeMirror editor to `SqlDocumentSession.update()` so edits,
+replacements, and dialect switches exercise the public session API.
 
 ## Development
 
@@ -171,6 +87,9 @@ pnpm install
 
 # Run tests
 pnpm test
+
+# Typecheck
+pnpm run typecheck
 
 # Run demo
 pnpm dev

@@ -3,8 +3,8 @@ import type { EditorView } from "@codemirror/view";
 import type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
-} from "../../src/vnext/codemirror/relation-completion-types.js";
-import type { SqlRelationCompletionItem } from "../../src/vnext/relation-completion-types.js";
+} from "../../src/codemirror/relation-completion-types.js";
+import type { SqlRelationCompletionItem } from "../../src/relation-completion-types.js";
 
 interface ReactRootLike {
   readonly render: (value: unknown) => void;

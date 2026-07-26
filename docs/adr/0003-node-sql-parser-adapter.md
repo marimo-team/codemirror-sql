@@ -11,7 +11,7 @@ does not decide how a concrete parser earns authority. The first adapter uses
 useful local AST in Node or an isolated worker. It must not turn the
 dependency's incomplete grammar,
 partial locations, synchronous execution, or packaging behavior into broader
-vNext guarantees.
+Language-service guarantees.
 
 The installed `node-sql-parser` 5.4.0 package provides separate CommonJS
 bundles for PostgreSQL and BigQuery. The complete bundle is approximately
@@ -32,7 +32,7 @@ interrupt `astify` while JavaScript is blocked.
 
 ## Decision
 
-The adapter remains internal and is not exported from `/vnext`. This change
+The adapter remains internal and is not exported from the package. This change
 does not connect it to document sessions, caches, diagnostics, completion, or
 any other feature. Session wiring requires a separate decision about worker
 isolation and cancellation.
@@ -174,7 +174,7 @@ normalization pass.
 
 The current production loader supports pure Node only. A future browser
 integration must invoke parsing from a dedicated worker whose global object is
-not shared with application code, the legacy parser, or another installed copy.
+not shared with application code or another installed package copy.
 The unsupported-realm rejection remains until that isolated execution path
 exists.
 

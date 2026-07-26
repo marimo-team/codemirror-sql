@@ -1,256 +1,206 @@
 import { acceptCompletion } from "@codemirror/autocomplete";
-import { PostgreSQL, type SQLDialect, sql } from "@codemirror/lang-sql";
-import { Compartment, type EditorState, StateEffect, StateField } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
-import { basicSetup, EditorView } from "codemirror";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { EditorView, keymap } from "@codemirror/view";
+import { basicSetup } from "codemirror";
 import {
-  DefaultSqlTooltipRenders,
-  defaultSqlHoverTheme,
-  NodeSqlParser,
-  QueryContextAnalyzer,
-  type SqlKeywordInfo,
-  type SupportedDialects,
-  sqlCompletion,
-  sqlExtension,
+  bigQueryDialect,
+  createSqlLanguageService,
+  dremioDialect,
+  duckdbDialect,
+  postgresDialect,
+  SqlSessionError,
+  type SqlDialect,
+  type SqlDocumentContext,
+  type SqlDocumentSession,
+  type SqlLanguageService,
+  type SqlTextChange,
 } from "../src/index.js";
-import { tableTooltipRenderer } from "./custom-renderers.js";
-import { defaultSqlDoc, schema } from "./data.js";
-import { guessSqlDialect } from "./utils.js";
+import { defaultSqlDoc } from "./data.js";
 
-let editor: EditorView;
+interface DemoSqlContext extends SqlDocumentContext {
+  readonly engine: "demo";
+}
 
-const completionKindStyles = {
-  borderRadius: "4px",
-  padding: "2px 4px",
-  marginRight: "4px",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: "12px",
-  height: "12px",
-};
+const dialectOptions = [
+  postgresDialect(),
+  duckdbDialect(),
+  bigQueryDialect(),
+  dremioDialect(),
+] as const;
 
-const defaultDialect = PostgreSQL;
+const dialectById = new Map(
+  dialectOptions.map((dialect) => [dialect.id, dialect]),
+);
 
-const defaultKeymap = [
-  {
-    key: "Tab",
-    run: (view: EditorView) => {
-      // Try to accept completion first
-      if (acceptCompletion(view)) {
-        return true;
-      }
-      // In production, you can use @codemirror/commands.indentWithTab instead of custom logic
-      // If no completion to accept, insert a tab character
-      const { state } = view;
-      const { selection } = state;
-      if (selection.main.empty) {
-        // Insert tab at cursor position
-        view.dispatch({
-          changes: {
-            from: selection.main.from,
-            insert: "\t",
-          },
-          selection: {
-            anchor: selection.main.from + 1,
-            head: selection.main.from + 1,
-          },
-        });
-        return true;
-      }
-      return false;
-    },
-  },
-];
+let currentDialect: SqlDialect = postgresDialect();
 
-// e.g. lazily load keyword docs
-const getKeywordDocs = async (): Promise<Record<string, SqlKeywordInfo>> => {
-  const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
-  const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
-  return {
-    ...keywords.default.keywords,
-    ...duckdbKeywords.default.keywords,
-  };
-};
+const service: SqlLanguageService<DemoSqlContext> =
+  createSqlLanguageService<DemoSqlContext>({
+    dialects: [...dialectOptions],
+  });
 
-const setDatabase = StateEffect.define<SupportedDialects>();
-const databaseField = StateField.define<SupportedDialects>({
-  create: () => "PostgreSQL",
-  update: (prevValue, transaction) => {
-    for (const effect of transaction.effects) {
-      if (effect.is(setDatabase)) {
-        return effect.value;
-      }
-    }
-    return prevValue;
-  },
+const session: SqlDocumentSession<DemoSqlContext> = service.openDocument({
+  text: defaultSqlDoc,
+  context: { dialect: currentDialect.id, engine: "demo" },
 });
 
-// Allows us to reconfigure the base sql extension without reloading the editor
-const baseSqlCompartment = new Compartment();
+let editor: EditorView;
+let updateCount = 1;
 
-const baseSqlExtension = (dialect: SQLDialect) => {
-  return sql({
-    dialect: dialect,
-    // Example schema for autocomplete
-    schema: schema,
-    // Enable uppercase keywords for more traditional SQL style
-    upperCaseKeywords: true,
-    keywordCompletion: (label, _type) => {
-      return {
-        label,
-        keyword: label,
-        info: async () => {
-          const dom = document.createElement("div");
-          const keywordDocs = await getKeywordDocs();
-          const description = keywordDocs[label.toLocaleLowerCase()];
-          if (!description) {
-            return null;
-          }
-          dom.innerHTML = DefaultSqlTooltipRenders.keyword({
-            keyword: label,
-            info: description,
-          });
-          return dom;
-        },
-      };
-    },
-  });
+const statusElements = {
+  dialect: document.querySelector<HTMLElement>("#status-dialect"),
+  updates: document.querySelector<HTMLElement>("#status-updates"),
+  revision: document.querySelector<HTMLElement>("#status-revision"),
+  message: document.querySelector<HTMLElement>("#status-message"),
 };
 
-// Initialize the SQL editor
-function initializeEditor() {
-  // Use the same parser
-  const parser = new NodeSqlParser({
-    getParserOptions: (state: EditorState) => {
-      return {
-        database: getDatabase(state),
-      };
-    },
-  });
-  // Shared between the completion sources so each edit is analyzed once
-  const contextAnalyzer = new QueryContextAnalyzer(parser);
+function setStatus(message: string, isError = false): void {
+  if (!statusElements.message) {
+    return;
+  }
+  statusElements.message.textContent = message;
+  statusElements.message.classList.toggle("text-red-700", isError);
+  statusElements.message.classList.toggle("bg-red-50", isError);
+  statusElements.message.classList.toggle("border-red-200", isError);
+  statusElements.message.classList.toggle("text-gray-700", !isError);
+  statusElements.message.classList.toggle("bg-gray-50", !isError);
+  statusElements.message.classList.toggle("border-gray-200", !isError);
+}
 
+function refreshStatusPanel(): void {
+  if (statusElements.dialect) {
+    statusElements.dialect.textContent = currentDialect.displayName;
+  }
+  if (statusElements.updates) {
+    statusElements.updates.textContent = String(updateCount);
+  }
+  if (statusElements.revision) {
+    statusElements.revision.textContent = session.isCurrent(session.revision)
+      ? "current"
+      : "stale";
+  }
+}
+
+function collectTextChanges(changes: {
+  iterChanges: (
+    callback: (
+      fromA: number,
+      toA: number,
+      fromB: number,
+      toB: number,
+      inserted: { toString: () => string },
+    ) => void,
+  ) => void;
+}): SqlTextChange[] {
+  const textChanges: SqlTextChange[] = [];
+  changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+    textChanges.push({ from, insert: inserted.toString(), to });
+  });
+  return textChanges;
+}
+
+function applySessionUpdate(
+  update:
+    | {
+        document: { kind: "changes"; changes: readonly SqlTextChange[] };
+        embeddedRegions: [];
+      }
+    | {
+        document: { kind: "replace"; text: string };
+        embeddedRegions: [];
+      }
+    | {
+        context: DemoSqlContext;
+      },
+): void {
+  try {
+    const revision = session.update({
+      baseRevision: session.revision,
+      ...update,
+    });
+    updateCount += 1;
+    refreshStatusPanel();
+    setStatus(
+      session.isCurrent(revision)
+        ? "Session update accepted."
+        : "Session update accepted but revision is no longer current.",
+    );
+  } catch (error) {
+    refreshStatusPanel();
+    if (error instanceof SqlSessionError) {
+      setStatus(`${error.code}: ${error.message}`, true);
+      return;
+    }
+    throw error;
+  }
+}
+
+function replaceDocument(text: string): void {
+  applySessionUpdate({
+    document: { kind: "replace", text },
+    embeddedRegions: [],
+  });
+  editor.dispatch({
+    changes: { from: 0, insert: text, to: editor.state.doc.length },
+  });
+}
+
+function initializeEditor(): EditorView {
   const extensions = [
     basicSetup,
     EditorView.lineWrapping,
-    keymap.of(defaultKeymap),
-    databaseField,
-    baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
-    sqlExtension({
-      // Shared schema for hover tooltips and schema-aware linting
-      schema: schema,
-      // Linter extension configuration
-      linterConfig: {
-        delay: 250, // Delay before running validation
-        parser,
-      },
-      // Schema-aware linting (unknown tables/columns, ambiguous columns)
-      semanticLinterConfig: {
-        delay: 250,
-        parser,
-      },
-
-      // Gutter extension configuration
-      gutterConfig: {
-        backgroundColor: "#3b82f6", // Blue for current statement
-        errorBackgroundColor: "#ef4444", // Red for invalid statements
-        hideWhenNotFocused: true, // Hide gutter when editor loses focus
-        parser,
-      },
-      // Hover extension configuration
-      enableHover: true, // Enable hover tooltips
-      hoverConfig: {
-        schema: schema, // Use the same schema as autocomplete
-        hoverTime: 300, // 300ms hover delay
-        enableKeywords: true, // Show keyword information
-        enableTables: true, // Show table information
-        enableColumns: true, // Show column information
-        keywords: async () => {
-          const keywords = await getKeywordDocs();
-          return keywords;
+    keymap.of([
+      {
+        key: "Tab",
+        run: (view) => {
+          if (acceptCompletion(view)) {
+            return true;
+          }
+          const { selection } = view.state;
+          if (selection.main.empty) {
+            view.dispatch({
+              changes: { from: selection.main.from, insert: "\t" },
+              selection: {
+                anchor: selection.main.from + 1,
+                head: selection.main.from + 1,
+              },
+            });
+            return true;
+          }
+          return false;
         },
-        tooltipRenderers: {
-          // Custom renderer for tables
-          table: tableTooltipRenderer,
-        },
-        theme: defaultSqlHoverTheme("light"),
-        parser,
       },
-      // Reference highlighting and go-to-definition for CTEs/aliases
-      enableNavigation: true,
-      navigationConfig: {
-        keymap: true, // F12/Mod-b go-to-definition, F2 rename
-        parser,
-      },
+    ]),
+    sql({ dialect: PostgreSQL, upperCaseKeywords: true }),
+    EditorView.updateListener.of((update) => {
+      if (!update.docChanged) {
+        return;
+      }
+      const changes = collectTextChanges(update.changes);
+      if (changes.length === 0) {
+        return;
+      }
+      applySessionUpdate({
+        document: { changes, kind: "changes" },
+        embeddedRegions: [],
+      });
     }),
-    // Register all schema-aware completion sources at once:
-    // - CTE names and their output columns
-    // - `u.` -> columns of `users` in `SELECT ... FROM users u`
-    // - `SELECT e` -> `email` because `FROM users` is in the statement
-    sqlCompletion({ dialect: defaultDialect, schema, parser, contextAnalyzer }),
-    // Custom theme for better SQL editing
     EditorView.theme({
       "&": {
-        fontSize: "14px",
         fontFamily: '"JetBrains Mono", monospace',
+        fontSize: "14px",
       },
       ".cm-content": {
         minHeight: "400px",
       },
-      ".cm-focused": {
-        outline: "none",
-      },
       ".cm-editor": {
         borderRadius: "8px",
       },
+      ".cm-focused": {
+        outline: "none",
+      },
       ".cm-scroller": {
         fontFamily: "inherit",
-      },
-      // Style for diagnostic errors
-      ".cm-diagnostic-error": {
-        borderBottom: "2px wavy #dc2626",
-      },
-      ".cm-diagnostic": {
-        padding: "4px 8px",
-        borderRadius: "4px",
-        backgroundColor: "#fef2f2",
-        border: "1px solid #fecaca",
-        color: "#dc2626",
-        fontSize: "13px",
-      },
-      // Completion kind backgrounds
-      ".cm-completionIcon-keyword": {
-        backgroundColor: "#e0e7ff", // indigo-100
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-variable": {
-        backgroundColor: "#fef9c3", // yellow-100
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-property": {
-        backgroundColor: "#bbf7d0", // green-100
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-function": {
-        backgroundColor: "#bae6fd", // sky-100
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-class": {
-        backgroundColor: "#fbcfe8", // pink-100
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-constant": {
-        backgroundColor: "#fde68a", // amber-200
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-type": {
-        backgroundColor: "#ddd6fe", // violet-200
-        ...completionKindStyles,
-      },
-      ".cm-completionIcon-text": {
-        backgroundColor: "#f3f4f6", // gray-100
-        ...completionKindStyles,
       },
     }),
   ];
@@ -264,63 +214,43 @@ function initializeEditor() {
   return editor;
 }
 
-// Handle example button clicks
-function setupExampleButtons() {
-  const buttons = document.querySelectorAll(".example-btn");
-
-  buttons.forEach((button) => {
+function setupExampleButtons(): void {
+  document.querySelectorAll(".example-btn").forEach((button) => {
     button.addEventListener("click", () => {
       const code = button.querySelector("code");
-      if (code && editor) {
-        const sql = code.textContent || "";
-        // Replace editor content with the example
-        editor.dispatch({
-          changes: {
-            from: 0,
-            to: editor.state.doc.length,
-            insert: sql,
-          },
-        });
-        // Focus the editor
-        editor.focus();
+      if (!code) {
+        return;
       }
+      replaceDocument(code.textContent ?? "");
+      editor.focus();
     });
   });
 }
 
-function getDatabase(state: EditorState): SupportedDialects {
-  return state.field(databaseField);
-}
-
-function setupDatabaseSelect() {
-  const select = document.querySelector("#database-select");
-  if (select) {
-    select.addEventListener("change", (e) => {
-      const value = (e.target as HTMLSelectElement).value as SupportedDialects;
-      updateSqlDialect(editor, guessSqlDialect(value));
-      editor.dispatch({
-        effects: [setDatabase.of(value)],
-      });
-    });
+function setupDialectSelect(): void {
+  const select = document.querySelector<HTMLSelectElement>("#dialect-select");
+  if (!select) {
+    return;
   }
-}
 
-function updateSqlDialect(view: EditorView, dialect: SQLDialect) {
-  view.dispatch({
-    effects: [baseSqlCompartment.reconfigure(baseSqlExtension(dialect))],
+  select.value = currentDialect.id;
+  select.addEventListener("change", () => {
+    const nextDialect = dialectById.get(select.value);
+    if (!nextDialect) {
+      return;
+    }
+    currentDialect = nextDialect;
+    applySessionUpdate({
+      context: { dialect: nextDialect.id, engine: "demo" },
+    });
+    refreshStatusPanel();
   });
 }
 
-// Initialize everything when the page loads
 document.addEventListener("DOMContentLoaded", () => {
   initializeEditor();
   setupExampleButtons();
-  setupDatabaseSelect();
-
-  console.log("SQL Editor Demo initialized!");
-  console.log("Features:");
-  console.log("- Real-time SQL syntax validation");
-  console.log("- Error highlighting with detailed messages");
-  console.log("- Support for multiple SQL dialects");
-  console.log("- TypeScript support");
+  setupDialectSelect();
+  refreshStatusPanel();
+  setStatus("Session opened. Type to send incremental updates.");
 });

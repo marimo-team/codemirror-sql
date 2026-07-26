@@ -6,7 +6,7 @@ import type {
   SqlEmbeddedRegion,
   SqlIdentifierComponent,
   OpenSqlDocument,
-} from "../../src/vnext/index.js";
+} from "../../src/index.js";
 import type {
   SqlCanonicalRelationPath,
   SqlCatalogProviderReport,
@@ -22,10 +22,10 @@ import type {
   SqlRelationCompletionList,
   SqlRelationCatalogProvider,
   SqlRelationCompletionSession,
-} from "../../src/vnext/relation-completion-types.js";
+} from "../../src/relation-completion-types.js";
 import type {
   SqlCatalogEpochTransitionTarget,
-} from "../../src/vnext/relation-catalog-epoch-coordinator.js";
+} from "../../src/relation-catalog-epoch-coordinator.js";
 
 interface MarimoSqlContext extends SqlDocumentContext {
   readonly engine: string;

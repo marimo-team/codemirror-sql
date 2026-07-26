@@ -1,6 +1,7 @@
 # codemirror-sql
 
-CodeMirror 6 extension for SQL: real-time linting, gutter indicators, hover tooltips, and schema-aware autocomplete (DuckDB, BigQuery, Dremio dialects). Published to npm as `@marimo-team/codemirror-sql` and used by marimo's editor.
+SQL language service for document sessions, dialects, and schema-aware analysis.
+Published to npm as `@marimo-team/codemirror-sql` and used by marimo.
 
 ## Development
 
@@ -12,6 +13,8 @@ pnpm run lint          # oxlint --fix (autofix.ci runs this on PRs)
 pnpm exec oxlint       # non-mutating lint CI enforces
 pnpm run typecheck     # tsc --noEmit
 pnpm run demo          # vite build of demo/
+pnpm run test:package  # pack + consumer smoke
+pnpm run test:worker-placement  # browser worker placement budgets
 ```
 
 - Browser tests need Playwright browsers installed first: `pnpm exec playwright install`.

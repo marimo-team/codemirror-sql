@@ -39,7 +39,7 @@ A flat value named `dependencies`, `sources`, or `relations` would therefore
 encode stronger semantics than the adapter can prove. Parser acceptance is
 already compatibility-only evidence under ADR 0003.
 
-The current vNext core has the required parser-independent foundations:
+The current core has the required parser-independent foundations:
 
 - immutable original and masked analysis source;
 - absolute UTF-16 half-open coordinate mapping;

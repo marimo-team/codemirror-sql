@@ -4,14 +4,13 @@
     "allowImportingTsExtensions": true,
     "declaration": false,
     "declarationMap": false,
+    "exactOptionalPropertyTypes": true,
     "inlineSources": false,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
-    // Legacy tests temporarily retain these two exceptions. All vNext tests
-    // are checked by tsconfig.vnext-tests.json with both rules enabled.
-    "noUncheckedIndexedAccess": false,
-    "noUnusedLocals": false,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
     "rootDir": ".",
     "sourceMap": false,
     "types": [
@@ -20,6 +19,7 @@
   },
   "include": [
     "./src/**/*.ts",
+    "./test/types/**/*.ts",
     "./vitest.browser.config.ts",
     "./vitest.config.ts"
   ],

@@ -114,7 +114,6 @@ jobs:
           name: package
           path: |
             dist/
-            src/data/
             package.json
             README.md
             LICENSE

@@ -1,4 +1,4 @@
-# vNext node-sql-parser Adapter
+# node-sql-parser Adapter
 
 Status: internal and not wired to sessions
 
@@ -6,7 +6,7 @@ The first concrete syntax adapter exercises the normalized contract from
 [ADR 0002](../adr/0002-normalized-syntax-contract.md) under the evidence and
 execution policy in
 [ADR 0003](../adr/0003-node-sql-parser-adapter.md). It is not exported from
-`/vnext` and does not currently power completion, diagnostics, hover,
+the package and does not currently power completion, diagnostics, hover,
 navigation, or any other editor feature.
 
 ## Capability matrix
@@ -67,7 +67,7 @@ parsing, and output normalization.
 ### Private browser worker endpoint
 
 The package contains a production-shaped but private module-worker endpoint.
-It is not exported from the package and is not reachable through `/vnext`.
+It is not exported from the package and is not reachable through the public API.
 There is no public worker constructor, executor, queue, language-service
 module, or session integration.
 
@@ -99,7 +99,7 @@ replayed. Every worker-reported failure retires the generation because a
 never-posted queued work retains its original deadline on the replacement.
 
 The executor remains implementation infrastructure only. It is not exported
-from the root package or `/vnext`, is not owned by `SqlLanguageService`, and
+from the package, is not owned by `SqlLanguageService`, and
 does not yet create authenticated syntax analyses or relation facts for a
 session.
 

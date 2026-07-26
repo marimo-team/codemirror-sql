@@ -1,10 +1,10 @@
-# vNext Statement Index
+# Statement Index
 
 Status: internal full-scan oracle with incremental session reuse
 
 The statement index is a synchronous, parser-free partition of
 `analysisText`. It does not classify, parse, validate, or copy statements, and
-it has no public `/vnext` export yet.
+it has no public export yet.
 
 Each exact slot contains:
 

@@ -5,7 +5,8 @@
 - Avoid using `any` or `unknown` types unless absolutely necessary.
 - Do not use type assertions; instead, define or refine types as needed.
 - Create and use explicit types or interfaces for complex structures.
-- Prefer using node-sql-parser's API and types for SQL parsing and analysis.
+- Prefer using the package's public session and dialect APIs for consumers.
+- Prefer the internal node-sql-parser adapter contracts for parser work.
 
 # Code Style
 

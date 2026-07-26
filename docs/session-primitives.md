@@ -1,7 +1,7 @@
-# vNext Session Primitives
+# Session Primitives
 
-Status: experimental walking skeleton  
-Import: `@marimo-team/codemirror-sql/vnext`
+Status: walking skeleton  
+Import: `@marimo-team/codemirror-sql`
 
 This entry point currently provides document ownership, atomic text/context
 updates, opaque revisions, dialect registration, and lifecycle management. It
@@ -18,7 +18,7 @@ import {
   createSqlLanguageService,
   duckdbDialect,
   type SqlDocumentContext,
-} from "@marimo-team/codemirror-sql/vnext";
+} from "@marimo-team/codemirror-sql";
 
 interface AppSqlContext extends SqlDocumentContext {
   readonly engine: string;
@@ -107,6 +107,3 @@ The safety envelope currently permits at most 10,000 changes in one update, a
 16 Mi-code-unit document, 1,000 registered dialects, and bounded context graph
 depth, size, properties, and string data. These are defensive walking-skeleton
 limits, not release performance claims.
-
-The `/vnext` name is provisional until the packaging ADR fixes the next-major
-subpath layout.

@@ -1,4 +1,4 @@
-import type { SqlTextRange } from "../../src/vnext/index.js";
+import type { SqlTextRange } from "../../src/index.js";
 import {
   createCompatibilityParsedAnalysis,
   createDirectParsedAnalysis,
@@ -20,7 +20,7 @@ import {
   type SqlStatementRelativeRange,
   type SqlStatementSyntaxState,
   type SqlSyntaxArtifact,
-} from "../../src/vnext/syntax.js";
+} from "../../src/syntax.js";
 
 const range = createSqlStatementRelativeRange(0, 8, 8);
 const backendIdentity = createSqlSyntaxBackendIdentity();

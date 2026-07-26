@@ -5,20 +5,20 @@ Date: 2026-07-24
 
 ## Context
 
-The legacy parser API accepts a complete CodeMirror `EditorState`, mutates
-offset bookkeeping, exposes backend-specific AST shapes, and can report success
+Earlier APIs mixed editor state, mutable offset bookkeeping, and
+backend-specific AST shapes into one parse result, and could report success
 without a usable tree. Dialect support and location quality are also easy to
 overstate: a compatibility grammar rejecting input is not evidence that the
 target dialect is invalid.
 
-The vNext statement index already separates exact, incomplete, and opaque
+The statement index already separates exact, incomplete, and opaque
 lexical boundaries. The next layer needs a narrow parser boundary that can
 support multiple backends without making the first backend's AST public or
 mixing lexical eligibility, parser evidence, and request cancellation into one
 ambiguous result.
 
 This contract is internal. It must be exercised by a real adapter and semantic
-consumer before any part is considered for the stable `/vnext` API.
+consumer before any part is considered for the stable public API.
 
 ## Decision
 

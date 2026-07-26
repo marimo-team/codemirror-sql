@@ -1,11 +1,11 @@
-# vNext Capability Charter
+# Capability Charter
 
 Status: accepted  
 Date: 2026-07-24
 
 ## Product boundary
 
-vNext is a framework-independent SQL language service with a first-class
+This package is a framework-independent SQL language service with a first-class
 CodeMirror 6 adapter. It provides local editor intelligence and composes
 optional catalog, database-native, formatter, and remote validation providers.
 It does not execute queries.
@@ -260,7 +260,7 @@ Provisional compressed bundle budgets:
 
 ## Explicit non-goals
 
-vNext is not:
+The language service is not:
 
 - A SQL execution engine
 - A query optimizer
@@ -269,22 +269,20 @@ vNext is not:
 - An LSP transport implementation
 - A mandatory full-catalog loader
 - A generic universal SQL AST
-- A compatibility wrapper around mutable v0.x parser/analyzer classes
+- A wrapper around mutable parser or analyzer classes
 
-Legacy behavior can be retained in migration helpers, but it does not constrain
-the next-major architecture.
+Migration helpers may exist for host apps, but they do not constrain the
+architecture.
 
 ## Release evidence
 
-Before vNext is stable:
+Before the language service is stable:
 
 - Every conformance target has an explicit feature matrix and corpus.
-- Repository coverage meets the thresholds in `implementation.md`.
 - Critical revision, range, mapping, cancellation, and arbitration logic has
   mutation evidence.
 - Browser, package, SSR, marimo, fuzz, leak, and benchmark gates pass.
-- Bundle and latency budgets compare against both `main` and the previous
-  `dev-refactor` checkpoint.
+- Bundle and latency budgets compare against `main` and prior checkpoints.
 - The marimo fixture proves remote DuckDB validation, connection changes,
   partial catalogs, Python-expression completion, rapid edits, and disposal.
 - Unsupported and partial states are documented and visible to consumers.

@@ -4,129 +4,162 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>codemirror-sql demo</title>
-    <meta name="description" content="A CodeMirror SQL extension with diagnostics" />
+    <meta
+      name="description"
+      content="SQL language service session demo for codemirror-sql"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body>
     <main class="max-w-4xl mx-auto px-4 py-8">
       <h1 class="text-4xl font-bold mb-4">
-        <a href="https://github.com/marimo-team/codemirror-sql" class="text-blue-600 hover:text-blue-800" target="_blank"
+        <a
+          href="https://github.com/marimo-team/codemirror-sql"
+          class="text-blue-600 hover:text-blue-800"
+          target="_blank"
           >codemirror-sql</a
         >
       </h1>
-      <p class="mb-2">by <a href="https://marimo.io/" class="text-blue-600 hover:text-blue-800" target="_blank">marimo</a></p>
+      <p class="mb-2">
+        by
+        <a href="https://marimo.io/" class="text-blue-600 hover:text-blue-800" target="_blank"
+          >marimo</a
+        >
+      </p>
       <p class="mb-6 text-gray-700">
-        A CodeMirror extension for SQL with real-time syntax validation and error diagnostics using
-        <a href="https://www.npmjs.com/package/node-sql-parser" class="text-blue-600 hover:text-blue-800" target="_blank"
-          >node-sql-parser</a
-        >.
+        Demo of
+        <code class="text-sm bg-gray-100 px-1 py-0.5 rounded">@marimo-team/codemirror-sql</code>.
+        Editor edits are forwarded to
+        <code class="text-sm bg-gray-100 px-1 py-0.5 rounded">SqlDocumentSession.update()</code>
+        with revision checks, dialect context, and embedded-region bookkeeping.
       </p>
 
       <div class="grid gap-8">
         <section>
-          <h2 class="text-2xl font-bold mb-4">SQL Editor with Diagnostics</h2>
-          <p class="mb-2 text-gray-600">
-            Try typing invalid SQL syntax to see real-time error highlighting and messages.
-            Valid tables are: <span class="font-bold">users, posts, orders, customers, categories</span>
-          </p>
+          <h2 class="text-2xl font-bold mb-4">SQL Editor</h2>
           <p class="mb-4 text-gray-600">
-            Put the cursor on a CTE name or alias to highlight its references,
-            <span class="font-bold">Cmd/Ctrl-click</span> (or <span class="font-bold">F12</span>) to jump to its
-            definition, and press <span class="font-bold">F2</span> to rename it everywhere in the statement.
+            Syntax highlighting comes from CodeMirror. Language-service state is owned by the session
+            primitives.
           </p>
 
           <div class="flex justify-end items-center mb-2">
-            <select id="database-select" class="border rounded-md p-1.5">
-              <option value="PostgreSQL">PostgreSQL</option>
-              <option value="MySQL">MySQL</option>
-              <option value="SQLite">SQLite</option>
-              <option value="MariaDB">MariaDB</option>
-              <option value="Snowflake">Snowflake</option>
-              <option value="DuckDB">DuckDB</option>
+            <label class="mr-2 text-sm text-gray-600" for="dialect-select">Dialect</label>
+            <select id="dialect-select" class="border rounded-md p-1.5">
+              <option value="postgresql">PostgreSQL</option>
+              <option value="duckdb">DuckDB</option>
+              <option value="bigquery">BigQuery</option>
+              <option value="dremio">Dremio</option>
             </select>
           </div>
 
           <div class="border rounded-lg bg-white shadow-sm">
             <div id="sql-editor" class="min-h-[400px] overflow-y-auto"></div>
           </div>
+
+          <dl
+            class="mt-4 grid gap-3 rounded-lg border bg-slate-50 p-4 text-sm sm:grid-cols-3"
+            aria-label="Session status"
+          >
+            <div>
+              <dt class="font-medium text-gray-500">Dialect</dt>
+              <dd id="status-dialect" class="font-mono text-gray-900">PostgreSQL</dd>
+            </div>
+            <div>
+              <dt class="font-medium text-gray-500">Accepted updates</dt>
+              <dd id="status-updates" class="font-mono text-gray-900">1</dd>
+            </div>
+            <div>
+              <dt class="font-medium text-gray-500">Revision</dt>
+              <dd id="status-revision" class="font-mono text-gray-900">current</dd>
+            </div>
+          </dl>
+          <p
+            id="status-message"
+            class="mt-3 rounded-lg border px-3 py-2 text-sm text-gray-700 bg-gray-50 border-gray-200"
+          ></p>
         </section>
 
         <section>
           <h2 class="text-2xl font-bold mb-4">Example Queries</h2>
-          <p class="mb-4 text-gray-600">Click any example to load it into the editor:</p>
+          <p class="mb-4 text-gray-600">Click any example to replace the document through the session API:</p>
           <div class="grid gap-4 md:grid-cols-2">
             <div class="space-y-2">
-              <h3 class="font-semibold text-lg">Valid Queries</h3>
-              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
+              <h3 class="font-semibold text-lg">Sample statements</h3>
+              <button
+                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
+              >
                 <code class="text-sm">SELECT * FROM users WHERE active = true</code>
               </button>
-              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
-                <code class="text-sm">SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id</code>
+              <button
+                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
+              >
+                <code class="text-sm"
+                  >SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id</code
+                >
               </button>
-              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
-                <code class="text-sm">INSERT INTO products (name, price) VALUES ('Laptop', 999.99)</code>
-              </button>
-              <button class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded">
-                <code class="text-sm">WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT a.name FROM active_users a ORDER BY a.name</code>
-              </button>
-              <button class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded">
-                <code class="text-sm">from nyc.rideshare select * limit 100</code>
+              <button
+                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
+              >
+                <code class="text-sm"
+                  >WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT a.name
+                  FROM active_users a ORDER BY a.name</code
+                >
               </button>
             </div>
             <div class="space-y-2">
-              <h3 class="font-semibold text-lg">Invalid Queries (will show errors)</h3>
-              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
-                <code class="text-sm">SELECT * FROM</code>
+              <h3 class="font-semibold text-lg">Dialect-specific syntax</h3>
+              <button
+                class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded"
+              >
+                <code class="text-sm">from nyc.rideshare select * limit 100</code>
               </button>
-              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
-                <code class="text-sm">SELECT * FORM users</code>
-              </button>
-              <button class="example-btn w-full p-3 text-left bg-red-50 hover:bg-red-100 border border-red-200 rounded">
-                <code class="text-sm">INSERT INTO VALUES (1, 2, 3)</code>
+              <button
+                class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded"
+              >
+                <code class="text-sm"
+                  >SELECT `project.dataset.table`.* FROM `project.dataset.table` LIMIT 10</code
+                >
               </button>
             </div>
           </div>
         </section>
 
         <section>
-          <h2 class="text-2xl font-bold mb-4">Features</h2>
+          <h2 class="text-2xl font-bold mb-4">What this demo exercises</h2>
           <div class="grid gap-4 md:grid-cols-2">
             <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Real-time Validation</h3>
-              <p class="text-sm text-gray-700">SQL syntax is validated as you type with a configurable delay (750ms default).</p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Error Highlighting</h3>
-              <p class="text-sm text-gray-700">Syntax errors are highlighted with red underlines and detailed error messages.</p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Multiple SQL Dialects</h3>
-              <p class="text-sm text-gray-700">Supports MySQL, PostgreSQL, MariaDB, SQLite, Snowflake, and DuckDB syntax validation.</p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">DuckDB Support</h3>
-              <p class="text-sm text-gray-700">Special support for DuckDB-specific syntax like "from table select * limit 100".</p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">CTE &amp; Alias Navigation</h3>
+              <h3 class="font-semibold mb-2">Session ownership</h3>
               <p class="text-sm text-gray-700">
-                Go-to-definition (Cmd/Ctrl-click or F12), reference highlighting, and rename (F2) for CTE names,
-                table aliases, and select aliases.
+                One <code>SqlLanguageService</code> opens a document session and accepts atomic
+                updates.
               </p>
             </div>
             <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">CTE Autocomplete</h3>
+              <h3 class="font-semibold mb-2">Revision identity</h3>
               <p class="text-sm text-gray-700">
-                Statement-scoped completion of CTE names and their output columns, including after
-                <code>my_cte.</code>.
+                Each accepted edit advances an opaque revision token checked with
+                <code>session.isCurrent()</code>.
               </p>
             </div>
             <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">TypeScript Support</h3>
-              <p class="text-sm text-gray-700">Full TypeScript support with comprehensive type definitions.</p>
+              <h3 class="font-semibold mb-2">Dialect context</h3>
+              <p class="text-sm text-gray-700">
+                Built-in dialect handles for PostgreSQL, DuckDB, BigQuery, and Dremio can be switched
+                without reloading the editor.
+              </p>
+            </div>
+            <div class="p-4 bg-blue-50 rounded-lg">
+              <h3 class="font-semibold mb-2">Walking skeleton</h3>
+              <p class="text-sm text-gray-700">
+                Completion, diagnostics, hover, and navigation are not wired up yet. They will arrive as
+                vertical slices on top of this session API.
+              </p>
             </div>
           </div>
         </section>

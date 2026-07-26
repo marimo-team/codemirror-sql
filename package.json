@@ -5,7 +5,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "CodeMirror plugin for SQL",
+  "description": "SQL language service for document sessions, dialects, and schema-aware analysis",
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -13,11 +13,10 @@
   },
   "scripts": {
     "dev": "vite",
-    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:tests && pnpm run typecheck:vnext-tests && pnpm run typecheck:vnext-tests:loose-optional && pnpm run typecheck:demo",
+    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:tests && pnpm run typecheck:tests:loose-optional && pnpm run typecheck:demo",
     "typecheck:src": "tsc --project tsconfig.json --noEmit",
     "typecheck:tests": "tsc --project tsconfig.tests.json",
-    "typecheck:vnext-tests": "tsc --project tsconfig.vnext-tests.json",
-    "typecheck:vnext-tests:loose-optional": "tsc --project tsconfig.vnext-tests.loose-optional.json",
+    "typecheck:tests:loose-optional": "tsc --project tsconfig.tests.loose-optional.json",
     "typecheck:demo": "tsc --project tsconfig.demo.json",
     "lint": "oxlint --fix",
     "test": "vitest run --config vitest.config.ts",
@@ -26,12 +25,12 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:worker-placement": "node ./scripts/worker-placement.mjs",
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
-    "bench:catalog-boundary": "vitest bench --run src/vnext/__tests__/relation-catalog-boundary.bench.ts",
-    "bench:catalog-coordinator": "vitest bench --run src/vnext/__tests__/relation-catalog-epoch-coordinator.bench.ts",
-    "bench:local-relation-site": "vitest bench --run src/vnext/__tests__/local-relation-site.bench.ts",
-    "bench:parser-adapter": "vitest bench --run src/vnext/__tests__/node-sql-parser-adapter.bench.ts",
-    "bench:query-site": "vitest bench --run src/vnext/__tests__/query-site.bench.ts",
-    "bench:statement-index": "vitest bench --run src/vnext/__tests__/statement-index.bench.ts",
+    "bench:catalog-boundary": "vitest bench --run src/__tests__/relation-catalog-boundary.bench.ts",
+    "bench:catalog-coordinator": "vitest bench --run src/__tests__/relation-catalog-epoch-coordinator.bench.ts",
+    "bench:local-relation-site": "vitest bench --run src/__tests__/local-relation-site.bench.ts",
+    "bench:parser-adapter": "vitest bench --run src/__tests__/node-sql-parser-adapter.bench.ts",
+    "bench:query-site": "vitest bench --run src/__tests__/query-site.bench.ts",
+    "bench:statement-index": "vitest bench --run src/__tests__/statement-index.bench.ts",
     "test:package": "node ./scripts/clean.mjs && tsc && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
     "build": "node ./scripts/clean.mjs && tsc",
@@ -40,21 +39,16 @@
     "release": "pnpm version"
   },
   "keywords": [
-    "codemirror",
-    "codemirror-plugin",
-    "sql"
+    "sql",
+    "language-service",
+    "codemirror"
   ],
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.4.0",
-  "peerDependencies": {
-    "@codemirror/autocomplete": "^6",
-    "@codemirror/lang-sql": "^6",
-    "@codemirror/lint": "^6",
-    "@codemirror/state": "^6",
-    "@codemirror/view": "^6"
-  },
   "devDependencies": {
+    "@codemirror/autocomplete": "6.20.0",
     "@codemirror/lang-sql": "6.10.0",
+    "@codemirror/state": "6.5.4",
     "@codemirror/view": "6.43.0",
     "@testing-library/dom": "10.4.1",
     "@types/node": "24.10.1",
@@ -69,8 +63,7 @@
     "vitest": "4.1.6"
   },
   "files": [
-    "dist",
-    "src/data/*.json"
+    "dist"
   ],
   "exports": {
     "./package.json": "./package.json",
@@ -79,21 +72,7 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
-    },
-    "./dialects": {
-      "import": {
-        "types": "./dist/dialects/index.d.ts",
-        "default": "./dist/dialects/index.js"
-      }
-    },
-    "./vnext": {
-      "import": {
-        "types": "./dist/vnext/index.d.ts",
-        "default": "./dist/vnext/index.js"
-      }
-    },
-    "./data/common-keywords.json": "./src/data/common-keywords.json",
-    "./data/duckdb-keywords.json": "./src/data/duckdb-keywords.json"
+    }
   },
   "types": "./dist/index.d.ts",
   "type": "module",

@@ -5,28 +5,27 @@ Date: 2026-07-24
 
 ## Context
 
-The v0.x public API exposes mutable parser and analyzer implementations.
-Parsers receive arbitrary CodeMirror `EditorState`, features can use different
-parser and schema configurations, and asynchronous work has no common revision
-or cancellation contract.
+Host applications need shared SQL intelligence across many editors without
+mutable parser instances, divergent feature configuration, or missing revision
+and cancellation contracts.
 
 Marimo demonstrates the resulting pressure:
 
-- It subclasses `NodeSqlParser` to mix local parsing with remote validation.
-- The subclass stores focus, timer, and validation state on the parser.
+- Local parsing is mixed with remote validation on one stateful object.
+- Focus, timers, and validation state live on the parser.
 - Replacing a debounce timer can leave the earlier promise unsettled.
-- DuckDB `parse()` and `validateSql()` deliberately report different evidence.
+- DuckDB parse and validate deliberately report different evidence.
 - Connection, dialect, schema, and Python-template completion are wired through
   separate paths.
 - Many editor instances can share configuration while requiring independent
   mutable state.
 
-The next major may break compatibility. The API should therefore model the
-actual lifecycle instead of preserving these implementation classes.
+The public API therefore models the actual lifecycle with a shared service and
+per-document sessions.
 
 ## Decision
 
-vNext has one shareable, framework-independent `SqlLanguageService` and one
+The language service has one shareable, framework-independent `SqlLanguageService` and one
 disposable `SqlDocumentSession` per open document/editor.
 
 The service owns providers, workers, shared bounded caches, and immutable
@@ -683,6 +682,3 @@ Marimo can delete `CustomSqlParser`: remote validation becomes a
 document-diagnostics provider, focus becomes scheduling policy, engine/dialect
 changes become context updates, braces become a source transformer, and Python
 completion remains an external CodeMirror completion source.
-
-Legacy `SqlParser`, `NodeSqlParser`, `SqlStructureAnalyzer`, and
-`QueryContextAnalyzer` are not part of the next-major stable API.

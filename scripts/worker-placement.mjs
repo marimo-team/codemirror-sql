@@ -522,7 +522,7 @@ Object.defineProperty(globalThis, "Worker", {
     throw new Error("SSR import read Worker");
   },
 });
-const api = await import("@marimo-team/codemirror-sql/vnext");
+const api = await import("@marimo-team/codemirror-sql");
 if (
   typeof api.createSqlLanguageService !== "function" ||
   typeof api.duckdbDialect !== "function"

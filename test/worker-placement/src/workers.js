@@ -1,7 +1,7 @@
 import {
   createSqlLanguageService,
   duckdbDialect,
-} from "@marimo-team/codemirror-sql/vnext";
+} from "@marimo-team/codemirror-sql";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 

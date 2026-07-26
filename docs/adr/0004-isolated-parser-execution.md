@@ -65,8 +65,8 @@ The private browser executor is single-lane:
 - No worker pool or idle shutdown is introduced without profile evidence.
 - Executor disposal terminates the worker and settles every pending consumer.
 
-The executor and its worker factory remain package-private. No package export,
-`/vnext` export, language-service module, session ownership, or public
+The executor and its worker factory remain package-private. No public export,
+language-service module, session ownership, or public
 configuration surface is introduced by this slice.
 
 Ordinary caller cancellation and supersession settle the consumer promptly
@@ -200,7 +200,7 @@ invalidation, and release semantics.
 
 ### Packaging boundary
 
-Core and `/vnext` imports must remain SSR-safe and contain no parser grammar or
+Core and public package imports must remain SSR-safe and contain no parser grammar or
 worker asset. A future optional integration entry may create the worker lazily,
 but it will expose an opaque language-service module factory rather than the
 protocol, worker URL, transport, pool, or backend AST.
