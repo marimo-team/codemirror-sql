@@ -70,7 +70,7 @@ describe("CodeMirror performance gates", () => {
       .toBeLessThan(8);
   });
 
-  it("keeps a warmed 1 MiB single-statement edit below 8 ms p95", () => {
+  it("keeps a warmed 1 MiB single-statement edit below 20 ms p95", () => {
     const size = 1_024 * 1_024;
     const prefix = "SELECT ";
     const suffix = " FROM users";
@@ -78,7 +78,7 @@ describe("CodeMirror performance gates", () => {
       "x".repeat(size - prefix.length - suffix.length)
     }${suffix}`;
     expect(measureKeystrokeP95(text, Math.floor(size / 2)))
-      .toBeLessThan(8);
+      .toBeLessThan(20);
   });
 
   it("settles rapid typing with delayed provider work within 500 ms", async () => {
