@@ -408,6 +408,7 @@ function collectRelations(
   tokens: readonly Token[],
   selectIndex: number,
   visibilityPosition: number,
+  precedingOnly: boolean,
   relations: SqlColumnQueryRelation[],
   issues: Set<SqlColumnQuerySiteIssue>,
 ): boolean {
@@ -429,7 +430,7 @@ function collectRelations(
   ) {
     const token = tokens[index]!;
     if (
-      clause === "join-condition" &&
+      (precedingOnly || clause === "join-condition") &&
       token.from >= visibilityPosition
     ) {
       break;
@@ -471,11 +472,18 @@ function collectRelations(
         punctuation(source, token, ","));
     if (!startsRelation) continue;
     inFrom = true;
+    let relationIndex = index + 1;
+    if (
+      dialect.id === "postgresql" &&
+      word(source, tokens[relationIndex]) === "lateral"
+    ) {
+      relationIndex += 1;
+    }
     const parsed = parseNamedRelation(
       source,
       dialect,
       tokens,
-      index + 1,
+      relationIndex,
       selectDepth,
     );
     if (parsed.issue !== null) issues.add(parsed.issue);
@@ -501,7 +509,7 @@ function openingBefore(
       token.depth === depth &&
       punctuation(source, token, "(")
     ) {
-      return token.from;
+      return index;
     }
   }
   return -1;
@@ -509,39 +517,47 @@ function openingBefore(
 
 function correlatedParentSelectIndex(
   source: SqlSourceSnapshot,
+  dialect: SqlRelationDialectRuntime,
   tokens: readonly Token[],
   childIndex: number,
-): number {
+): readonly [selectIndex: number, precedingOnly: boolean] | null {
   const child = tokens[childIndex];
-  if (!child || child.depth === 0) return -1;
+  if (!child || child.depth === 0) return null;
   for (let depth = child.depth - 1; depth >= 0; depth -= 1) {
     const lowerBound = depth === 0
       ? -1
-      : openingBefore(source, tokens, childIndex, depth - 1);
+      : tokens[
+          openingBefore(source, tokens, childIndex, depth - 1)
+        ]?.from ?? -1;
     for (let index = childIndex - 1; index >= 0; index -= 1) {
       const token = tokens[index]!;
       if (token.from <= lowerBound) break;
       if (token.depth === depth && word(source, token) === "select") {
-        const opening = openingBefore(
+        const openingIndex = openingBefore(
           source,
           tokens,
           childIndex,
           depth,
         );
-        return opening > token.from &&
-            clauseAt(
-              source,
-              tokens,
-              index,
-              depth,
-              opening,
-            ) !== "from"
-          ? index
-          : -1;
+        const opening = tokens[openingIndex]?.from ?? -1;
+        if (opening <= token.from) return null;
+        const inFrom =
+          clauseAt(
+            source,
+            tokens,
+            index,
+            depth,
+            opening,
+          ) === "from";
+        if (!inFrom) return [index, false];
+        return dialect.id === "postgresql" &&
+            word(source, tokens[openingIndex - 1]) === "lateral"
+          ? [index, true]
+          : null;
       }
     }
   }
-  return -1;
+  return null;
 }
 
 export function recognizeSqlColumnQuerySite(
@@ -617,6 +633,7 @@ export function recognizeSqlColumnQuerySite(
       tokens,
       selectIndex,
       position,
+      false,
       relations,
       issues,
     )
@@ -625,12 +642,14 @@ export function recognizeSqlColumnQuerySite(
   }
   let childIndex = selectIndex;
   for (;;) {
-    const parentIndex = correlatedParentSelectIndex(
+    const parent = correlatedParentSelectIndex(
       source,
+      dialect,
       tokens,
       childIndex,
     );
-    if (parentIndex < 0) break;
+    if (parent === null) break;
+    const [parentIndex, precedingOnly] = parent;
     const childPosition = tokens[childIndex]?.from;
     if (
       childPosition === undefined ||
@@ -640,6 +659,7 @@ export function recognizeSqlColumnQuerySite(
         tokens,
         parentIndex,
         childPosition,
+        precedingOnly,
         relations,
         issues,
       )

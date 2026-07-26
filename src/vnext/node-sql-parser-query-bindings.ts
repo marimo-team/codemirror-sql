@@ -643,6 +643,16 @@ interface CteDeclaration {
   readonly range: SqlTextRange;
 }
 
+interface CteClause {
+  readonly declarations: readonly CteDeclaration[];
+  readonly recursion: "authenticated" | "none" | "uncertain";
+}
+
+interface CteEnvironment {
+  readonly uncertain: ReadonlySet<string>;
+  readonly visible: ReadonlyMap<string, CteDeclaration>;
+}
+
 interface IdentifierToken {
   readonly identifier: SqlIdentifierComponent;
   readonly token: Token;
@@ -685,10 +695,21 @@ function findIdentifierToken(
   return null;
 }
 
+function astRecursiveMarker(item: object): boolean | null {
+  const property = ownProperty(item, "recursive");
+  if (property.kind === "missing") {
+    return false;
+  }
+  return property.kind === "value" &&
+      typeof property.value === "boolean"
+    ? property.value
+    : null;
+}
+
 function ownCteDeclarations(
   ast: AstSelect,
   tokens: readonly Token[],
-): readonly CteDeclaration[] | null {
+): CteClause | null {
   const withItems = arrayProperty(ast.node, "with");
   if (withItems === null) {
     return null;
@@ -697,12 +718,20 @@ function ownCteDeclarations(
     return null;
   }
   const declarations: CteDeclaration[] = [];
+  let astRecursive = false;
+  let validMarkers = true;
   let searchFrom = assignedSkeleton(ast).from;
   for (let index = 0; index < withItems.length; index += 1) {
     const item = withItems[index];
     const child = phaseValue(ast.cteChildren, index);
     if (item === null || typeof item !== "object") {
       return null;
+    }
+    const recursive = astRecursiveMarker(item);
+    if (recursive === null || (index > 0 && recursive)) {
+      validMarkers = false;
+    } else if (index === 0) {
+      astRecursive = recursive;
     }
     const nameObject = objectProperty(item, "name");
     const name = nameObject === null
@@ -730,40 +759,90 @@ function ownCteDeclarations(
     }));
     searchFrom = assignedSkeleton(child).to;
   }
-  return Object.freeze(declarations);
+  if (declarations.length === 0) {
+    return Object.freeze({
+      declarations: Object.freeze(declarations),
+      recursion: "none",
+    });
+  }
+  const first = phaseValue(declarations, 0);
+  const withIndex = tokens.findIndex((token) =>
+    token.from >= assignedSkeleton(ast).from &&
+    token.from < first.range.from &&
+    token.depth === assignedSkeleton(ast).depth &&
+    word(token, "with")
+  );
+  if (withIndex < 0) {
+    return null;
+  }
+  const lexicalRecursive = word(tokens[withIndex + 1], "recursive");
+  return Object.freeze({
+    declarations: Object.freeze(declarations),
+    recursion:
+      validMarkers && lexicalRecursive === astRecursive
+        ? lexicalRecursive ? "authenticated" : "none"
+        : "uncertain",
+  });
 }
 
 function visibleCteDeclarations(
   root: AstSelect,
   tokens: readonly Token[],
-): ReadonlyMap<object, ReadonlyMap<string, CteDeclaration>> | null {
-  const result = new Map<object, ReadonlyMap<string, CteDeclaration>>();
+): ReadonlyMap<object, CteEnvironment> | null {
+  const result = new Map<object, CteEnvironment>();
   function visit(
     ast: AstSelect,
-    inherited: ReadonlyMap<string, CteDeclaration>,
+    inherited: CteEnvironment,
   ): boolean {
-    const own = ownCteDeclarations(ast, tokens);
-    if (own === null) {
+    const clause = ownCteDeclarations(ast, tokens);
+    if (clause === null) {
       return false;
     }
-    const visible = new Map(inherited);
+    const visible = new Map(inherited.visible);
+    const uncertain = new Set(inherited.uncertain);
     for (let index = 0; index < ast.cteChildren.length; index += 1) {
       const child = phaseValue(ast.cteChildren, index);
-      if (!visit(child, visible)) {
+      const declaration = phaseValue(clause.declarations, index);
+      const childVisible = new Map(visible);
+      const childUncertain = new Set(uncertain);
+      if (clause.recursion === "authenticated") {
+        childVisible.set(identifierKey(declaration.name), declaration);
+        for (
+          let forward = index + 1;
+          forward < clause.declarations.length;
+          forward += 1
+        ) {
+          childUncertain.add(
+            identifierKey(phaseValue(clause.declarations, forward).name),
+          );
+        }
+      } else if (clause.recursion === "uncertain") {
+        for (const candidate of clause.declarations) {
+          childUncertain.add(identifierKey(candidate.name));
+        }
+      }
+      if (!visit(child, {
+        uncertain: childUncertain,
+        visible: childVisible,
+      })) {
         return false;
       }
-      const declaration = phaseValue(own, index);
       visible.set(identifierKey(declaration.name), declaration);
+      uncertain.delete(identifierKey(declaration.name));
     }
-    result.set(ast.node, visible);
+    const environment = { uncertain, visible };
+    result.set(ast.node, environment);
     for (const child of ast.derivedChildren) {
-      if (!visit(child, visible)) {
+      if (!visit(child, environment)) {
         return false;
       }
     }
     return true;
   }
-  return visit(root, new Map()) ? result : null;
+  return visit(root, {
+    uncertain: new Set(),
+    visible: new Map(),
+  }) ? result : null;
 }
 
 function addIssue(
@@ -1079,16 +1158,28 @@ export function normalizeNodeSqlParserQueryBindings(
           });
         } else {
           const last = phaseValue(path, path.length - 1);
-          const blockDeclarations = declarations.get(block.ast.node);
-          const declaration = blockDeclarations?.get(identifierKey(last));
-          source =
-            declaration === undefined
-              ? Object.freeze({ kind: "named", path })
-              : Object.freeze({
-                  declarationRange: declaration.range,
-                  kind: "cte",
-                  name: declaration.name,
-                });
+          const environment = declarations.get(block.ast.node);
+          const key = identifierKey(last);
+          const declaration = environment?.visible.get(key);
+          if (declaration !== undefined) {
+            source = Object.freeze({
+              declarationRange: declaration.range,
+              kind: "cte",
+              name: declaration.name,
+            });
+          } else if (environment?.uncertain.has(key)) {
+            coverage.relationBindings = "partial";
+            addIssue(issues, "recursive-cte-uncertainty", {
+              from: site.from,
+              to: site.to,
+            });
+            source = Object.freeze({
+              kind: "unknown",
+              reason: "unknown-correlation",
+            });
+          } else {
+            source = Object.freeze({ kind: "named", path });
+          }
         }
       }
       const bindingIndex = bindings.length;

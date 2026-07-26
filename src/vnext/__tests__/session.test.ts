@@ -1447,6 +1447,62 @@ describe("column completion session integration", () => {
     service.dispose();
   });
 
+  it("completes PostgreSQL LATERAL references without loading later siblings", async () => {
+    for (const expression of ["u.", "na"]) {
+      const requests: Parameters<
+        SqlColumnCatalogProvider["loadColumns"]
+      >[0][] = [];
+      const service = createSqlLanguageService<TestContext>({
+        catalog: relationCatalog,
+        columns: {
+          id: "columns",
+          loadColumns: async (request) => {
+            requests.push(request);
+            return {
+              epoch: { generation: 1, token: "epoch-1" },
+              relations: request.relations.map((relation, index) => ({
+                columns: [{
+                  columnEntityId: `column-${index}`,
+                  identifier: { quoted: false, value: "name" },
+                  insertText: "name",
+                  ordinal: 0,
+                }],
+                coverage: "complete",
+                relationEntityId: `relation-${index}`,
+                requestKey: relation.requestKey,
+                status: "ready",
+              })),
+            };
+          },
+        },
+        dialects: [postgres],
+      });
+      const text =
+        `SELECT * FROM users u, LATERAL (SELECT ${expression} FROM orders o) x, secrets s`;
+      const session = service.openDocument({
+        context: {
+          catalog: { scope: `connection:lateral:${expression}` },
+          dialect: "postgresql",
+          engine: "local",
+        },
+        text,
+      });
+      const position = text.indexOf(expression) + expression.length;
+
+      await expect(session.complete({
+        position,
+        trigger: { kind: "invoked" },
+      })).resolves.toMatchObject({ status: "ready" });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.relations.map((relation) =>
+        relation.path.at(-1)?.value
+      )).toEqual(expression === "u."
+        ? ["users"]
+        : ["orders", "users"]);
+      service.dispose();
+    }
+  });
+
   it("never resolves a visible CTE as a physical relation", async () => {
     let calls = 0;
     const service = serviceWithColumns(async () => {

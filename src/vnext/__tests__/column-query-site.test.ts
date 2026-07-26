@@ -123,6 +123,20 @@ describe("recognizeSqlColumnQuerySite", () => {
     )).toEqual(["inner_table"]);
   });
 
+  it("correlates PostgreSQL LATERAL tables only to preceding relations", () => {
+    for (const expression of ["u.na|", "na|"]) {
+      const result = ready(
+        analyze(
+          `SELECT * FROM users u, LATERAL (SELECT ${expression} FROM orders o) x, secrets s`,
+        ),
+      );
+
+      expect(result.relations.map((relation) =>
+        relation.alias?.value
+      )).toEqual(["o", "u"]);
+    }
+  });
+
   it("limits correlation in a JOIN condition to prior relations", () => {
     const result = ready(
       analyze(

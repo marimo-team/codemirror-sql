@@ -275,6 +275,187 @@ describe("node-sql-parser query binding normalization", () => {
     });
   });
 
+  it("authenticates recursive CTE self-visibility", () => {
+    const body = {
+      from: [relation("self")],
+      type: "select",
+    };
+    const result = normalize(
+      {
+        from: [relation("self")],
+        type: "select",
+        with: [{
+          name: { value: "self" },
+          recursive: true,
+          stmt: body,
+        }],
+      },
+      "WITH RECURSIVE self AS (SELECT * FROM self) SELECT * FROM self",
+    );
+    expect(result).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { kind: "cte", name: { value: "self" } } },
+          { owner: 1, source: { kind: "cte", name: { value: "self" } } },
+        ],
+        coverage: { relationBindings: "complete" },
+      },
+      status: "ready",
+    });
+    if (result.status === "ready") {
+      expect(result.model.issues).not.toContainEqual(
+        expect.objectContaining({ code: "recursive-cte-uncertainty" }),
+      );
+    }
+  });
+
+  it("fails closed when recursive lexical and AST evidence disagree", () => {
+    const body = {
+      from: [relation("self")],
+      type: "select",
+    };
+    const lexicalOnly = normalize(
+      {
+        from: [relation("self")],
+        type: "select",
+        with: [{ name: { value: "self" }, stmt: body }],
+      },
+      "WITH RECURSIVE self AS (SELECT * FROM self) SELECT * FROM self",
+    );
+    const astOnly = normalize(
+      {
+        from: [relation("self")],
+        type: "select",
+        with: [{
+          name: { value: "self" },
+          recursive: true,
+          stmt: body,
+        }],
+      },
+      "WITH self AS (SELECT * FROM self) SELECT * FROM self",
+    );
+    for (const result of [lexicalOnly, astOnly]) {
+      expect(result).toMatchObject({
+        model: {
+          bindings: [
+            { owner: 0, source: { kind: "cte" } },
+            {
+              owner: 1,
+              source: { kind: "unknown", reason: "unknown-correlation" },
+            },
+          ],
+          coverage: { relationBindings: "partial" },
+          issues: [{ code: "recursive-cte-uncertainty" }],
+        },
+        status: "ready",
+      });
+    }
+  });
+
+  it("keeps non-recursive self and forward names outside CTE visibility", () => {
+    const self = normalize(
+      {
+        from: [relation("self")],
+        type: "select",
+        with: [{
+          name: { value: "self" },
+          stmt: { from: [relation("self")], type: "select" },
+        }],
+      },
+      "WITH self AS (SELECT * FROM self) SELECT * FROM self",
+    );
+    expect(self).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { kind: "cte" } },
+          { owner: 1, source: { kind: "named", path: [{ value: "self" }] } },
+        ],
+        coverage: { relationBindings: "complete" },
+      },
+      status: "ready",
+    });
+  });
+
+  it("marks recursive forward and mutual references uncertain", () => {
+    const first = {
+      from: [relation("later")],
+      type: "select",
+    };
+    const forward = normalize(
+      {
+        from: [relation("first")],
+        type: "select",
+        with: [
+          {
+            name: { value: "first" },
+            recursive: true,
+            stmt: first,
+          },
+          {
+            name: { value: "later" },
+            stmt: { from: [relation("events")], type: "select" },
+          },
+        ],
+      },
+      "WITH RECURSIVE first AS (SELECT * FROM later), " +
+        "later AS (SELECT * FROM events) SELECT * FROM first",
+    );
+    expect(forward).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { kind: "cte", name: { value: "first" } } },
+          {
+            owner: 1,
+            source: { kind: "unknown", reason: "unknown-correlation" },
+          },
+          {
+            owner: 2,
+            source: { kind: "named", path: [{ value: "events" }] },
+          },
+        ],
+        coverage: { relationBindings: "partial" },
+        issues: [{ code: "recursive-cte-uncertainty" }],
+      },
+      status: "ready",
+    });
+
+    const later = {
+      from: [relation("first")],
+      type: "select",
+    };
+    const result = normalize(
+      {
+        from: [relation("first")],
+        type: "select",
+        with: [
+          {
+            name: { value: "first" },
+            recursive: true,
+            stmt: first,
+          },
+          { name: { value: "later" }, stmt: later },
+        ],
+      },
+      "WITH RECURSIVE first AS (SELECT * FROM later), " +
+        "later AS (SELECT * FROM first) SELECT * FROM first",
+    );
+    expect(result).toMatchObject({
+      model: {
+        bindings: [
+          { owner: 0, source: { kind: "cte", name: { value: "first" } } },
+          {
+            owner: 1,
+            source: { kind: "unknown", reason: "unknown-correlation" },
+          },
+          { owner: 2, source: { kind: "cte", name: { value: "first" } } },
+        ],
+        coverage: { relationBindings: "partial" },
+        issues: [{ code: "recursive-cte-uncertainty" }],
+      },
+      status: "ready",
+    });
+  });
+
   it("resolves a nested WITH inside its derived query block", () => {
     const nestedCte = {
       from: [relation("events")],
