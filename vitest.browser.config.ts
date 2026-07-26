@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   optimizeDeps: {
     include: [
+      "@codemirror/lang-sql",
       "node-sql-parser/build/bigquery.js",
       "node-sql-parser/build/postgresql.js",
     ],

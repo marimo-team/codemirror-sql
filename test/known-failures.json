@@ -1,7 +1,1 @@
-{
-  "parser-escaped-quotes": {
-    "owner": "codemirror-sql-maintainers",
-    "expires": "2026-08-31",
-    "trackingIssue": "https://github.com/marimo-team/codemirror-sql/issues/169"
-  }
-}
+{}

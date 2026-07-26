@@ -16,6 +16,7 @@ import {
   type SqlCatalogSearchWorkOutcome,
   type SqlCatalogSearchWorkTicket,
 } from "../relation-catalog-search-work.js";
+import { MAX_CATALOG_POLICY_STORE_ENTRIES } from "../relation-catalog-search-policy-store.js";
 import {
   DUCKDB_SQL_RELATION_DIALECT,
   POSTGRESQL_SQL_RELATION_DIALECT,
@@ -281,6 +282,8 @@ describe("catalog search coordinator construction", () => {
       { executionDeadlineMs: 5_001 },
       { queueDeadlineMs: 9 },
       { queueDeadlineMs: 2_001 },
+      { refreshLeaseMs: 0 },
+      { refreshLeaseMs: 5_001 },
       {
         deadlineScheduler: {
           clearTimeout() {},
@@ -709,6 +712,569 @@ describe("catalog search ownership and active-slot lifecycle", () => {
     await flushMicrotasks();
     expect(provider.calls).toHaveLength(2);
     expect(scheduler.pendingCount).toBe(0);
+  });
+
+  it("transfers pending ownership to a bounded refresh observer and dispatches ready availability once", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+      refreshLeaseMs: 50,
+    });
+    const ticket = owner(service).request(input("observed"));
+    let preparations = 0;
+    let dispatches = 0;
+
+    expect(
+      ticket.retainForRefresh(() => {
+        preparations += 1;
+        expect(provider.calls[0]?.signal.aborted).toBe(false);
+        return (): undefined => {
+          dispatches += 1;
+          return undefined;
+        };
+      }),
+    ).toEqual({
+      remainingLeaseMs: 50,
+      status: "retained",
+    });
+    await expect(ticket.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(
+      ticket.retainForRefresh(() => null),
+    ).toEqual({
+      reason: "not-retainable",
+      status: "unavailable",
+    });
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(preparations).toBe(1);
+    expect(dispatches).toBe(1);
+    scheduler.advanceBy(50);
+    expect(dispatches).toBe(1);
+  });
+
+  it("rejects invalid and already-expired refresh retention without transferring ownership", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 20,
+    });
+    const ticket = owner(service).request(input("invalid-retention"));
+
+    expect(
+      Reflect.apply(ticket.retainForRefresh, undefined, [null]),
+    ).toEqual({
+      reason: "invalid-target",
+      status: "unavailable",
+    });
+    scheduler.nowValue = 20;
+    expect(ticket.retainForRefresh(() => null)).toEqual({
+      reason: "expired",
+      status: "unavailable",
+    });
+
+    ticket.cancel();
+    await expect(ticket.result).resolves.toEqual({
+      status: "cancelled",
+    });
+  });
+
+  it("fails refresh retention closed when its clock disposes or supersedes the owner", async () => {
+    for (const reentry of ["dispose", "replace"] as const) {
+      let trigger = false;
+      let service: SqlCatalogSearchWorkCoordinator | undefined;
+      let session: SqlCatalogSearchWorkOwner | undefined;
+      const replacements: SqlCatalogSearchWorkTicket[] = [];
+      const provider = providerHarness();
+      service = coordinator(provider.captured, {
+        deadlineScheduler: {
+          clearTimeout() {},
+          now() {
+            if (trigger) {
+              trigger = false;
+              if (reentry === "dispose") {
+                service?.dispose();
+              } else {
+                const replacement = session?.request(
+                  input("replacement"),
+                );
+                if (replacement) replacements.push(replacement);
+              }
+            }
+            return 0;
+          },
+          setTimeout() {
+            return 1;
+          },
+        },
+      });
+      session = owner(service);
+      const ticket = session.request(input("observed"));
+      trigger = true;
+
+      expect(ticket.retainForRefresh(() => null)).toEqual({
+        reason:
+          reentry === "dispose" ? "disposed" : "superseded",
+        status: "unavailable",
+      });
+      await expect(ticket.result).resolves.toEqual(
+        reentry === "dispose"
+          ? { reason: "disposed", status: "unavailable" }
+          : { status: "superseded" },
+      );
+
+      service.dispose();
+      for (const replacement of replacements) {
+        await expect(replacement.result).resolves.toEqual({
+          reason: "disposed",
+          status: "unavailable",
+        });
+      }
+    }
+  });
+
+  it("returns expired when a hostile scheduler fires the refresh lease synchronously", async () => {
+    let nextHandle = 0;
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: {
+        clearTimeout() {},
+        now: () => 0,
+        setTimeout(callback, delayMs) {
+          nextHandle += 1;
+          if (delayMs === 50) callback();
+          return nextHandle;
+        },
+      },
+      refreshLeaseMs: 50,
+    });
+    const ticket = owner(service).request(input("sync-expiry"));
+
+    expect(ticket.retainForRefresh(() => null)).toEqual({
+      reason: "expired",
+      status: "unavailable",
+    });
+    await expect(ticket.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
+  });
+
+  it("contains hostile availability preparation and dispatch results", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const prepared: string[] = [];
+    const dispatched: string[] = [];
+    const targets = [
+      () => {
+        prepared.push("throw");
+        throw new Error("preparation failed");
+      },
+      () => {
+        prepared.push("non-function");
+        return Promise.reject(new Error("detached preparation"));
+      },
+      () => {
+        prepared.push("null");
+        return null;
+      },
+      () => {
+        prepared.push("throwing-dispatch");
+        return () => {
+          dispatched.push("throw");
+          throw new Error("dispatch failed");
+        };
+      },
+      () => {
+        prepared.push("async-dispatch");
+        return () => {
+          dispatched.push("async");
+          return Promise.reject(new Error("detached dispatch"));
+        };
+      },
+    ] as const;
+    const tickets = targets.map(() =>
+      owner(service).request(input("hostile-availability")),
+    );
+    for (const [index, ticket] of tickets.entries()) {
+      expect(
+        Reflect.apply(ticket.retainForRefresh, undefined, [
+          targets[index] ?? (() => null),
+        ]),
+      ).toMatchObject({ status: "retained" });
+    }
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(prepared).toEqual([
+      "throw",
+      "non-function",
+      "null",
+      "throwing-dispatch",
+      "async-dispatch",
+    ]);
+    expect(dispatched).toEqual(["throw", "async"]);
+    await Promise.all(
+      tickets.map((ticket) =>
+        expect(ticket?.result).resolves.toEqual({
+          status: "cancelled",
+        }),
+      ),
+    );
+  });
+
+  it("stops availability preparation and dispatch when preparation disposes the coordinator", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    let secondPreparation = 0;
+    let dispatches = 0;
+    const disposing = owner(service).request(
+      input("disposing-availability"),
+    );
+    const skipped = owner(service).request(
+      input("disposing-availability"),
+    );
+
+    expect(
+      disposing.retainForRefresh(() => {
+        service.dispose();
+        return () => {
+          dispatches += 1;
+        };
+      }).status,
+    ).toBe("retained");
+    expect(
+      skipped.retainForRefresh(() => {
+        secondPreparation += 1;
+        return null;
+      }).status,
+    ).toBe("retained");
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(secondPreparation).toBe(0);
+    expect(dispatches).toBe(0);
+  });
+
+  it.each(["owner-dispose", "new-request", "higher-epoch"] as const)(
+    "suppresses prepared availability after reentrant %s",
+    async (reentry) => {
+      const listener: {
+        current: ((event: unknown) => void) | null;
+      } = { current: null };
+      const calls: ProviderCall[] = [];
+      const captured = accepted(
+        captureSqlRelationCatalogProvider({
+          id: "catalog",
+          search(
+            request: SqlCatalogSearchRequest,
+            signal: AbortSignal,
+          ) {
+            const settlement = deferred<unknown>();
+            calls.push({ request, settlement, signal });
+            return settlement.promise;
+          },
+          subscribe(
+            _scope: string,
+            onInvalidation: (event: unknown) => void,
+          ) {
+            listener.current = onInvalidation;
+            return () => undefined;
+          },
+        }),
+      );
+      const service = coordinator(captured);
+      const session = owner(service);
+      const ticket = session.request(input("availability-race"));
+      let dispatches = 0;
+      expect(
+        ticket.retainForRefresh(() => {
+          if (reentry === "owner-dispose") {
+            session.dispose();
+          } else if (reentry === "new-request") {
+            session.request(input("newer"));
+          } else {
+            listener.current?.({ epoch: epoch(2) });
+          }
+          return () => {
+            dispatches += 1;
+          };
+        }).status,
+      ).toBe("retained");
+
+      calls[0]?.settlement.resolve(readyResponse(1));
+      await flushMicrotasks();
+      expect(dispatches).toBe(0);
+      service.dispose();
+    },
+  );
+
+  it("revalidates each prepared dispatch when a later preparation retires one owner", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const firstOwner = owner(service);
+    const secondOwner = owner(service);
+    const first = firstOwner.request(input("shared-availability"));
+    const second = secondOwner.request(input("shared-availability"));
+    let firstDispatches = 0;
+    let secondDispatches = 0;
+    expect(
+      first.retainForRefresh(() => () => {
+        firstDispatches += 1;
+      }).status,
+    ).toBe("retained");
+    expect(
+      second.retainForRefresh(() => {
+        firstOwner.dispose();
+        return () => {
+          secondDispatches += 1;
+        };
+      }).status,
+    ).toBe("retained");
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(firstDispatches).toBe(0);
+    expect(secondDispatches).toBe(1);
+    service.dispose();
+  });
+
+  it("starts observer-only queued work when an active slot becomes free", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: new ManualDeadlineScheduler(),
+    });
+    const active = Array.from(
+      { length: MAX_CATALOG_ACTIVE_SEARCH_WORK },
+      (_, index) =>
+        owner(service).request(input(`active-${index}`)),
+    );
+    const queued = owner(service).request(input("queued-observer"));
+    let availability = 0;
+
+    expect(
+      queued.retainForRefresh(() => {
+        availability += 1;
+        return null;
+      }),
+    ).toMatchObject({
+      status: "retained",
+    });
+    await expect(queued.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(provider.calls).toHaveLength(
+      MAX_CATALOG_ACTIVE_SEARCH_WORK,
+    );
+
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(active[0]?.result).resolves.toMatchObject({
+      status: "usable",
+    });
+    await flushMicrotasks();
+    expect(provider.calls).toHaveLength(
+      MAX_CATALOG_ACTIVE_SEARCH_WORK + 1,
+    );
+    expect(provider.calls.at(-1)?.request.prefix.value).toBe(
+      "queued-observer",
+    );
+    provider.calls.at(-1)?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(availability).toBe(1);
+
+    service.dispose();
+    await Promise.all(
+      active.slice(1).map((ticket) =>
+        expect(ticket.result).resolves.toEqual({
+          reason: "disposed",
+          status: "unavailable",
+        }),
+      ),
+    );
+  });
+
+  it("retires a refresh observer when its owner starts different work or is disposed", async () => {
+    for (const action of ["request", "dispose"] as const) {
+      const provider = providerHarness();
+      const service = coordinator(provider.captured);
+      const session = owner(service);
+      const observed = session.request(input(`observed-${action}`));
+      expect(
+        observed.retainForRefresh(() => null).status,
+      ).toBe("retained");
+      const observedSignal = provider.calls[0]?.signal;
+
+      if (action === "request") {
+        const replacement = session.request(
+          input("different-work"),
+        );
+        expect(observedSignal?.aborted).toBe(true);
+        expect(provider.calls).toHaveLength(2);
+        service.dispose();
+        await expect(replacement.result).resolves.toEqual({
+          reason: "disposed",
+          status: "unavailable",
+        });
+      } else {
+        session.dispose();
+        expect(observedSignal?.aborted).toBe(true);
+      }
+      await expect(observed.result).resolves.toEqual({
+        status: "cancelled",
+      });
+      service.dispose();
+    }
+  });
+
+  it("hands an observed same-key operation back to a consumer without aborting or restarting it", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const observed = session.request(input("same-observed"));
+    let availability = 0;
+    expect(
+      observed.retainForRefresh(() => {
+        availability += 1;
+        return null;
+      }).status,
+    ).toBe("retained");
+    const signal = provider.calls[0]?.signal;
+
+    const replacement = session.request(input("same-observed"));
+    expect(provider.calls).toHaveLength(1);
+    expect(signal?.aborted).toBe(false);
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(replacement.result).resolves.toMatchObject({
+      status: "usable",
+    });
+    expect(availability).toBe(0);
+  });
+
+  it("counts consumers and observers together before issuing the last-owner abort", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const first = owner(service).request(input("shared-observed"));
+    const second = owner(service).request(input("shared-observed"));
+    const signal = provider.calls[0]?.signal;
+    expect(
+      first.retainForRefresh(() => null).status,
+    ).toBe("retained");
+
+    second.cancel();
+    await expect(second.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(signal?.aborted).toBe(false);
+
+    first.cancel();
+    expect(signal?.aborted).toBe(true);
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+  });
+
+  it("clips observer retention to the hard work deadline and never notifies on expiry", async () => {
+    const scheduler = new ManualDeadlineScheduler();
+    const provider = providerHarness();
+    const service = coordinator(provider.captured, {
+      deadlineScheduler: scheduler,
+      executionDeadlineMs: 25,
+      refreshLeaseMs: 50,
+    });
+    const ticket = owner(service).request(input("leased"));
+    let availability = 0;
+    expect(
+      ticket.retainForRefresh(() => {
+        availability += 1;
+        return null;
+      }),
+    ).toEqual({
+      remainingLeaseMs: 25,
+      status: "retained",
+    });
+
+    scheduler.advanceBy(25);
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
+    expect(availability).toBe(0);
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(availability).toBe(0);
+  });
+
+  it.each(["loading", "failed"] as const)(
+    "removes observers without availability for a terminal %s response",
+    async (status) => {
+      const provider = providerHarness();
+      const service = coordinator(provider.captured);
+      const ticket = owner(service).request(input(status));
+      let availability = 0;
+      expect(
+        ticket.retainForRefresh(() => {
+          availability += 1;
+          return null;
+        }).status,
+      ).toBe("retained");
+      provider.calls[0]?.settlement.resolve(
+        status === "loading"
+          ? {
+              epoch: epoch(),
+              status,
+            }
+          : {
+              code: "unavailable",
+              epoch: epoch(),
+              retry: "next-request",
+              status,
+            },
+      );
+      await flushMicrotasks();
+      expect(availability).toBe(0);
+      expect(provider.calls[0]?.signal.aborted).toBe(false);
+    },
+  );
+
+  it("clears observers without availability on higher epochs and disposal", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const baselineOwner = owner(service);
+    const baseline = baselineOwner.request(input("baseline"));
+    provider.calls[0]?.settlement.resolve(readyResponse(1));
+    await expect(baseline.result).resolves.toMatchObject({
+      status: "usable",
+    });
+
+    const higher = baselineOwner.request(input("higher"));
+    let higherAvailability = 0;
+    expect(
+      higher.retainForRefresh(() => {
+        higherAvailability += 1;
+        return null;
+      }).status,
+    ).toBe("retained");
+    provider.calls[1]?.settlement.resolve(readyResponse(2));
+    await flushMicrotasks();
+    expect(higherAvailability).toBe(0);
+
+    const disposable = owner(service, "other-scope").request(
+      input("disposed-observer"),
+    );
+    let disposedAvailability = 0;
+    expect(
+      disposable.retainForRefresh(() => {
+        disposedAvailability += 1;
+        return null;
+      }).status,
+    ).toBe("retained");
+    const disposableSignal = provider.calls[2]?.signal;
+    service.dispose();
+    expect(disposableSignal?.aborted).toBe(true);
+    expect(disposedAvailability).toBe(0);
+    provider.calls[2]?.settlement.resolve(readyResponse());
+    await flushMicrotasks();
+    expect(disposedAvailability).toBe(0);
   });
 });
 
@@ -1481,6 +2047,373 @@ describe("catalog search epoch authority and isolation", () => {
     await expect(malformed.result).resolves.toEqual({
       reason: "malformed-response",
       status: "unavailable",
+    });
+  });
+});
+
+describe("catalog search policy integration", () => {
+  it("fails closed when loading barriers exhaust policy capacity", async () => {
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "capacity-catalog",
+        search(request: SqlCatalogSearchRequest) {
+          return {
+            epoch: request.expectedEpoch ?? epoch(1),
+            status: "loading",
+          };
+        },
+      }),
+    );
+    const service = coordinator(captured);
+    const session = owner(service);
+
+    for (
+      let index = 0;
+      index < MAX_CATALOG_POLICY_STORE_ENTRIES;
+      index += 1
+    ) {
+      await expect(
+        session.request(input(`gate-${index}`)).result,
+      ).resolves.toMatchObject({
+        response: { status: "loading" },
+        status: "usable",
+      });
+    }
+    await expect(
+      session.request(input("gate-overflow")).result,
+    ).resolves.toEqual({
+      reason: "overloaded",
+      status: "unavailable",
+    });
+    service.dispose();
+  });
+
+  it("serves a repeated ready search from the exact-epoch cache", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const first = session.request(input("cached"));
+
+    provider.calls[0]?.settlement.resolve(readyResponse(3));
+    const firstOutcome = await first.result;
+    expect(firstOutcome).toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+
+    const cached = session.request(input("cached"));
+    expect(provider.calls).toHaveLength(1);
+    await expect(cached.result).resolves.toEqual({
+      observation: "equal",
+      response:
+        firstOutcome.status === "usable"
+          ? firstOutcome.response
+          : undefined,
+      status: "usable",
+    });
+
+    const distinct = session.request(input("cached", { limit: 19 }));
+    expect(provider.calls).toHaveLength(2);
+    service.dispose();
+    await expect(distinct.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+
+  it("supersedes a cache hit when retiring old work reenters with a newer request", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const baseline = session.request(input("cached-reentrant"));
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await expect(baseline.result).resolves.toMatchObject({
+      status: "usable",
+    });
+
+    const old = session.request(input("old-work"));
+    const newest: {
+      current: SqlCatalogSearchWorkTicket | null;
+    } = { current: null };
+    provider.calls[1]?.signal.addEventListener("abort", () => {
+      newest.current = session.request(input("newest-work"));
+    });
+    const displacedCacheHit = session.request(
+      input("cached-reentrant"),
+    );
+
+    await expect(old.result).resolves.toEqual({
+      status: "superseded",
+    });
+    await expect(displacedCacheHit.result).resolves.toEqual({
+      status: "superseded",
+    });
+    expect(provider.calls).toHaveLength(3);
+    provider.calls[2]?.settlement.resolve(readyResponse());
+    if (!newest.current) {
+      throw new Error("Expected reentrant request");
+    }
+    await expect(newest.current.result).resolves.toMatchObject({
+      status: "usable",
+    });
+  });
+
+  it("keeps immediate tickets non-retainable and fails a reentrant cache hit closed on disposal", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const baseline = session.request(input("cached-disposal"));
+    provider.calls[0]?.settlement.resolve(readyResponse());
+    await baseline.result;
+
+    const observed = session.request(input("observed-before-cache"));
+    expect(
+      observed.retainForRefresh(() => null).status,
+    ).toBe("retained");
+    const cached = session.request(input("cached-disposal"));
+    expect(cached.retainForRefresh(() => null)).toEqual({
+      reason: "not-retainable",
+      status: "unavailable",
+    });
+    await expect(cached.result).resolves.toMatchObject({
+      status: "usable",
+    });
+
+    const active = session.request(input("dispose-on-abort"));
+    provider.calls.at(-1)?.signal.addEventListener("abort", () => {
+      service.dispose();
+    });
+    const disposedHit = session.request(input("cached-disposal"));
+    await expect(active.result).resolves.toEqual({
+      status: "superseded",
+    });
+    await expect(disposedHit.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+    expect(disposedHit.retainForRefresh(() => null)).toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+
+  it("gates loading until a higher epoch is observed and then caches readiness", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const session = owner(service);
+    const baseline = session.request(input("baseline"));
+    provider.calls[0]?.settlement.resolve(readyResponse(1));
+    await expect(baseline.result).resolves.toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+
+    const loading = session.request(input("loading"));
+    provider.calls[1]?.settlement.resolve({
+      epoch: epoch(1),
+      status: "loading",
+    });
+    await expect(loading.result).resolves.toMatchObject({
+      response: { status: "loading" },
+      status: "usable",
+    });
+
+    const sameEpochReady = session.request(input("loading"));
+    provider.calls[2]?.settlement.resolve(readyResponse(1));
+    await expect(sameEpochReady.result).resolves.toEqual({
+      status: "superseded",
+    });
+
+    const advancing = session.request(input("loading"));
+    provider.calls[3]?.settlement.resolve(readyResponse(2));
+    await expect(advancing.result).resolves.toEqual({
+      status: "superseded",
+    });
+
+    const current = session.request(input("loading"));
+    provider.calls[4]?.settlement.resolve(readyResponse(2));
+    const currentOutcome = await current.result;
+    expect(currentOutcome).toMatchObject({
+      observation: "equal",
+      status: "usable",
+    });
+
+    const cached = session.request(input("loading"));
+    expect(provider.calls).toHaveLength(5);
+    await expect(cached.result).resolves.toEqual({
+      observation: "equal",
+      response:
+        currentOutcome.status === "usable"
+          ? currentOutcome.response
+          : undefined,
+      status: "usable",
+    });
+  });
+
+  it("reuses loading without a provider call while a scope subscription is live", async () => {
+    const listeners = new Map<
+      string,
+      (event: unknown) => void
+    >();
+    const calls: ProviderCall[] = [];
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search(
+          request: SqlCatalogSearchRequest,
+          signal: AbortSignal,
+        ) {
+          const settlement = deferred<unknown>();
+          calls.push({ request, settlement, signal });
+          return settlement.promise;
+        },
+        subscribe(
+          scope: string,
+          onInvalidation: (event: unknown) => void,
+        ) {
+          listeners.set(scope, onInvalidation);
+          return () => undefined;
+        },
+      }),
+    );
+    const service = coordinator(captured);
+    const session = owner(service);
+    const first = session.request(input("subscribed-loading"));
+    calls[0]?.settlement.resolve({
+      epoch: epoch(1),
+      status: "loading",
+    });
+    const firstOutcome = await first.result;
+    expect(firstOutcome).toMatchObject({
+      observation: "baseline",
+      response: { status: "loading" },
+      status: "usable",
+    });
+
+    const retained = session.request(
+      input("subscribed-loading"),
+    );
+    expect(calls).toHaveLength(1);
+    await expect(retained.result).resolves.toEqual({
+      observation: "equal",
+      response:
+        firstOutcome.status === "usable"
+          ? firstOutcome.response
+          : undefined,
+      status: "usable",
+    });
+
+    listeners
+      .get("connection:primary")
+      ?.({ epoch: epoch(2) });
+    const retried = session.request(
+      input("subscribed-loading"),
+    );
+    expect(calls).toHaveLength(2);
+    service.dispose();
+    await expect(retried.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+
+  it("reuses after-invalidation failures only until the scope advances", async () => {
+    const listener: {
+      current: ((event: unknown) => void) | null;
+    } = { current: null };
+    const calls: ProviderCall[] = [];
+    const captured = accepted(
+      captureSqlRelationCatalogProvider({
+        id: "catalog",
+        search(
+          request: SqlCatalogSearchRequest,
+          signal: AbortSignal,
+        ) {
+          const settlement = deferred<unknown>();
+          calls.push({ request, settlement, signal });
+          return settlement.promise;
+        },
+        subscribe(
+          _scope: string,
+          onInvalidation: (event: unknown) => void,
+        ) {
+          listener.current = onInvalidation;
+          return () => undefined;
+        },
+      }),
+    );
+    const service = coordinator(captured);
+    const session = owner(service);
+    const failing = session.request(input("failure"));
+    calls[0]?.settlement.resolve({
+      code: "unavailable",
+      epoch: epoch(1),
+      retry: "after-invalidation",
+      status: "failed",
+    });
+    const failedOutcome = await failing.result;
+    expect(failedOutcome).toMatchObject({
+      observation: "baseline",
+      response: { status: "failed" },
+      status: "usable",
+    });
+
+    const gated = session.request(input("failure"));
+    expect(calls).toHaveLength(1);
+    await expect(gated.result).resolves.toEqual({
+      observation: "equal",
+      response:
+        failedOutcome.status === "usable"
+          ? failedOutcome.response
+          : undefined,
+      status: "usable",
+    });
+
+    listener.current?.({ epoch: epoch(2) });
+    const retried = session.request(input("failure"));
+    expect(calls).toHaveLength(2);
+    service.dispose();
+    await expect(retried.result).resolves.toEqual({
+      reason: "disposed",
+      status: "unavailable",
+    });
+  });
+
+  it("re-establishes epoch authority before reusing a never gate after remount", async () => {
+    const provider = providerHarness();
+    const service = coordinator(provider.captured);
+    const firstOwner = owner(service);
+    const failing = firstOwner.request(input("never-remount"));
+    provider.calls[0]?.settlement.resolve({
+      code: "invalid-configuration",
+      epoch: epoch(1),
+      retry: "never",
+      status: "failed",
+    });
+    await expect(failing.result).resolves.toMatchObject({
+      observation: "baseline",
+      status: "usable",
+    });
+    firstOwner.dispose();
+
+    const remounted = owner(service);
+    const baseline = remounted.request(input("never-remount"));
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[1]?.request.expectedEpoch).toBeNull();
+    provider.calls[1]?.settlement.resolve(readyResponse(1));
+    await expect(baseline.result).resolves.toEqual({
+      status: "superseded",
+    });
+
+    const gated = remounted.request(input("never-remount"));
+    expect(provider.calls).toHaveLength(2);
+    await expect(gated.result).resolves.toMatchObject({
+      observation: "equal",
+      response: {
+        code: "invalid-configuration",
+        status: "failed",
+      },
+      status: "usable",
     });
   });
 });

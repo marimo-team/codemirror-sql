@@ -1,256 +1,294 @@
-import { acceptCompletion } from "@codemirror/autocomplete";
-import { PostgreSQL, sql } from "@codemirror/lang-sql";
-import { EditorView, keymap } from "@codemirror/view";
-import { basicSetup } from "codemirror";
+import {
+  acceptCompletion,
+  closeCompletion,
+  startCompletion,
+} from "@codemirror/autocomplete";
+import {
+  PostgreSQL,
+  sql,
+  StandardSQL,
+  type SQLDialect,
+} from "@codemirror/lang-sql";
+import { Compartment } from "@codemirror/state";
+import { basicSetup, EditorView } from "codemirror";
 import {
   bigQueryDialect,
   createSqlLanguageService,
   dremioDialect,
   duckdbDialect,
   postgresDialect,
-  SqlSessionError,
-  type SqlDialect,
+  type SqlCatalogEpoch,
+  type SqlCatalogRelation,
+  type SqlColumnCatalogProvider,
   type SqlDocumentContext,
-  type SqlDocumentSession,
-  type SqlLanguageService,
-  type SqlTextChange,
+  type SqlNamespaceCatalogProvider,
+  type SqlRelationCatalogProvider,
 } from "../src/index.js";
-import { defaultSqlDoc } from "./data.js";
+import { sqlEditor } from "../src/codemirror/index.js";
+import { defaultSqlDoc, demoTables } from "./data.js";
 
-interface DemoSqlContext extends SqlDocumentContext {
-  readonly engine: "demo";
+type DemoDialect = "bigquery" | "dremio" | "duckdb" | "postgresql";
+
+interface DemoContext extends SqlDocumentContext {
+  readonly environment: "demo";
 }
 
-const dialectOptions = [
-  postgresDialect(),
-  duckdbDialect(),
-  bigQueryDialect(),
-  dremioDialect(),
-] as const;
+const epoch: SqlCatalogEpoch = {
+  generation: 1,
+  token: "demo-catalog-v1",
+};
+let latencyMs = 0;
+let catalogRequests = 0;
+let columnRequests = 0;
+let namespaceRequests = 0;
 
-const dialectById = new Map(
-  dialectOptions.map((dialect) => [dialect.id, dialect]),
-);
+function identifier(value: string) {
+  return { quoted: false as const, value };
+}
 
-let currentDialect: SqlDialect = postgresDialect();
-
-const service: SqlLanguageService<DemoSqlContext> =
-  createSqlLanguageService<DemoSqlContext>({
-    dialects: [...dialectOptions],
+async function delay(signal: AbortSignal): Promise<void> {
+  if (latencyMs === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const handle = setTimeout(resolve, latencyMs);
+    signal.addEventListener("abort", () => {
+      clearTimeout(handle);
+      reject(signal.reason);
+    }, { once: true });
   });
+}
 
-const session: SqlDocumentSession<DemoSqlContext> = service.openDocument({
-  text: defaultSqlDoc,
-  context: { dialect: currentDialect.id, engine: "demo" },
-});
+function updateStats(): void {
+  const node = document.querySelector("#provider-stats");
+  if (node) {
+    node.textContent =
+      `${catalogRequests} relation · ${columnRequests} column · ` +
+      `${namespaceRequests} namespace requests`;
+  }
+}
 
-let editor: EditorView;
-let updateCount = 1;
-
-const statusElements = {
-  dialect: document.querySelector<HTMLElement>("#status-dialect"),
-  updates: document.querySelector<HTMLElement>("#status-updates"),
-  revision: document.querySelector<HTMLElement>("#status-revision"),
-  message: document.querySelector<HTMLElement>("#status-message"),
+const catalog: SqlRelationCatalogProvider = {
+  id: "demo-relations",
+  search: async (request, signal) => {
+    catalogRequests += 1;
+    updateStats();
+    await delay(signal);
+    signal.throwIfAborted();
+    const prefix = request.prefix.value.toLocaleLowerCase();
+    const qualifier = request.qualifier.map((part) =>
+      part.value.toLocaleLowerCase()
+    );
+    return {
+      coverage: { kind: "complete" },
+      epoch,
+      relations: demoTables
+        .filter((table) =>
+          table.name.toLocaleLowerCase().startsWith(prefix) &&
+          (qualifier.length === 0 ||
+            qualifier.at(-1) === table.schema.toLocaleLowerCase())
+        )
+        .slice(0, request.limit)
+        .map((table): SqlCatalogRelation => ({
+          canonicalPath: [
+            { ...identifier(table.schema), role: "schema" },
+            { ...identifier(table.name), role: "relation" },
+          ],
+          completionPathStart: qualifier.length === 0 ? 1 : 0,
+          detail: table.description,
+          entityId: `${table.schema}.${table.name}`,
+          matchQuality: "exact",
+          relationKind: "table",
+        })),
+      status: "ready",
+    };
+  },
 };
 
-function setStatus(message: string, isError = false): void {
-  if (!statusElements.message) {
-    return;
-  }
-  statusElements.message.textContent = message;
-  statusElements.message.classList.toggle("text-red-700", isError);
-  statusElements.message.classList.toggle("bg-red-50", isError);
-  statusElements.message.classList.toggle("border-red-200", isError);
-  statusElements.message.classList.toggle("text-gray-700", !isError);
-  statusElements.message.classList.toggle("bg-gray-50", !isError);
-  statusElements.message.classList.toggle("border-gray-200", !isError);
+const columns: SqlColumnCatalogProvider = {
+  id: "demo-columns",
+  loadColumns: async (request, signal) => {
+    columnRequests += 1;
+    updateStats();
+    await delay(signal);
+    signal.throwIfAborted();
+    return {
+      epoch,
+      relations: request.relations.map((relation) => {
+        const tableName = relation.path.at(-1)?.value.toLocaleLowerCase();
+        const table = demoTables.find((candidate) =>
+          candidate.name.toLocaleLowerCase() === tableName
+        );
+        if (!table) {
+          return {
+            code: "unknown" as const,
+            requestKey: relation.requestKey,
+            retry: "after-invalidation" as const,
+            status: "failed" as const,
+          };
+        }
+        return {
+          columns: table.columns.map((column, ordinal) => ({
+            columnEntityId: `${table.schema}.${table.name}.${column.name}`,
+            dataType: column.type,
+            detail: `${column.type} · ${table.schema}.${table.name}`,
+            identifier: identifier(column.name),
+            insertText: column.name,
+            ordinal,
+          })),
+          coverage: "complete" as const,
+          relationEntityId: `${table.schema}.${table.name}`,
+          requestKey: relation.requestKey,
+          status: "ready" as const,
+        };
+      }),
+    };
+  },
+};
+
+const namespaces: SqlNamespaceCatalogProvider = {
+  id: "demo-namespaces",
+  search: async (request, signal) => {
+    namespaceRequests += 1;
+    updateStats();
+    await delay(signal);
+    signal.throwIfAborted();
+    const prefix = request.prefix.value.toLocaleLowerCase();
+    return {
+      containers: ["main", "sales"]
+        .filter((name) => name.startsWith(prefix))
+        .map((name) => ({
+          canonicalPath: [{ ...identifier(name), role: "schema" as const }],
+          containerEntityId: `schema:${name}`,
+          detail: `Demo ${name} schema`,
+          insertText: name,
+          matchQuality: "exact" as const,
+        })),
+      coverage: "complete",
+      epoch,
+      status: "ready",
+    };
+  },
+};
+
+const service = createSqlLanguageService<DemoContext>({
+  catalog,
+  columns,
+  completion: { catalogResponseBudgetMs: 40 },
+  dialects: [
+    bigQueryDialect(),
+    dremioDialect(),
+    duckdbDialect(),
+    postgresDialect(),
+  ],
+  namespaces,
+});
+
+let dialect: DemoDialect = "duckdb";
+const context = (): DemoContext => ({
+  catalog: {
+    scope: `demo-connection:${dialect}`,
+    searchPath: [[identifier("main")]],
+  },
+  dialect,
+  environment: "demo",
+});
+
+const support = sqlEditor({
+  autocomplete: {
+    activateOnTyping: true,
+    activateOnTypingDelay: 75,
+    infoResolver: (item) => {
+      const dom = document.createElement("div");
+      dom.className = "sql-completion-info";
+      const title = document.createElement("strong");
+      title.textContent = item.label;
+      const detail = document.createElement("div");
+      detail.textContent = item.detail ?? `${item.kind} completion`;
+      dom.append(title, detail);
+      return { destroy: () => undefined, dom };
+    },
+    maxRenderedOptions: 100,
+  },
+  initialContext: context(),
+  service,
+  statementGutter: {
+    hideWhenNotFocused: false,
+    showInactive: true,
+  },
+});
+
+const syntax = new Compartment();
+function syntaxDialect(value: DemoDialect): SQLDialect {
+  return value === "postgresql" ? PostgreSQL : StandardSQL;
 }
 
-function refreshStatusPanel(): void {
-  if (statusElements.dialect) {
-    statusElements.dialect.textContent = currentDialect.displayName;
-  }
-  if (statusElements.updates) {
-    statusElements.updates.textContent = String(updateCount);
-  }
-  if (statusElements.revision) {
-    statusElements.revision.textContent = session.isCurrent(session.revision)
-      ? "current"
-      : "stale";
-  }
-}
-
-function collectTextChanges(changes: {
-  iterChanges: (
-    callback: (
-      fromA: number,
-      toA: number,
-      fromB: number,
-      toB: number,
-      inserted: { toString: () => string },
-    ) => void,
-  ) => void;
-}): SqlTextChange[] {
-  const textChanges: SqlTextChange[] = [];
-  changes.iterChanges((from, to, _fromB, _toB, inserted) => {
-    textChanges.push({ from, insert: inserted.toString(), to });
-  });
-  return textChanges;
-}
-
-function applySessionUpdate(
-  update:
-    | {
-        document: { kind: "changes"; changes: readonly SqlTextChange[] };
-        embeddedRegions: [];
-      }
-    | {
-        document: { kind: "replace"; text: string };
-        embeddedRegions: [];
-      }
-    | {
-        context: DemoSqlContext;
-      },
-): void {
-  try {
-    const revision = session.update({
-      baseRevision: session.revision,
-      ...update,
-    });
-    updateCount += 1;
-    refreshStatusPanel();
-    setStatus(
-      session.isCurrent(revision)
-        ? "Session update accepted."
-        : "Session update accepted but revision is no longer current.",
-    );
-  } catch (error) {
-    refreshStatusPanel();
-    if (error instanceof SqlSessionError) {
-      setStatus(`${error.code}: ${error.message}`, true);
-      return;
-    }
-    throw error;
-  }
-}
-
-function replaceDocument(text: string): void {
-  applySessionUpdate({
-    document: { kind: "replace", text },
-    embeddedRegions: [],
-  });
-  editor.dispatch({
-    changes: { from: 0, insert: text, to: editor.state.doc.length },
-  });
-}
-
-function initializeEditor(): EditorView {
-  const extensions = [
+const editor = new EditorView({
+  doc: defaultSqlDoc,
+  extensions: [
     basicSetup,
     EditorView.lineWrapping,
-    keymap.of([
-      {
-        key: "Tab",
-        run: (view) => {
-          if (acceptCompletion(view)) {
-            return true;
-          }
-          const { selection } = view.state;
-          if (selection.main.empty) {
-            view.dispatch({
-              changes: { from: selection.main.from, insert: "\t" },
-              selection: {
-                anchor: selection.main.from + 1,
-                head: selection.main.from + 1,
-              },
-            });
-            return true;
-          }
-          return false;
-        },
-      },
-    ]),
-    sql({ dialect: PostgreSQL, upperCaseKeywords: true }),
-    EditorView.updateListener.of((update) => {
-      if (!update.docChanged) {
-        return;
-      }
-      const changes = collectTextChanges(update.changes);
-      if (changes.length === 0) {
-        return;
-      }
-      applySessionUpdate({
-        document: { changes, kind: "changes" },
-        embeddedRegions: [],
-      });
-    }),
+    syntax.of(sql({ dialect: syntaxDialect(dialect) })),
+    support.extension,
     EditorView.theme({
       "&": {
         fontFamily: '"JetBrains Mono", monospace',
         fontSize: "14px",
       },
-      ".cm-content": {
-        minHeight: "400px",
-      },
-      ".cm-editor": {
-        borderRadius: "8px",
-      },
-      ".cm-focused": {
-        outline: "none",
-      },
-      ".cm-scroller": {
-        fontFamily: "inherit",
-      },
+      ".cm-content": { minHeight: "390px" },
+      ".cm-focused": { outline: "none" },
     }),
-  ];
-
-  editor = new EditorView({
-    doc: defaultSqlDoc,
-    extensions,
-    parent: document.querySelector("#sql-editor") ?? undefined,
-  });
-
-  return editor;
-}
-
-function setupExampleButtons(): void {
-  document.querySelectorAll(".example-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const code = button.querySelector("code");
-      if (!code) {
-        return;
-      }
-      replaceDocument(code.textContent ?? "");
-      editor.focus();
-    });
-  });
-}
-
-function setupDialectSelect(): void {
-  const select = document.querySelector<HTMLSelectElement>("#dialect-select");
-  if (!select) {
-    return;
-  }
-
-  select.value = currentDialect.id;
-  select.addEventListener("change", () => {
-    const nextDialect = dialectById.get(select.value);
-    if (!nextDialect) {
-      return;
-    }
-    currentDialect = nextDialect;
-    applySessionUpdate({
-      context: { dialect: nextDialect.id, engine: "demo" },
-    });
-    refreshStatusPanel();
-  });
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  initializeEditor();
-  setupExampleButtons();
-  setupDialectSelect();
-  refreshStatusPanel();
-  setStatus("Session opened. Type to send incremental updates.");
+    EditorView.domEventHandlers({
+      keydown: (event, view) =>
+        event.key === "Tab" && acceptCompletion(view),
+    }),
+  ],
+  parent: document.querySelector("#sql-editor") ?? undefined,
 });
+
+function loadExample(markedSql: string): void {
+  const cursor = markedSql.indexOf("|");
+  const text = markedSql.replace("|", "");
+  const position = cursor < 0 ? text.length : cursor;
+  closeCompletion(editor);
+  editor.dispatch({
+    changes: { from: 0, insert: text, to: editor.state.doc.length },
+    selection: { anchor: position },
+  });
+  editor.focus();
+  queueMicrotask(() => startCompletion(editor));
+}
+
+for (const button of document.querySelectorAll<HTMLButtonElement>(".example-btn")) {
+  button.addEventListener("click", () => {
+    loadExample(button.dataset.sql ?? "");
+  });
+}
+
+document.querySelector<HTMLSelectElement>("#database-select")
+  ?.addEventListener("change", (event) => {
+    dialect = (event.target as HTMLSelectElement).value as DemoDialect;
+    support.setContext(editor, context());
+    editor.dispatch({
+      effects: syntax.reconfigure(sql({ dialect: syntaxDialect(dialect) })),
+    });
+    editor.focus();
+  });
+
+document.querySelector<HTMLSelectElement>("#latency-select")
+  ?.addEventListener("change", (event) => {
+    latencyMs = Number((event.target as HTMLSelectElement).value);
+    support.invalidateCatalog(editor);
+  });
+
+document.querySelector<HTMLButtonElement>("#invalidate-catalog")
+  ?.addEventListener("click", () => {
+    support.invalidateCatalog(editor);
+    editor.focus();
+    startCompletion(editor);
+  });
+
+window.addEventListener("beforeunload", () => {
+  editor.destroy();
+  service.dispose();
+});
+
+updateStats();

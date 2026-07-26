@@ -47,6 +47,7 @@ const validMessages: readonly NodeSqlParserWireMessage[] = [
   ...statementKinds.map(
     (statementKind): NodeSqlParserWireMessage => ({
       kind: "parsed",
+      queryBindings: null,
       protocolVersion: NODE_SQL_PARSER_WIRE_PROTOCOL_VERSION,
       requestId: 1,
       statementKind,
@@ -207,7 +208,7 @@ describe("node-sql-parser wire request codec", () => {
       expect(encoded).toStrictEqual({
         grammar,
         kind: "parse",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: Number.MAX_SAFE_INTEGER,
         text: " SELECT 1\n",
       });
@@ -289,7 +290,7 @@ describe("node-sql-parser wire request codec", () => {
     ).toBeNull();
   });
 
-  it.each([0, 2, "1", null])(
+  it.each([0, 1, 3, "2", null])(
     "rejects protocol version %#",
     (protocolVersion) => {
       expect(
@@ -376,7 +377,8 @@ describe("node-sql-parser wire message codec", () => {
         encodeNodeSqlParserWireBackendOutcome(7, outcome),
       ).toStrictEqual({
         kind: "parsed",
-        protocolVersion: 1,
+        queryBindings: null,
+        protocolVersion: 2,
         requestId: 7,
         statementKind,
       });
@@ -392,7 +394,7 @@ describe("node-sql-parser wire message codec", () => {
         { kind: "syntax-rejected" },
         {
           kind: "syntax-rejected",
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: 3,
         },
       ],
@@ -400,7 +402,7 @@ describe("node-sql-parser wire message codec", () => {
         { kind: "unsupported", reason: "multiple-statements" },
         {
           kind: "unsupported",
-          protocolVersion: 1,
+          protocolVersion: 2,
           reason: "multiple-statements",
           requestId: 3,
         },
@@ -409,7 +411,7 @@ describe("node-sql-parser wire message codec", () => {
         { kind: "unsupported", reason: "resource-limit" },
         {
           kind: "unsupported",
-          protocolVersion: 1,
+          protocolVersion: 2,
           reason: "resource-limit",
           requestId: 3,
         },
@@ -419,7 +421,7 @@ describe("node-sql-parser wire message codec", () => {
         {
           code: "backend",
           kind: "failed",
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: 3,
         },
       ],
@@ -432,7 +434,7 @@ describe("node-sql-parser wire message codec", () => {
         {
           code: "malformed-output",
           kind: "failed",
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: 3,
         },
       ],
@@ -441,7 +443,7 @@ describe("node-sql-parser wire message codec", () => {
         {
           code: "module-load",
           kind: "failed",
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: 3,
         },
       ],
@@ -450,7 +452,7 @@ describe("node-sql-parser wire message codec", () => {
     const ready = encodeNodeSqlParserWireReady();
     expect(ready).toStrictEqual({
       kind: "ready",
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
     expect(Object.isFrozen(ready)).toBe(true);
     for (const [outcome, expected] of cases) {
@@ -493,6 +495,7 @@ describe("node-sql-parser wire message codec", () => {
     expect(Reflect.ownKeys(parsed)).toStrictEqual([
       "kind",
       "protocolVersion",
+      "queryBindings",
       "requestId",
       "statementKind",
     ]);
@@ -532,7 +535,7 @@ describe("node-sql-parser wire message codec", () => {
     expect(protocolError).toStrictEqual({
       code: "invalid-request",
       kind: "protocol-error",
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
     expect(Reflect.ownKeys(protocolError)).not.toContain("requestId");
     expect(Object.isFrozen(protocolError)).toBe(true);
@@ -568,7 +571,7 @@ describe("node-sql-parser wire message codec", () => {
     expect(
       decodeNodeSqlParserWireMessage({
         kind: "syntax-rejected",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId,
       }),
     ).toBeNull();
@@ -584,7 +587,8 @@ describe("node-sql-parser wire message codec", () => {
     expect(
       decodeNodeSqlParserWireMessage({
         kind: "parsed",
-        protocolVersion: 1,
+        queryBindings: null,
+        protocolVersion: 2,
         requestId: 1,
         statementKind,
       }),
@@ -600,7 +604,7 @@ describe("node-sql-parser wire message codec", () => {
     expect(
       decodeNodeSqlParserWireMessage({
         kind: "unsupported",
-        protocolVersion: 1,
+        protocolVersion: 2,
         reason,
         requestId: 1,
       }),
@@ -617,7 +621,7 @@ describe("node-sql-parser wire message codec", () => {
       decodeNodeSqlParserWireMessage({
         code,
         kind: "failed",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 1,
       }),
     ).toBeNull();
@@ -632,12 +636,12 @@ describe("node-sql-parser wire message codec", () => {
     expect(
       decodeNodeSqlParserWireMessage({
         kind,
-        protocolVersion: 1,
+        protocolVersion: 2,
       }),
     ).toBeNull();
   });
 
-  it.each([0, 2, "1", null])(
+  it.each([0, 1, 3, "2", null])(
     "rejects response protocol version %#",
     (protocolVersion) => {
       expect(
@@ -654,7 +658,7 @@ describe("node-sql-parser wire message codec", () => {
       decodeNodeSqlParserWireMessage({
         code: "module-load",
         kind: "failed",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 1,
         retryable: true,
       }),
@@ -663,7 +667,7 @@ describe("node-sql-parser wire message codec", () => {
       decodeNodeSqlParserWireMessage({
         code: "invalid-request",
         kind: "protocol-error",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 1,
       }),
     ).toBeNull();

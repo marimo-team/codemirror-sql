@@ -1,5 +1,15 @@
 const revisionBrand: unique symbol = Symbol("SqlRevision");
 
+export function isDataArray(
+  value: unknown,
+): value is readonly unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 /** Immutable identity issued by a document session. */
 export interface SqlRevision {
   readonly [revisionBrand]: "SqlRevision";
@@ -135,7 +145,21 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 /** Owns all mutable state for one open SQL document. */
 export interface SqlDocumentSession<Context extends SqlDocumentContext> {
   readonly revision: SqlRevision;
+  /** Invalidates relation, column, and namespace catalog observations. */
+  readonly invalidateCatalog: () => SqlRevision;
+  readonly statementBoundaryAt: (
+    request: SqlStatementBoundaryAtRequest,
+  ) => SqlStatementBoundaryAtResult;
+  readonly statementBoundariesIntersecting: (
+    request: SqlStatementBoundariesIntersectingRequest,
+  ) => SqlStatementBoundariesIntersectingResult;
   readonly update: (update: SqlDocumentUpdate<Context>) => SqlRevision;
+  readonly complete: (
+    request: SqlCompletionRequest,
+  ) => SqlCompletionTask;
+  readonly onDidChange: (
+    listener: (event: SqlSessionChangeEvent) => void,
+  ) => SqlDisposable;
   readonly isCurrent: (revision: SqlRevision) => boolean;
   readonly dispose: () => void;
 }
@@ -149,16 +173,24 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
 }
 
 export interface SqlLanguageServiceOptions {
+  readonly catalog?: SqlRelationCatalogProvider | undefined;
+  readonly columns?: SqlColumnCatalogProvider | undefined;
+  readonly completion?: {
+    readonly catalogResponseBudgetMs?: number | undefined;
+  } | undefined;
   readonly dialects: readonly SqlDialect[];
+  readonly namespaces?: SqlNamespaceCatalogProvider | undefined;
 }
 
 export type SqlSessionErrorCode =
   | "duplicate-dialect"
   | "invalid-change"
   | "invalid-context"
+  | "invalid-completion-request"
   | "invalid-dialect"
   | "invalid-document"
   | "invalid-service-options"
+  | "invalid-statement-boundary-request"
   | "invalid-update"
   | "reentrant-update"
   | "service-disposed"
@@ -174,3 +206,22 @@ export class SqlSessionError extends Error {
     this.code = code;
   }
 }
+import type {
+  SqlColumnCatalogProvider,
+} from "./column-catalog-types.js";
+import type {
+  SqlNamespaceCatalogProvider,
+} from "./namespace-catalog-types.js";
+import type {
+  SqlCompletionRequest,
+  SqlCompletionTask,
+  SqlDisposable,
+  SqlRelationCatalogProvider,
+  SqlSessionChangeEvent,
+} from "./relation-completion-types.js";
+import type {
+  SqlStatementBoundariesIntersectingRequest,
+  SqlStatementBoundariesIntersectingResult,
+  SqlStatementBoundaryAtRequest,
+  SqlStatementBoundaryAtResult,
+} from "./statement-boundary-types.js";

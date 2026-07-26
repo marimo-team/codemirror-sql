@@ -7,7 +7,11 @@ import {
   type SqlDocumentSession,
   type SqlEmbeddedRegion,
   type SqlLanguageService,
+  type SqlRelationCatalogProvider,
   type SqlRevision,
+  type SqlStatementBoundariesIntersectingResult,
+  type SqlStatementBoundaryAtResult,
+  type SqlStatementBoundary,
   type SqlTextChange,
   type SqlTextRange,
 } from "../../src/index.js";
@@ -33,6 +37,21 @@ void typedDialect.grammar;
 // @ts-expect-error dialect rendering policy is package-private
 void typedDialect.renderRelationPath;
 const service = createSqlLanguageService<HostContext>({ dialects: [dialect] });
+const relationCatalog = {
+  id: "host-catalog",
+  search: async () => ({
+    coverage: { kind: "complete" as const },
+    epoch: { generation: 0, token: "initial" },
+    relations: [],
+    status: "ready" as const,
+  }),
+} satisfies SqlRelationCatalogProvider;
+const catalogService = createSqlLanguageService<HostContext>({
+  catalog: relationCatalog,
+  completion: { catalogResponseBudgetMs: 40 },
+  dialects: [dialect],
+});
+void catalogService;
 const session = service.openDocument({
   context: { dialect: "duckdb", engine: "local" },
   embeddedRegions: [{ from: 0, language: "python", to: 1 }],
@@ -53,6 +72,25 @@ const hostOpen = {
 };
 service.openDocument(hostOpen);
 const revision: SqlRevision = session.revision;
+void session.complete({
+  position: 0,
+  trigger: { kind: "invoked" },
+});
+void session.complete({
+  position: 0,
+  signal: undefined,
+  trigger: { kind: "invoked" },
+});
+void session.complete({
+  position: 0,
+  // @ts-expect-error invoked triggers cannot also carry a character
+  trigger: { character: ".", kind: "invoked" },
+});
+const changeSubscription = session.onDidChange((event) => {
+  const changedRevision: SqlRevision = event.revision;
+  void changedRevision;
+});
+changeSubscription.dispose();
 declare const maybeContext: HostContext | undefined;
 declare const maybeDocument: SqlDocumentEdit | undefined;
 
@@ -161,6 +199,33 @@ const embeddedRegion: SqlEmbeddedRegion = {
 embeddedRegion.language = "jinja";
 // @ts-expect-error session revision is readonly
 session.revision = revision;
+const statement = session.statementBoundaryAt({
+  affinity: "left",
+  position: 0,
+});
+const statementResult: SqlStatementBoundaryAtResult = statement;
+const statementBoundary: SqlStatementBoundary = statement.boundary;
+if (statementBoundary.boundaryQuality === "exact") {
+  if (statementBoundary.hasCode) {
+    const codeRange: SqlTextRange = statementBoundary.code;
+    void codeRange;
+  } else {
+    const noCode: null = statementBoundary.code;
+    void noCode;
+  }
+}
+const statements: SqlStatementBoundariesIntersectingResult =
+  session.statementBoundariesIntersecting({ from: 0, to: 1 });
+// @ts-expect-error statement boundary results are readonly
+statement.boundary.extent.from = 1;
+// @ts-expect-error affinity is explicit and bounded
+session.statementBoundaryAt({ affinity: "nearest", position: 0 });
+// @ts-expect-error statement positions are numeric UTF-16 offsets
+session.statementBoundaryAt({ affinity: "right", position: "0" });
+// @ts-expect-error intersection ranges use numeric UTF-16 offsets
+session.statementBoundariesIntersecting({ from: 0, to: "1" });
+// @ts-expect-error intersecting boundary arrays are readonly
+statements.boundaries.push(statementBoundary);
 // @ts-expect-error statement indexes remain an internal session detail
 session.getStatementIndexForTesting();
 // @ts-expect-error dialect IDs are readonly
@@ -171,6 +236,10 @@ createSqlLanguageService({ dialects: [{ id: "duckdb", displayName: "DuckDB" }] }
 void objectRevision;
 void numberRevision;
 void range;
+void statement;
+void statementBoundary;
+void statementResult;
+void statements;
 void embeddedRegion;
 void identitySession;
 void typedDialect;

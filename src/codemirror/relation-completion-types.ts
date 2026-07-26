@@ -1,4 +1,4 @@
-import type { SqlRelationCompletionItem } from "../relation-completion-types.js";
+import type { SqlCompletionItem } from "../relation-completion-types.js";
 
 // Provisional CodeMirror-only boundary; the framework-independent core stays DOM-free.
 export interface SqlCompletionInfoResolverContext {
@@ -11,7 +11,7 @@ export interface SqlDisposableCompletionInfo {
 }
 
 export type SqlCompletionInfoResolver = (
-  item: SqlRelationCompletionItem,
+  item: SqlCompletionItem,
   context: SqlCompletionInfoResolverContext,
 ) =>
   | SqlDisposableCompletionInfo

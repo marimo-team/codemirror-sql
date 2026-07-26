@@ -1,6 +1,4 @@
 import type {
-  SqlDocumentContext,
-  SqlDocumentUpdate,
   SqlIdentifierComponent,
   SqlIdentifierPath,
   SqlRevision,
@@ -189,13 +187,44 @@ export type SqlSessionChangeReason =
   | "catalog-availability"
   | "provider-configuration";
 
-export interface SqlSessionChangeEvent {
-  readonly revision: SqlRevision;
-  readonly reason: SqlSessionChangeReason;
+const completionRefreshTokenBrand: unique symbol = Symbol(
+  "SqlCompletionRefreshToken",
+);
+
+/** Opaque, in-process identity for one completion refresh intent. */
+export interface SqlCompletionRefreshToken {
+  readonly [completionRefreshTokenBrand]: "SqlCompletionRefreshToken";
 }
+
+/** @internal */
+export function createSqlCompletionRefreshToken(): SqlCompletionRefreshToken {
+  const token: SqlCompletionRefreshToken = {
+    [completionRefreshTokenBrand]: "SqlCompletionRefreshToken",
+  };
+  Object.freeze(token);
+  return token;
+}
+
+export type SqlSessionChangeEvent =
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "catalog-availability";
+      readonly refreshToken: SqlCompletionRefreshToken;
+    }
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "catalog";
+      readonly refreshToken: SqlCompletionRefreshToken | null;
+    }
+  | {
+      readonly revision: SqlRevision;
+      readonly reason: "provider-configuration";
+      readonly refreshToken: null;
+    };
 
 export type SqlCompletionTrigger =
   | {
+      readonly character?: never;
       readonly kind: "invoked";
     }
   | {
@@ -206,7 +235,7 @@ export type SqlCompletionTrigger =
 export interface SqlCompletionRequest {
   readonly position: number;
   readonly trigger: SqlCompletionTrigger;
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface SqlCteCompletionProvenance {
@@ -220,26 +249,62 @@ export interface SqlCatalogCompletionProvenance {
   readonly entityId: string;
 }
 
+export interface SqlColumnCompletionProvenance {
+  readonly kind: "column-catalog";
+  readonly providerId: string;
+  readonly scope: string;
+  readonly epoch: SqlCatalogEpoch;
+  readonly relationEntityId: string;
+  readonly columnEntityId: string;
+}
+
+export interface SqlNamespaceCompletionProvenance {
+  readonly containerEntityId: string;
+  readonly epoch: SqlCatalogEpoch;
+  readonly kind: "namespace-catalog";
+  readonly providerId: string;
+  readonly scope: string;
+}
+
 interface SqlCompletionItemBase {
   readonly label: string;
   readonly edit: SqlTextChange;
   readonly detail?: string;
 }
 
-export type SqlRelationCompletionItem =
+export type SqlCompletionItem =
   | (SqlCompletionItemBase & {
+      readonly kind: "relation";
       readonly relationKind: "cte";
       readonly provenance: SqlCteCompletionProvenance;
     })
   | (SqlCompletionItemBase & {
+      readonly kind: "relation";
       readonly relationKind: SqlCatalogRelationKind;
       readonly provenance: SqlCatalogCompletionProvenance;
+    })
+  | (SqlCompletionItemBase & {
+      readonly dataType?: string;
+      readonly kind: "column";
+      readonly provenance: SqlColumnCompletionProvenance;
+      readonly relationRequestKey: string;
+    })
+  | (SqlCompletionItemBase & {
+      readonly kind: "namespace";
+      readonly provenance: SqlNamespaceCompletionProvenance;
+      readonly role: SqlCatalogContainerRole;
     });
 
 export type SqlCompletionIssue =
   | {
       readonly reason: "catalog-loading";
       readonly remainingIntentLeaseMs: number;
+    }
+  | {
+      readonly reason:
+        | "column-catalog-loading"
+        | "namespace-catalog-loading";
+      readonly remainingIntentLeaseMs?: number;
     }
   | {
       readonly reason:
@@ -250,21 +315,29 @@ export type SqlCompletionIssue =
         | "catalog-overloaded"
         | "catalog-queue-timeout"
         | "catalog-timeout"
+        | "column-catalog-failed"
+        | "column-catalog-malformed"
+        | "column-catalog-partial"
         | "cte-scope-uncertainty"
+        | "namespace-catalog-failed"
+        | "namespace-catalog-malformed"
+        | "namespace-catalog-partial"
+        | "namespace-prefix-uncertain"
+        | "query-binding-partial"
         | "query-site-recovery"
         | "opaque-template-context"
         | "recursive-cte-uncertainty"
         | "result-limit";
     };
 
-export type SqlRelationCompletionList =
+export type SqlCompletionList =
   | {
-      readonly items: readonly SqlRelationCompletionItem[];
+      readonly items: readonly SqlCompletionItem[];
       readonly isIncomplete: false;
       readonly issues: readonly [];
     }
   | {
-      readonly items: readonly SqlRelationCompletionItem[];
+      readonly items: readonly SqlCompletionItem[];
       readonly isIncomplete: true;
       readonly issues: readonly [
         SqlCompletionIssue,
@@ -288,7 +361,6 @@ export type SqlCatalogProviderUnavailableReason =
   | "queue-overloaded"
   | "queue-timeout"
   | "execution-timeout"
-  | "synchronous-timeout"
   | "provider-rejected"
   | "malformed-response";
 
@@ -315,17 +387,93 @@ export type SqlCatalogProviderReport =
       readonly reason: SqlCatalogProviderUnavailableReason;
     });
 
+export type SqlColumnCatalogProviderReport =
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "ready";
+      readonly providerId: string;
+      readonly coverage: "complete" | "partial";
+      readonly failures: readonly SqlColumnCatalogFailure[];
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "loading";
+      readonly providerId: string;
+      readonly failures: readonly SqlColumnCatalogFailure[];
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "failed";
+      readonly providerId: string;
+      readonly failures: readonly [
+        SqlColumnCatalogFailure,
+        ...SqlColumnCatalogFailure[],
+      ];
+    }
+  | {
+      readonly feature: "column-catalog";
+      readonly outcome: "unavailable";
+      readonly providerId: string;
+      readonly reason:
+        | "disposed"
+        | "invalid-request"
+        | "malformed-response"
+        | "provider-failed";
+    };
+
+export interface SqlColumnCatalogFailure {
+  readonly code: SqlCatalogFailureCode;
+  readonly requestKey: string;
+  readonly retry: SqlCatalogRetryPolicy;
+}
+
+export type SqlNamespaceCatalogProviderReport =
+  | {
+      readonly coverage: "complete" | "partial";
+      readonly feature: "namespace-catalog";
+      readonly outcome: "ready";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "loading";
+      readonly providerId: string;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "failed";
+      readonly providerId: string;
+      readonly code: SqlCatalogFailureCode;
+      readonly retry: SqlCatalogRetryPolicy;
+    }
+  | {
+      readonly feature: "namespace-catalog";
+      readonly outcome: "unavailable";
+      readonly providerId: string;
+      readonly reason:
+        | "disposed"
+        | "invalid-request"
+        | "malformed-response"
+        | "provider-failed";
+    };
+
+export type SqlCompletionProviderReport =
+  | SqlCatalogProviderReport
+  | SqlColumnCatalogProviderReport
+  | SqlNamespaceCatalogProviderReport;
+
 export interface SqlServiceFailure {
   readonly code: "internal";
   readonly retryable: boolean;
 }
 
-export type SqlRelationCompletionResult =
+export type SqlCompletionResult =
   | {
       readonly status: "ready";
       readonly revision: SqlRevision;
-      readonly value: SqlRelationCompletionList;
-      readonly sources: readonly SqlCatalogProviderReport[];
+      readonly refreshToken: SqlCompletionRefreshToken | null;
+      readonly value: SqlCompletionList;
+      readonly sources: readonly SqlCompletionProviderReport[];
     }
   | {
       readonly status: "unavailable";
@@ -344,19 +492,11 @@ export type SqlRelationCompletionResult =
       readonly failure: SqlServiceFailure;
     };
 
-export interface SqlRelationCompletionSession<
-  Context extends SqlDocumentContext,
-> {
-  readonly revision: SqlRevision;
-  readonly update: (
-    transaction: SqlDocumentUpdate<Context>,
-  ) => SqlRevision;
-  readonly complete: (
-    request: SqlCompletionRequest,
-  ) => Promise<SqlRelationCompletionResult>;
-  readonly onDidChange: (
-    listener: (event: SqlSessionChangeEvent) => void,
-  ) => SqlDisposable;
-  readonly isCurrent: (revision: SqlRevision) => boolean;
-  readonly dispose: () => void;
+/**
+ * A completion invocation whose identity is available before provider work
+ * starts.
+ */
+export interface SqlCompletionTask
+  extends Promise<SqlCompletionResult> {
+  readonly refreshToken: SqlCompletionRefreshToken;
 }

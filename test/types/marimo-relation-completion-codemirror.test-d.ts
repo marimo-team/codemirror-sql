@@ -3,8 +3,9 @@ import type { EditorView } from "@codemirror/view";
 import type {
   SqlCompletionInfoResolver,
   SqlCompletionInfoResolverContext,
-} from "../../src/codemirror/relation-completion-types.js";
-import type { SqlRelationCompletionItem } from "../../src/relation-completion-types.js";
+  SqlEditorStatementGutterOptions,
+} from "../../src/codemirror/index.js";
+import type { SqlCompletionItem } from "../../src/relation-completion-types.js";
 
 interface ReactRootLike {
   readonly render: (value: unknown) => void;
@@ -28,10 +29,18 @@ const resolveInfo: SqlCompletionInfoResolver = async (item, { signal }) => {
   };
 };
 
-declare const item: SqlRelationCompletionItem;
+declare const item: SqlCompletionItem;
 const resolved = resolveInfo(item, {
   signal: new AbortController().signal,
 });
+const gutter: SqlEditorStatementGutterOptions = {
+  hideWhenNotFocused: true,
+  showInactive: true,
+};
+const invalidGutter: SqlEditorStatementGutterOptions = {
+  // @ts-expect-error gutter flags are boolean
+  showInactive: "yes",
+};
 
 // @ts-expect-error resolver items are immutable
 item.label = "changed";
@@ -42,7 +51,7 @@ if (item.provenance.kind === "catalog") {
 
 // @ts-expect-error live editor state is not a resolver parameter
 const resolverWithView: SqlCompletionInfoResolver = (
-  _item: SqlRelationCompletionItem,
+  _item: SqlCompletionItem,
   _context: SqlCompletionInfoResolverContext,
   _view: EditorView,
 ) => null;
@@ -62,6 +71,8 @@ const resolverWithoutDestroy: SqlCompletionInfoResolver = () => ({
 });
 
 void resolved;
+void gutter;
+void invalidGutter;
 void resolverReturningNode;
 void resolverReturningNumber;
 void resolverReturningReactData;

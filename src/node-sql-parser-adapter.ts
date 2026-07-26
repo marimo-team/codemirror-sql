@@ -6,6 +6,11 @@ import {
   type NodeSqlParserModuleLoader,
 } from "./node-sql-parser-backend.js";
 import {
+  normalizeNodeSqlParserQueryBindings,
+  type NodeSqlParserQueryBindingGrammar,
+} from "./node-sql-parser-query-bindings.js";
+import type { SqlQueryBindingModel } from "./query-binding-model.js";
+import {
   createCompatibilityParsedAnalysis,
   createFailedParserAnalysis,
   createSqlDialectSyntaxIdentity,
@@ -39,6 +44,7 @@ type NodeSqlParserPolicy =
 interface NodeSqlParserRuntime {
   readonly authority: SqlParserAuthority;
   readonly backend: NodeSqlParserBackend;
+  readonly grammar: NodeSqlParserQueryBindingGrammar;
   readonly limitations: readonly [
     SqlCompatibilityLimitation,
     ...SqlCompatibilityLimitation[],
@@ -61,7 +67,8 @@ type OwnDataProperty =
 class NodeSqlParserGlobalCleanupError extends Error {}
 class NodeSqlParserExecutionRealmError extends Error {}
 
-const backendPayloads = new WeakMap<SqlSyntaxArtifact, object>();
+const queryBindingModels =
+  new WeakMap<SqlSyntaxArtifact, SqlQueryBindingModel>();
 
 function readOwnDataProperty(
   value: object,
@@ -307,7 +314,18 @@ function materializeBackendOutcome(
         statementText,
         runtime.authority,
       );
-      backendPayloads.set(artifact, outcome.root);
+      const bindings = normalizeNodeSqlParserQueryBindings(
+        outcome.root,
+        statementText,
+        runtime.authority,
+        {
+          compatibility: runtime.policy === "dialect-compatibility",
+          grammar: runtime.grammar,
+        },
+      );
+      if (bindings.status === "ready") {
+        queryBindingModels.set(artifact, bindings.model);
+      }
       return createCompatibilityParsedAnalysis(
         artifact,
         runtime.limitations,
@@ -349,6 +367,7 @@ function createAdapter(runtime: NodeSqlParserRuntime): SqlStatementParser {
 function createRuntime(
   backendIdentity: SqlSyntaxBackendIdentity,
   backend: NodeSqlParserBackend,
+  grammar: NodeSqlParserQueryBindingGrammar,
   policy: NodeSqlParserPolicy,
 ): NodeSqlParserRuntime {
   const authority = createSqlParserAuthority(
@@ -359,6 +378,7 @@ function createRuntime(
   return Object.freeze({
     authority,
     backend,
+    grammar,
     limitations:
       policy === "dialect-compatibility"
         ? DIALECT_COMPATIBILITY_LIMITATIONS
@@ -378,6 +398,7 @@ const postgresqlParser = createAdapter(
   createRuntime(
     postgresqlBackendIdentity,
     postgresqlBackend,
+    "postgresql",
     "target-grammar",
   ),
 );
@@ -385,6 +406,7 @@ const bigQueryParser = createAdapter(
   createRuntime(
     bigQueryBackendIdentity,
     bigQueryBackend,
+    "bigquery",
     "target-grammar",
   ),
 );
@@ -392,6 +414,7 @@ const duckDbParser = createAdapter(
   createRuntime(
     postgresqlBackendIdentity,
     postgresqlBackend,
+    "postgresql",
     "dialect-compatibility",
   ),
 );
@@ -449,12 +472,19 @@ export const exportedForTesting = Object.freeze({
         createNodeSqlParserBackend(
           adaptModuleLoaderForTesting(loadModule),
         ),
+        "postgresql",
         policy,
       ),
     );
   },
-  hasBackendPayload(artifact: SqlSyntaxArtifact): boolean {
-    return backendPayloads.has(artifact);
+  hasBackendPayload(_artifact: SqlSyntaxArtifact): boolean {
+    return false;
   },
   createSynchronousModuleLoader,
 });
+
+export function getNodeSqlParserQueryBindingModel(
+  artifact: SqlSyntaxArtifact,
+): SqlQueryBindingModel | null {
+  return queryBindingModels.get(artifact) ?? null;
+}

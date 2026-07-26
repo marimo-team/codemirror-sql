@@ -145,11 +145,11 @@ A direct object or one-element array is accepted. Zero or multiple roots are
 `failed/malformed-output`.
 
 The public normalized artifact exposes only its closed statement kind and full
-statement-relative range. The backend AST is retained in a module-private
-`WeakMap` keyed by the authenticated artifact. It is neither enumerable nor
-returned through the syntax contract. Future relation extraction must decode
-and validate backend nodes inside the adapter boundary rather than exposing
-the raw AST to core features.
+statement-relative range. The adapter consumes the backend AST immediately
+through the bounded query-binding decoder and retains only an immutable,
+backend-neutral binding model in a module-private `WeakMap` keyed by the
+authenticated artifact. The raw AST is not retained, enumerable, or returned
+through the syntax contract.
 
 ### Cancellation and execution placement
 
@@ -201,7 +201,7 @@ This decision does not define:
 - Stable parser or provider APIs
 - Session cache keys or eviction
 - Document-level syntax diagnostics
-- Semantic relation, scope, column, or type models
+- Public semantic relation, scope, column, or type models
 - A worker protocol
 - Native DuckDB or remote validation providers
 - Dremio parsing

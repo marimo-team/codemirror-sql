@@ -1,31 +1,75 @@
-export const defaultSqlDoc = `-- codemirror-sql session demo
--- Edits in the editor are forwarded to SqlDocumentSession.update()
+export interface DemoTable {
+  readonly columns: readonly {
+    readonly name: string;
+    readonly type: string;
+  }[];
+  readonly description: string;
+  readonly name: string;
+  readonly schema: string;
+}
 
-WITH recent_orders AS (
-  SELECT customer_id, total_amount FROM orders WHERE order_date >= '2024-01-01'
-),
-top_customers AS (
-  SELECT customer_id, SUM(total_amount) AS total_spent
-  FROM recent_orders
-  GROUP BY customer_id
-)
-SELECT c.first_name, t.total_spent AS amount
-FROM customers c
-JOIN top_customers t ON t.customer_id = c.id
-ORDER BY amount DESC;
+export const demoTables: readonly DemoTable[] = [
+  {
+    columns: [
+      { name: "id", type: "BIGINT" },
+      { name: "name", type: "VARCHAR" },
+      { name: "email", type: "VARCHAR" },
+      { name: "active", type: "BOOLEAN" },
+      { name: "created_at", type: "TIMESTAMP" },
+    ],
+    description: "Application users",
+    name: "users",
+    schema: "main",
+  },
+  {
+    columns: [
+      { name: "id", type: "BIGINT" },
+      { name: "user_id", type: "BIGINT" },
+      { name: "title", type: "VARCHAR" },
+      { name: "published", type: "BOOLEAN" },
+      { name: "created_at", type: "TIMESTAMP" },
+    ],
+    description: "Published and draft posts",
+    name: "posts",
+    schema: "main",
+  },
+  {
+    columns: [
+      { name: "id", type: "BIGINT" },
+      { name: "customer_id", type: "BIGINT" },
+      { name: "order_date", type: "DATE" },
+      { name: "total_amount", type: "DECIMAL(18, 2)" },
+      { name: "status", type: "VARCHAR" },
+    ],
+    description: "Customer orders",
+    name: "orders",
+    schema: "sales",
+  },
+  {
+    columns: [
+      { name: "id", type: "BIGINT" },
+      { name: "first_name", type: "VARCHAR" },
+      { name: "last_name", type: "VARCHAR" },
+      { name: "email", type: "VARCHAR" },
+      { name: "country", type: "VARCHAR" },
+    ],
+    description: "Customer directory",
+    name: "customers",
+    schema: "sales",
+  },
+] as const;
 
-SELECT id, name, email
-FROM users
-WHERE active = true
-ORDER BY created_at DESC;
+export const defaultSqlDoc = `-- codemirror-sql playground
+-- Type after a dot or press Ctrl-Space for completion.
 
-SELECT
-    u.name,
-    p.title,
-    p.created_at
-FROM users u
-JOIN posts p ON u.id = p.user_id
-WHERE u.status = 'active'
-  AND p.published = true
-LIMIT 10;
+SELECT u.
+FROM main.users AS u
+WHERE EXISTS (
+  SELECT 1
+  FROM sales.orders AS o
+  WHERE o.customer_id = u.id
+);
+
+SELECT *
+FROM sales.
 `;

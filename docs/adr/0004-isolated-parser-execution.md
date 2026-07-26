@@ -141,9 +141,10 @@ The initial request contains only:
 DuckDB uses the PostgreSQL grammar. Target-dialect policy stays in the main
 realm.
 
-The initial response contains only one closed outcome:
+Protocol v2 contains only one closed outcome:
 
-- Parsed normalized statement kind
+- Parsed normalized statement kind and a bounded query-binding DTO, or `null`
+  when the statement has no supported query-binding evidence
 - Syntax rejection
 - Bounded unsupported reason
 - Bounded failure code; retryability is derived from that code
@@ -183,16 +184,17 @@ settles the active operation exactly once without exposing raw event data.
 Raw backend ASTs will not cross the worker boundary and the first protocol will
 not introduce remote AST handles or worker-local AST leases.
 
-The first relation-completion slice is parser-independent under
+The first relation-completion slice remains parser-independent under
 [ADR 0005](0005-parser-independent-relation-completion.md). Protocol v1 remains
-syntax-only. Incomplete relation completion must not wait for worker startup,
+historical and protocol v2 adds the internal query-binding DTO. Incomplete
+relation completion must not wait for worker startup,
 parser acceptance, timeout, or recovery.
 
-A future scope-dependent semantic slice will parse once and run adapter-owned
-semantic decoders in the worker realm. It will move the closed protocol
-atomically to v2 and return a bounded scoped IR, with normalized syntax and
-semantic availability represented independently. It will not return flat
-relation names, raw ASTs, source text, or absolute document ranges.
+The scope decoder runs once in the worker realm immediately after parsing.
+It returns query blocks, relation/alias bindings, persistent scopes, typed
+visibility regions, independent coverage, and closed issues. It does not
+return flat relation names, raw ASTs, source text, or absolute document ranges.
+The host revalidates the complete DTO before accepting the response.
 
 Worker-local AST caching is deferred until profiling demonstrates that
 reparsing is material enough to justify leases, byte accounting, generation

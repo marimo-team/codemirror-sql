@@ -207,6 +207,13 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "replace", text: "SELECT * FROM {next_df}" },
 });
+const statement = session.statementBoundaryAt({ affinity: "left", position: 0 });
+if (
+  statement.boundary.boundaryQuality !== "exact" ||
+  !statement.boundary.hasCode
+) {
+  throw new Error("The packaged statement boundary was unavailable");
+}
 service.dispose();
 `,
   );
@@ -218,15 +225,24 @@ service.dispose();
   duckdbDialect,
   type SqlDocumentContext,
   type SqlEmbeddedRegion,
+  type SqlCatalogSubscriptionCleanup,
+  type SqlStatementBoundaryAtResult,
   type SqlTextRange,
 } from "@marimo-team/codemirror-sql";
+import { sqlEditor } from "@marimo-team/codemirror-sql/codemirror";
 
 interface HostContext extends SqlDocumentContext {
   readonly engine: string;
 }
 
+const cleanup: SqlCatalogSubscriptionCleanup = () => undefined;
+
 const service = createSqlLanguageService<HostContext>({
   dialects: [duckdbDialect()],
+});
+const editorSupport = sqlEditor({
+  initialContext: { dialect: "duckdb", engine: "local" },
+  service,
 });
 const embeddedRegions: readonly SqlEmbeddedRegion[] = [
   { from: 14, language: "python", to: 18 },
@@ -242,15 +258,23 @@ session.update({
   baseRevision: session.revision,
   document: { kind: "changes", changes: [] },
 });
+const statement: SqlStatementBoundaryAtResult = session.statementBoundaryAt({
+  affinity: "left",
+  position: 0,
+});
 
+void editorSupport.extension;
+void cleanup;
 void range;
 void session;
+void statement;
 `,
   );
 
   writeFileSync(
     join(temporaryDirectory, "consumer.mjs"),
     `import * as api from "@marimo-team/codemirror-sql";
+import * as codeMirror from "@marimo-team/codemirror-sql/codemirror";
 
 if (
   typeof api.createSqlLanguageService !== "function" ||
@@ -260,6 +284,9 @@ if (
   typeof api.postgresDialect !== "function"
 ) {
   throw new Error("Package exports are incomplete");
+}
+if (typeof codeMirror.sqlEditor !== "function") {
+  throw new Error("CodeMirror package exports are incomplete");
 }
 for (const dialect of [
   api.bigQueryDialect(),
@@ -294,6 +321,20 @@ const updatedRevision = session.update({
 });
 if (session.isCurrent(originalRevision) || !session.isCurrent(updatedRevision)) {
   throw new Error("The packaged session violated revision identity");
+}
+const statement = session.statementBoundaryAt({ affinity: "left", position: 0 });
+const visible = session.statementBoundariesIntersecting({
+  from: 0,
+  to: 23,
+});
+if (
+  statement.revision !== updatedRevision ||
+  statement.boundary.boundaryQuality !== "exact" ||
+  !statement.boundary.hasCode ||
+  visible.revision !== updatedRevision ||
+  visible.boundaries.length !== 1
+) {
+  throw new Error("The packaged statement boundary is invalid");
 }
 service.dispose();
 `,

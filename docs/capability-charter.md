@@ -239,6 +239,8 @@ count and estimated retained bytes.
 
 Provisional compressed bundle budgets:
 
+- Framework-independent core with relation, namespace, and column completion:
+  50 KiB
 - Core plus CodeMirror adapter, excluding parser and dialect data: 75 KiB
 - Each ordinary dialect module: 25 KiB
 - Optional `node-sql-parser` chunk: no regression from its recorded baseline

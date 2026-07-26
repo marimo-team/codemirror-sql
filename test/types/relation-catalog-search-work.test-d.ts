@@ -9,6 +9,7 @@ import {
   createSqlCatalogEpochCoordinator,
 } from "../../src/relation-catalog-epoch-coordinator.js";
 import type {
+  SqlCatalogSearchAvailabilityTarget,
   SqlCatalogSearchWorkCoordinator,
   SqlCatalogSearchWorkInput,
   SqlCatalogSearchWorkOutcome,
@@ -82,6 +83,31 @@ const thisFreeRequest: (
 const thisFreeCancel: (
   this: void,
 ) => void = ticket.cancel;
+const thisFreeRetainForRefresh: SqlCatalogSearchWorkTicket["retainForRefresh"] =
+  ticket.retainForRefresh;
+const retention = ticket.retainForRefresh(
+  (): ((this: void) => undefined) =>
+    (): undefined => undefined,
+);
+if (retention.status === "retained") {
+  void retention.remainingLeaseMs;
+}
+
+const asyncAvailabilityDispatch = (): Promise<undefined> =>
+  Promise.resolve(undefined);
+const invalidAsyncAvailabilityTarget: SqlCatalogSearchAvailabilityTarget =
+  // @ts-expect-error availability dispatch is synchronously exact-undefined
+  () => asyncAvailabilityDispatch;
+
+const receiverDependentAvailability = function (
+  this: { readonly active: boolean },
+): null {
+  void this.active;
+  return null;
+};
+// @ts-expect-error availability preparation cannot depend on a receiver
+const invalidAvailabilityReceiver: SqlCatalogSearchAvailabilityTarget =
+  receiverDependentAvailability;
 
 const receiverDependentRequest = function (
   this: { readonly active: boolean },
@@ -241,10 +267,13 @@ void thisFreeActivate;
 void thisFreeOwnerDispose;
 void thisFreeRequest;
 void thisFreeCancel;
+void thisFreeRetainForRefresh;
 void invalidPrepareOwnerReceiver;
 void invalidActivateReceiver;
 void invalidRequestReceiver;
 void invalidCancelReceiver;
+void invalidAsyncAvailabilityTarget;
+void invalidAvailabilityReceiver;
 void scopeLeakingInput;
 void providerLeakingInput;
 void providerHandleLeakingInput;

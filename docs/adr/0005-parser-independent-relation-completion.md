@@ -347,7 +347,11 @@ search request contains only copied, recursively frozen plain data:
 The `AbortSignal` is passed separately. Providers never receive a session,
 revision, `EditorState`, DOM object, credential object, or arbitrary live host
 context. Connection identity belongs in the catalog scope; live resources stay
-inside the provider closure. The provider object is caller-owned. The service
+inside the provider closure. The scope is an opaque host-generated identity
+that includes the live connection incarnation, not merely a reusable display
+name. Rebinding a marimo engine variable to a different connection therefore
+uses a new scope even when the variable name is unchanged. The provider object
+is caller-owned. The service
 captures its own-data callbacks once and owns searches, subscriptions, and
 their cleanup, but does not imply provider-wide disposal. Provider callbacks
 are closure functions with a declared `this: void` contract and are invoked
@@ -389,15 +393,23 @@ Search responses distinguish:
 - loading; and
 - failed with a closed code and retry policy.
 
-A terminal `loading` response is not cached. A provider that later becomes
-ready must publish a strictly higher epoch through its subscription; same-epoch
-duplicate invalidation is not a readiness signal. A still-pending search
-promise can instead resolve ready under the service-owned response/refresh
-rules below. Every completion result carrying `catalog-loading`, whether caused
-by terminal loading or soft expiry, also carries a checked remaining
-completion-intent lease. For terminal loading that lease is independent of
-in-flight work ownership and is keyed to the exact session, query, and captured
-observed or unobserved epoch.
+A terminal `loading` response is not cached. It installs a bounded barrier for
+the exact request key and captured epoch. When the provider has a live
+subscription, matching requests observe loading without invoking it again
+until a strictly higher epoch retires the barrier. Same-epoch duplicate
+invalidation is not a readiness signal. Without a subscription, a later
+explicit request may become the single shared probe behind that barrier. The
+probe uses the normal queue and execution budgets and may publish readiness
+only with a strictly higher epoch; a same-epoch ready response cannot cross the
+loading barrier. A still-pending original search promise can instead resolve
+ready before returning terminal loading under the service-owned
+response/refresh rules below.
+
+Every completion result carrying `catalog-loading`, whether caused by terminal
+loading or soft expiry, also carries a checked remaining completion-intent
+lease. For terminal loading that lease is independent of in-flight work
+ownership and is keyed to the exact session, query, scope incarnation, and
+captured observed or unobserved epoch.
 
 Partial positive entities may be offered. A partial or absent result never
 proves that a relation does not exist. A complete empty search means only that
@@ -501,9 +513,12 @@ searches remain usable; only the epoch observation is a duplicate. A terminal
 `loading` response requires a higher epoch before that exact search can become
 ready. Providers without subscriptions may return `loading`, but they cannot
 cause automatic refresh; a later explicit request must observe the higher
-epoch. Failed responses are attempt evidence: `next-request` may recover at
-the same epoch, while `after-invalidation` and `never` create bounded retry
-gates rather than cached search results.
+epoch through the single shared probe. Failed responses are attempt evidence,
+not cache entries. `next-request` installs no gate and may recover at the same
+epoch. `after-invalidation` blocks the exact request until a strictly higher
+epoch. `never` blocks it for the remaining scope incarnation and is retired
+only with that incarnation or the service. Retry gates are bounded internal
+metadata; they never acquire result authority or extend work deadlines.
 
 The service reference-counts one provider subscription per provider
 configuration and scope, then fans invalidation out to subscribed sessions.
@@ -733,8 +748,10 @@ and CTE evidence is composed first and never waits past the remaining response
 budget. On soft expiry the request settles ready, possibly empty, with
 `isIncomplete: true`, `catalog-loading`, and bounded remaining
 completion-intent lease metadata; its session may atomically retag the request
-consumer as a service-owned refresh observer. The intent lease is no longer
-than the remaining work lease.
+consumer as a service-owned refresh observer. The transfer removes consumer
+authority and installs observer authority as one serialized mutation, with no
+zero-owner interval in which shared work can be aborted or a settlement can be
+lost. The intent lease is no longer than the remaining work lease.
 That bounded refresh lease can retain the shared operation only until its
 existing hard deadline and active/queued service limits. With no consumers or
 live observers, the service removes and aborts the work. An observer is bound
@@ -754,24 +771,44 @@ refresh notification and leaves the already-returned incomplete result valid.
 No optional catalog promise can keep `complete()` pending indefinitely or
 block the local baseline past its product response budget.
 
-The first implementation increment of this section is intentionally
-package-private. It combines an authenticated provider with the epoch
-coordinator and owns the fixed 8-active/64-queued scheduler, exact-key
-in-flight sharing, one latest-wins consumer per owner, independent
-cancellation, absolute queue and execution deadlines, response decoding, and
-epoch publication. An owner captures its scope and dialect when prepared, so
-individual requests cannot substitute provider, scope, dialect, or epoch
-authority. The authenticated dialect runtime owns its canonical provider ID;
-callers cannot pair an unrelated ID and runtime. Establishing the first
-baseline re-keys other joinable unobserved work in that scope, allowing
-newly-observed consumers to join it without duplicating a provider call.
+Terminal loading has no work consumer to transfer. The subsequent session
+composition increment owns its independent intent, retaining only the bounded
+exact key, scope incarnation, captured epoch, and lease. A higher accepted
+response or invalidation retires it and emits only the normal higher-epoch
+`catalog` revision. By contrast, a compatible same-epoch pending-work
+settlement emits exactly one `catalog-availability` notification. A higher
+epoch retires both kinds of observer and never emits a second availability
+notification.
 
-Cache entries, loading/retry policy, refresh observers and their leases, the
-40 ms completion-response budget, pagination composition, ranking, session
-composition, and CodeMirror integration do not belong to that increment. They
-remain explicit follow-up increments; the coordinator must not expose a
-premature public surface that makes those deferred semantics difficult to add
-or test.
+The package-private coordinator is delivered in two increments. The first
+combines an authenticated provider with the epoch coordinator and owns the
+fixed 8-active/64-queued scheduler, exact-key in-flight sharing, one
+latest-wins consumer per owner, independent cancellation, absolute queue and
+execution deadlines, response decoding, and epoch publication. The second is
+one combined cache/loading/retry/observer increment over that scheduler. It
+adds the ready-page cache, terminal-loading barriers and probes, retry gates,
+and atomic consumer-to-observer transfer. The session increment then adds
+independent terminal-loading intents together with the revision events they
+own; splitting the store states would permit stale cache hits or missed
+readiness transitions, while placing a session event lease in the scheduler
+would invert ownership.
+
+An owner captures its scope and dialect when prepared, so individual requests
+cannot substitute provider, scope, dialect, or epoch authority. The
+authenticated dialect runtime owns its canonical provider ID; callers cannot
+pair an unrelated ID and runtime. Establishing the first baseline re-keys other
+joinable unobserved work in that scope, allowing newly-observed consumers to
+join it without duplicating a provider call.
+
+The combined increment exposes only package-private lifecycle outcomes and
+observer primitives. Selection of the 40 ms completion-response budget,
+session revision ownership, conversion of readiness into session events,
+pagination composition, ranking, and CodeMirror menu refresh remain subsequent
+increments. A marimo adapter will map connection replacement, deferred
+schema/table resolution, local-table changes, and DuckDB catalog DDL to higher
+epochs. Its unresolved `schemas_resolved`, `tables_resolved`, and
+`child_schemas_resolved` states map to terminal loading, not complete-empty
+catalog evidence.
 
 The exact structural cache and shared-work key contains:
 
@@ -792,15 +829,34 @@ to its epoch. Only decoded ready responses are cached under their response
 epoch. Loading, failure, malformed, timeout, cancellation, supersession, queue
 overload, and disposal outcomes are not cached. Complete-empty results are
 reused only for the exact key and never prove an unknown-object diagnostic.
-Partial and paginated entries retain incomplete coverage; pages combine only
-for the identical base key and epoch, and each continuation remains a distinct
-request key. Higher-epoch results may be cached only after older scope entries
-are cleared and never publish to the revision that observed the older epoch.
+Partial and paginated entries retain incomplete coverage. This increment
+caches individual decoded pages only; each continuation is a distinct request
+key, and automatic page following or composition remains deferred.
+Higher-epoch results may be cached only after older scope entries are cleared
+and never publish to the revision that observed the older epoch.
 
-Decoded entity IDs are unique for `(provider configuration, scope, epoch)`
-across every page composed into one result. A repeated ID, even with otherwise
-identical data, makes the page chain malformed before ranking or caching; array
-and page order therefore cannot resolve conflicting identity records.
+Cache retention is bounded simultaneously to 256 entries and 2 MiB of
+deterministically estimated retained bytes, including the copied structural key
+and frozen decoded page. A successful exact-key lookup and an insertion each
+receive the next service-owned access sequence. Before an insertion becomes
+visible, least-recently used entries are evicted in ascending access sequence
+until both bounds hold. A page whose own estimate exceeds the byte bound
+remains usable for its attached consumers but is not cached. Epoch retirement
+removes incompatible entries before admission, and eviction invokes no
+provider or host callback.
+
+Loading and retry gates share the bounds but are correctness state, not cache
+entries. Their admission evicts ready pages first; an admitted gate is never
+evicted before its epoch or scope-incarnation retirement rule. If the bounds
+contain only live gates and cannot admit another, the producing request fails
+closed as overloaded and the policy store remains overloaded until its provider
+configuration is replaced. This configuration-level quarantine prevents a
+later request from publishing across the barrier that could not be retained.
+
+Decoded entity IDs are unique within each cached page for `(provider
+configuration, scope, epoch)`. Cross-page uniqueness is checked later by the
+pagination-composition increment; array or page order can never resolve
+conflicting identity records.
 
 ### Initial resource budgets
 
@@ -973,8 +1029,9 @@ Mixed cached assets fail the exact version check and retire the generation.
 5. Add the service-owned scoped epoch/subscription coordinator and its hostile
    lifecycle contract suite. It does not invoke provider search or retain
    result pages.
-6. Add catalog search scheduling, cache, in-flight sharing, cancellation,
-   retry gates, and availability observers over the proven epoch coordinator.
+6. Add catalog search scheduling and in-flight sharing, then one combined
+   package-private cache/loading/retry/availability-observer increment over the
+   proven epoch coordinator.
 7. Add the session completion method and deterministic composition.
 8. Add the separate CodeMirror adapter and packed/browser fixtures.
 9. Add the pinned packed/browser/runtime marimo fixture and 1/10/50-editor

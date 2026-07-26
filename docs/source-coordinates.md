@@ -1,6 +1,6 @@
 # Source Coordinates
 
-Status: experimental core primitive
+Status: stable core primitive
 
 `SqlTextRange` is the public coordinate primitive:
 

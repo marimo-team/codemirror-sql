@@ -5,7 +5,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "SQL language service for document sessions, dialects, and schema-aware analysis",
+  "description": "Fast, robust SQL language services and schema-aware completion for CodeMirror 6",
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -27,9 +27,11 @@
     "test:integrity": "node ./scripts/check-test-integrity.mjs",
     "bench:catalog-boundary": "vitest bench --run src/__tests__/relation-catalog-boundary.bench.ts",
     "bench:catalog-coordinator": "vitest bench --run src/__tests__/relation-catalog-epoch-coordinator.bench.ts",
+    "bench:editor": "vitest bench --run src/codemirror/__tests__/sql-editor.bench.ts",
     "bench:local-relation-site": "vitest bench --run src/__tests__/local-relation-site.bench.ts",
     "bench:parser-adapter": "vitest bench --run src/__tests__/node-sql-parser-adapter.bench.ts",
     "bench:query-site": "vitest bench --run src/__tests__/query-site.bench.ts",
+    "bench:session-completion": "vitest bench --run src/__tests__/session-completion.bench.ts",
     "bench:statement-index": "vitest bench --run src/__tests__/statement-index.bench.ts",
     "test:package": "node ./scripts/clean.mjs && tsc && node ./scripts/package-smoke.mjs",
     "demo": "vite build",
@@ -39,16 +41,35 @@
     "release": "pnpm version"
   },
   "keywords": [
+    "autocomplete",
+    "codemirror-plugin",
+    "editor",
     "sql",
     "language-service",
     "codemirror"
   ],
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.4.0",
+  "peerDependencies": {
+    "@codemirror/autocomplete": "^6",
+    "@codemirror/state": "^6",
+    "@codemirror/view": "^6"
+  },
+  "peerDependenciesMeta": {
+    "@codemirror/autocomplete": {
+      "optional": true
+    },
+    "@codemirror/state": {
+      "optional": true
+    },
+    "@codemirror/view": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@codemirror/autocomplete": "6.20.0",
+    "@codemirror/autocomplete": "6.20.3",
     "@codemirror/lang-sql": "6.10.0",
-    "@codemirror/state": "6.5.4",
+    "@codemirror/state": "6.7.1",
     "@codemirror/view": "6.43.0",
     "@testing-library/dom": "10.4.1",
     "@types/node": "24.10.1",
@@ -71,6 +92,12 @@
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      }
+    },
+    "./codemirror": {
+      "import": {
+        "types": "./dist/codemirror/index.d.ts",
+        "default": "./dist/codemirror/index.js"
       }
     }
   },

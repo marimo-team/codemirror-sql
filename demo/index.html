@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>codemirror-sql demo</title>
+    <title>codemirror-sql playground</title>
     <meta
       name="description"
-      content="SQL language service session demo for codemirror-sql"
+      content="Interactive codemirror-sql language-service playground"
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,155 +15,125 @@
       rel="stylesheet"
     />
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      .sql-completion-info { min-width: 220px; padding: 8px; }
+      .sql-completion-info div { color: #64748b; margin-top: 4px; }
+      .cm-sql-statement-gutter { --cm-sql-statement-color: #2563eb; }
+    </style>
   </head>
-  <body>
-    <main class="max-w-4xl mx-auto px-4 py-8">
-      <h1 class="text-4xl font-bold mb-4">
-        <a
-          href="https://github.com/marimo-team/codemirror-sql"
-          class="text-blue-600 hover:text-blue-800"
-          target="_blank"
-          >codemirror-sql</a
-        >
-      </h1>
-      <p class="mb-2">
-        by
-        <a href="https://marimo.io/" class="text-blue-600 hover:text-blue-800" target="_blank"
-          >marimo</a
-        >
-      </p>
-      <p class="mb-6 text-gray-700">
-        Demo of
-        <code class="text-sm bg-gray-100 px-1 py-0.5 rounded">@marimo-team/codemirror-sql</code>.
-        Editor edits are forwarded to
-        <code class="text-sm bg-gray-100 px-1 py-0.5 rounded">SqlDocumentSession.update()</code>
-        with revision checks, dialect context, and embedded-region bookkeeping.
-      </p>
-
-      <div class="grid gap-8">
-        <section>
-          <h2 class="text-2xl font-bold mb-4">SQL Editor</h2>
-          <p class="mb-4 text-gray-600">
-            Syntax highlighting comes from CodeMirror. Language-service state is owned by the session
-            primitives.
+  <body class="bg-slate-50 text-slate-900">
+    <main class="max-w-5xl mx-auto px-4 py-8">
+      <div class="flex flex-wrap items-center justify-between gap-4 mb-3">
+        <div>
+          <h1 class="text-4xl font-bold">
+            <a
+              href="https://github.com/marimo-team/codemirror-sql"
+              class="text-blue-600 hover:text-blue-800"
+            >codemirror-sql</a>
+          </h1>
+          <p class="text-slate-600 mt-2">
+            The SQL language service running against a live in-memory catalog.
           </p>
-
-          <div class="flex justify-end items-center mb-2">
-            <label class="mr-2 text-sm text-gray-600" for="dialect-select">Dialect</label>
-            <select id="dialect-select" class="border rounded-md p-1.5">
-              <option value="postgresql">PostgreSQL</option>
-              <option value="duckdb">DuckDB</option>
-              <option value="bigquery">BigQuery</option>
-              <option value="dremio">Dremio</option>
-            </select>
-          </div>
-
-          <div class="border rounded-lg bg-white shadow-sm">
-            <div id="sql-editor" class="min-h-[400px] overflow-y-auto"></div>
-          </div>
-
-          <dl
-            class="mt-4 grid gap-3 rounded-lg border bg-slate-50 p-4 text-sm sm:grid-cols-3"
-            aria-label="Session status"
-          >
-            <div>
-              <dt class="font-medium text-gray-500">Dialect</dt>
-              <dd id="status-dialect" class="font-mono text-gray-900">PostgreSQL</dd>
-            </div>
-            <div>
-              <dt class="font-medium text-gray-500">Accepted updates</dt>
-              <dd id="status-updates" class="font-mono text-gray-900">1</dd>
-            </div>
-            <div>
-              <dt class="font-medium text-gray-500">Revision</dt>
-              <dd id="status-revision" class="font-mono text-gray-900">current</dd>
-            </div>
-          </dl>
-          <p
-            id="status-message"
-            class="mt-3 rounded-lg border px-3 py-2 text-sm text-gray-700 bg-gray-50 border-gray-200"
-          ></p>
-        </section>
-
-        <section>
-          <h2 class="text-2xl font-bold mb-4">Example Queries</h2>
-          <p class="mb-4 text-gray-600">Click any example to replace the document through the session API:</p>
-          <div class="grid gap-4 md:grid-cols-2">
-            <div class="space-y-2">
-              <h3 class="font-semibold text-lg">Sample statements</h3>
-              <button
-                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
-              >
-                <code class="text-sm">SELECT * FROM users WHERE active = true</code>
-              </button>
-              <button
-                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
-              >
-                <code class="text-sm"
-                  >SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id</code
-                >
-              </button>
-              <button
-                class="example-btn w-full p-3 text-left bg-green-50 hover:bg-green-100 border border-green-200 rounded"
-              >
-                <code class="text-sm"
-                  >WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT a.name
-                  FROM active_users a ORDER BY a.name</code
-                >
-              </button>
-            </div>
-            <div class="space-y-2">
-              <h3 class="font-semibold text-lg">Dialect-specific syntax</h3>
-              <button
-                class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded"
-              >
-                <code class="text-sm">from nyc.rideshare select * limit 100</code>
-              </button>
-              <button
-                class="example-btn w-full p-3 text-left bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded"
-              >
-                <code class="text-sm"
-                  >SELECT `project.dataset.table`.* FROM `project.dataset.table` LIMIT 10</code
-                >
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section>
-          <h2 class="text-2xl font-bold mb-4">What this demo exercises</h2>
-          <div class="grid gap-4 md:grid-cols-2">
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Session ownership</h3>
-              <p class="text-sm text-gray-700">
-                One <code>SqlLanguageService</code> opens a document session and accepts atomic
-                updates.
-              </p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Revision identity</h3>
-              <p class="text-sm text-gray-700">
-                Each accepted edit advances an opaque revision token checked with
-                <code>session.isCurrent()</code>.
-              </p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Dialect context</h3>
-              <p class="text-sm text-gray-700">
-                Built-in dialect handles for PostgreSQL, DuckDB, BigQuery, and Dremio can be switched
-                without reloading the editor.
-              </p>
-            </div>
-            <div class="p-4 bg-blue-50 rounded-lg">
-              <h3 class="font-semibold mb-2">Walking skeleton</h3>
-              <p class="text-sm text-gray-700">
-                Completion, diagnostics, hover, and navigation are not wired up yet. They will arrive as
-                vertical slices on top of this session API.
-              </p>
-            </div>
-          </div>
-        </section>
+        </div>
+        <span class="rounded-full bg-blue-100 px-3 py-1 text-sm font-semibold text-blue-800">
+          Standard API
+        </span>
       </div>
+
+      <section class="mt-8">
+        <div class="flex flex-wrap items-end justify-between gap-3 mb-3">
+          <div>
+            <h2 class="text-2xl font-bold">Interactive editor</h2>
+            <p class="text-sm text-slate-600">
+              Start typing or press <strong>Ctrl-Space</strong> for completion.
+              The gutter tracks statement boundaries.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <label class="text-sm">
+              <span class="block text-slate-500">Dialect</span>
+              <select id="database-select" class="border rounded-md bg-white p-1.5">
+                <option value="duckdb">DuckDB</option>
+                <option value="postgresql">PostgreSQL</option>
+                <option value="bigquery">BigQuery</option>
+                <option value="dremio">Dremio</option>
+              </select>
+            </label>
+            <label class="text-sm">
+              <span class="block text-slate-500">Provider latency</span>
+              <select id="latency-select" class="border rounded-md bg-white p-1.5">
+                <option value="0">Instant</option>
+                <option value="150">150 ms</option>
+                <option value="600">600 ms</option>
+              </select>
+            </label>
+            <button
+              id="invalidate-catalog"
+              class="self-end border rounded-md bg-white px-3 py-1.5 text-sm hover:bg-slate-100"
+            >
+              Invalidate catalog
+            </button>
+          </div>
+        </div>
+        <div class="border rounded-lg bg-white shadow-sm overflow-hidden">
+          <div id="sql-editor" class="min-h-[400px] overflow-y-auto"></div>
+          <div
+            class="border-t bg-slate-50 px-3 py-2 text-xs text-slate-500"
+            id="provider-stats"
+          ></div>
+        </div>
+      </section>
+
+      <section class="mt-8">
+        <h2 class="text-2xl font-bold mb-2">Completion scenarios</h2>
+        <p class="text-slate-600 mb-4">
+          The <strong>|</strong> marks where completion opens.
+        </p>
+        <div class="grid gap-3 md:grid-cols-2">
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT * FROM us|"
+          >
+            <strong>Relation completion</strong>
+            <code class="block mt-2 text-sm text-blue-700">SELECT * FROM us|</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT u.| FROM main.users AS u"
+          >
+            <strong>Qualified columns</strong>
+            <code class="block mt-2 text-sm text-blue-700">SELECT u.| FROM main.users AS u</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT u.| FROM main.users u WHERE EXISTS (SELECT 1 FROM sales.orders o)"
+          >
+            <strong>Correlated scope</strong>
+            <code class="block mt-2 text-sm text-blue-700">SELECT u.| ... WHERE EXISTS (...)</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT * FROM sa|"
+          >
+            <strong>Namespace completion</strong>
+            <code class="block mt-2 text-sm text-blue-700">SELECT * FROM sa|</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="WITH recent AS (SELECT * FROM sales.orders) SELECT * FROM rec|"
+          >
+            <strong>CTE visibility</strong>
+            <code class="block mt-2 text-sm text-blue-700">WITH recent AS (...) SELECT * FROM rec|</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT * FROM main.users u, LATERAL (SELECT u.| FROM sales.orders o) x, sales.customers c"
+          >
+            <strong>LATERAL scope</strong>
+            <code class="block mt-2 text-sm text-blue-700">..., LATERAL (SELECT u.| ...)</code>
+          </button>
+        </div>
+      </section>
     </main>
     <script type="module" src="./index.ts"></script>
   </body>

@@ -3,13 +3,57 @@
 Status: walking skeleton  
 Import: `@marimo-team/codemirror-sql`
 
-This entry point currently provides document ownership, atomic text/context
-updates, opaque revisions, dialect registration, and lifecycle management. It
-does not yet provide parsing, completion, diagnostics, hover, or navigation.
-Those methods will be added only with working vertical slices.
+This entry point provides document ownership, atomic text/context updates,
+opaque revisions, dialect registration, lifecycle management, and
+parser-independent relation completion. Diagnostics, hover, navigation, and
+general expression completion are not yet available.
+
+CodeMirror consumers should use the separate
+[standard CodeMirror adapter](./codemirror-adapter.md).
 
 See [source coordinates](./source-coordinates.md) for the shared UTF-16 range
 contract and the internal immutable source-snapshot model.
+
+Statement boundaries are available as a synchronous structural query:
+
+```ts
+const result = session.statementBoundaryAt({
+  affinity: "left",
+  position: cursorOffset,
+});
+
+if (
+  session.isCurrent(result.revision) &&
+  result.boundary.boundaryQuality === "exact" &&
+  result.boundary.hasCode
+) {
+  executeRange(result.boundary.source);
+}
+```
+
+The immutable result carries the current session revision. Exact boundaries
+expose their full extent, source range, optional terminator, lexical end state,
+and a nullable range from the first through last SQL code token. Source ranges
+retain attached
+whitespace and comments; they are factual lexical boundaries, not pre-trimmed
+visual selections. The `code` range excludes leading and trailing separator
+trivia so presentation layers do not need to re-lex the document. Opaque
+procedural, custom-delimiter, and resource-limited
+regions expose only their extent and reason, so consumers cannot mistake them
+for safely executable SQL.
+
+Viewport consumers can retrieve every structural boundary in one half-open
+range without probing or re-lexing the document:
+
+```ts
+const visible = session.statementBoundariesIntersecting({
+  from: viewport.from,
+  to: viewport.to,
+});
+```
+
+The query runs in logarithmic lookup time plus the number of intersecting
+boundaries and returns a frozen, revision-stamped array.
 
 ## Example
 
@@ -55,6 +99,91 @@ Use `{ kind: "replace", text }` for full replacement and
 `{ baseRevision, context }` for a context-only update. Every document mutation
 also supplies the complete embedded-region set for its resulting text. A
 region-only transaction can replace or clear that set without a fake text edit.
+
+## Relation completion
+
+Completion works without a catalog for visible CTEs. A service can also own one
+shared asynchronous relation-catalog provider:
+
+```ts
+const service = createSqlLanguageService<AppSqlContext>({
+  catalog: {
+    id: "app-catalog",
+    search: async (request, signal) => {
+      signal.throwIfAborted();
+      return {
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "initial" },
+        relations: [],
+        status: "ready",
+      };
+    },
+  },
+  completion: { catalogResponseBudgetMs: 40 },
+  dialects: [duckdbDialect()],
+});
+
+const session = service.openDocument({
+  context: {
+    dialect: "duckdb",
+    engine: "local",
+    catalog: { scope: "connection-incarnation:1" },
+  },
+  text: "SELECT * FROM ",
+});
+
+let completionRefreshToken: SqlCompletionRefreshToken | null = null;
+const subscription = session.onDidChange(({ refreshToken }) => {
+  if (
+    refreshToken !== null &&
+    refreshToken === completionRefreshToken
+  ) {
+    // Ask the editor adapter to request completion again.
+  }
+});
+
+const completionTask = session.complete({
+  position: 14,
+  trigger: { kind: "invoked" },
+});
+completionRefreshToken = completionTask.refreshToken;
+const result = await completionTask;
+
+if (result.status === "ready" && session.isCurrent(result.revision)) {
+  completionRefreshToken = result.refreshToken;
+  for (const item of result.value.items) {
+    // Apply item.edit in the original document's UTF-16 coordinates.
+  }
+}
+
+subscription.dispose();
+session.dispose();
+service.dispose();
+```
+
+The catalog `scope` identifies a live connection incarnation, not a reusable
+display name. Search responses distinguish complete, partial, paginated,
+loading, and failed evidence. A ready result can therefore be incomplete; its
+closed `issues` explain why, while `sources` reports catalog outcomes without
+exposing provider errors or internal epochs.
+
+The interactive catalog wait is bounded from the start of `complete()`. When
+the budget expires, the session returns local evidence with a
+`catalog-loading` issue, a checked remaining intent lease, and an opaque
+`refreshToken`. Compatible readiness advances the session revision and emits
+`catalog-availability` with that exact token. A higher provider epoch emits
+`catalog` with the token only while the same soft or terminal loading intent
+remains leased; otherwise its token is `null`.
+
+Consumers compare refresh tokens by identity. A matching token is necessary,
+not sufficient, to request completion again: the document, selection, context,
+and adapter-owned intent must also remain unchanged. Tokens are in-process,
+non-serializable control identities; they expose no provider epoch, query, or
+work identity. The completion task exposes its token synchronously before
+provider work starts, so consumers can latch a matching catalog event that
+races the result. Ready results retain that token only while
+`catalog-loading` has an unexpired lease; all other ready results use `null`.
+Consumers apply only results whose revision remains current.
 
 ## Dialect registration
 

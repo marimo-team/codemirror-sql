@@ -70,6 +70,7 @@ export type SqlLexicalEndState =
 
 export interface ExactSqlStatementSlot {
   readonly boundaryQuality: "exact";
+  readonly code: SqlAnalysisRange | null;
   readonly endState: Exclude<SqlLexicalEndState, { readonly kind: "opaque" }>;
   readonly extent: SqlAnalysisRange;
   readonly hasCode: boolean;
@@ -218,14 +219,18 @@ function createExactSlot(
   from: number,
   sourceTo: number,
   extentTo: number,
-  hasCode: boolean,
+  codeFrom: number | null,
+  codeTo: number,
   endState: ExactSqlStatementSlot["endState"],
 ): ExactSqlStatementSlot {
   const slot = Object.freeze({
     boundaryQuality: "exact",
+    code: codeFrom === null
+      ? null
+      : createAnalysisRange(codeFrom, codeTo),
     endState,
     extent: createAnalysisRange(from, extentTo),
-    hasCode,
+    hasCode: codeFrom !== null,
     source: createAnalysisRange(from, sourceTo),
     terminator:
       sourceTo === extentTo ? null : createAnalysisRange(sourceTo, extentTo),
@@ -495,9 +500,14 @@ function scanSqlStatementIndex(
   const slots: SqlStatementSlot[] = [...options.prefixSlots];
   const prefixGuard = new SqlPrefixGuard(profile.proceduralGuards);
   let slotFrom = options.from;
-  let hasCode = false;
+  let codeFrom: number | null = null;
+  let codeTo = options.from;
   let cursor = options.from;
   let finalEndState: ExactSqlStatementSlot["endState"] = NORMAL_END_STATE;
+  const recordCode = (from: number, to: number): void => {
+    if (codeFrom === null) codeFrom = from;
+    codeTo = to;
+  };
 
   const finishOpaque = (
     reason: SqlOpaqueBoundaryReason,
@@ -567,7 +577,7 @@ function scanSqlStatementIndex(
         analysisText.length,
       );
       if (dollarQuote) {
-        hasCode = true;
+        const codeFrom_ = cursor;
         prefixGuard.recordNonWord(code);
         if (dollarQuote.delimiterTooLong) {
           return finishOpaque("resource-limit", cursor);
@@ -579,6 +589,7 @@ function scanSqlStatementIndex(
           );
         }
         cursor = dollarQuote.to;
+        recordCode(codeFrom_, cursor);
         continue;
       }
     }
@@ -588,7 +599,7 @@ function scanSqlStatementIndex(
       code === 34 ||
       (profile.backtickQuotedIdentifiers && code === 96)
     ) {
-      hasCode = true;
+      const codeFrom_ = cursor;
       if (code === 96) {
         prefixGuard.recordQuotedIdentifier();
         prefixGuard.recordNonWord(code);
@@ -609,6 +620,7 @@ function scanSqlStatementIndex(
           );
         }
         cursor = quote.to;
+        recordCode(codeFrom_, cursor);
         continue;
       }
 
@@ -648,6 +660,7 @@ function scanSqlStatementIndex(
         );
       }
       cursor = quote.to;
+      recordCode(codeFrom_, cursor);
       continue;
     }
 
@@ -679,7 +692,7 @@ function scanSqlStatementIndex(
         cursor += continueLength;
       }
       prefixGuard.recordWord(analysisText, wordFrom, cursor);
-      hasCode = true;
+      recordCode(wordFrom, cursor);
       if (prefixGuard.reason !== null) {
         return finishOpaque(prefixGuard.reason, prefixGuard.reasonAt);
       }
@@ -699,12 +712,14 @@ function scanSqlStatementIndex(
           slotFrom,
           cursor,
           cursor + 1,
-          hasCode,
+          codeFrom,
+          codeTo,
           NORMAL_END_STATE,
         ),
       );
       slotFrom = cursor + 1;
-      hasCode = false;
+      codeFrom = null;
+      codeTo = slotFrom;
       finalEndState = NORMAL_END_STATE;
       prefixGuard.reset();
       cursor += 1;
@@ -715,7 +730,7 @@ function scanSqlStatementIndex(
       continue;
     }
 
-    hasCode = true;
+    recordCode(cursor, cursor + 1);
     cursor += 1;
   }
 
@@ -724,7 +739,8 @@ function scanSqlStatementIndex(
       slotFrom,
       analysisText.length,
       analysisText.length,
-      hasCode,
+      codeFrom,
+      codeTo,
       finalEndState,
     ),
   );
@@ -831,6 +847,12 @@ function shiftStatementSlot(
   }
   const shifted = Object.freeze({
     boundaryQuality: "exact",
+    code: slot.code
+      ? createAnalysisRange(
+          slot.code.from + delta,
+          slot.code.to + delta,
+        )
+      : null,
     endState: shiftEndState(slot.endState, delta),
     extent: createAnalysisRange(
       slot.extent.from + delta,
@@ -1045,6 +1067,40 @@ export function findSqlStatementSlot(
     slots,
     statementSlotIndexAt(slots, position, affinity),
   );
+}
+
+export function findSqlStatementSlotsIntersecting(
+  index: SqlStatementIndex,
+  range: { readonly from: number; readonly to: number },
+): readonly SqlStatementSlot[] {
+  const slots = index.slots;
+  const documentLength = getStatementSlot(
+    slots,
+    slots.length - 1,
+  ).extent.to;
+  if (
+    !Number.isSafeInteger(range.from) ||
+    !Number.isSafeInteger(range.to) ||
+    range.from < 0 ||
+    range.to < range.from ||
+    range.to > documentLength
+  ) {
+    throw new RangeError(
+      "SQL statement intersection range is outside the document",
+    );
+  }
+  if (range.from === range.to) return Object.freeze([]);
+  const matches: SqlStatementSlot[] = [];
+  for (
+    let index_ = statementSlotIndexAt(slots, range.from, "right");
+    index_ < slots.length;
+    index_ += 1
+  ) {
+    const slot = getStatementSlot(slots, index_);
+    if (slot.extent.from >= range.to) break;
+    if (slot.extent.to > range.from) matches.push(slot);
+  }
+  return Object.freeze(matches);
 }
 
 function getStatementSlot(
