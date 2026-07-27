@@ -127,10 +127,38 @@
           </button>
           <button
             class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="WITH recent AS (SELECT id AS order_id, status FROM sales.orders) SELECT recent.| FROM recent"
+          >
+            <strong>CTE output columns</strong>
+            <code class="block mt-2 text-sm text-blue-700">WITH recent AS (...) SELECT recent.|</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
             data-sql="SELECT * FROM main.users u, LATERAL (SELECT u.| FROM sales.orders o) x, sales.customers c"
           >
             <strong>LATERAL scope</strong>
             <code class="block mt-2 text-sm text-blue-700">..., LATERAL (SELECT u.| ...)</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT * FROM main.users UNION ALL SELECT * FROM sa|"
+          >
+            <strong>Set-operation arm</strong>
+            <code class="block mt-2 text-sm text-blue-700">... UNION ALL SELECT * FROM sa|</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="SELECT * FROM main.users u JOIN main.posts p USING (|)"
+          >
+            <strong>JOIN USING intersection</strong>
+            <code class="block mt-2 text-sm text-blue-700">... JOIN posts USING (|)</code>
+          </button>
+          <button
+            class="example-btn rounded-lg border bg-white p-4 text-left hover:border-blue-400"
+            data-sql="MERGE INTO main.users USING sa| ON true"
+          >
+            <strong>DML relation completion</strong>
+            <code class="block mt-2 text-sm text-blue-700">MERGE INTO users USING sa|</code>
           </button>
         </div>
       </section>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeSqlLocalColumnSite,
   analyzeSqlLocalRelationSite,
+  applySqlQueryOutputAliases,
   prepareSqlLocalRelationStatement,
   type SqlLocalRelationSiteResult,
 } from "../local-relation-site.js";
@@ -22,6 +23,26 @@ import {
   type SqlStatementIndex,
   type SqlStatementSlot,
 } from "../statement-index.js";
+
+it("retains bounded alias evidence when an underlying output is unavailable", () => {
+  expect(
+    applySqlQueryOutputAliases(
+      { reason: "unsupported-query", status: "unavailable" },
+      {
+        columns: [{
+          definition: { from: 0, to: 4 },
+          identifier: { quoted: false, value: "name" },
+          insertText: "name",
+        }],
+        coverage: "complete",
+      },
+    ),
+  ).toMatchObject({
+    columns: [{ identifier: { value: "name" } }],
+    coverage: "partial",
+    status: "ready",
+  });
+});
 
 const RUNTIMES = [
   {

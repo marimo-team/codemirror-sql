@@ -9,23 +9,23 @@ package's dependency. The fixture workspace pins Vite's floating transitive
 versions to the exact versions in the root lock, so the nested frozen install
 can run offline after a clean root CI install.
 
-The minified Vite 8 packed-consumer baseline is 40,121 gzip/143,265 raw
+The minified Vite 8 packed-consumer baseline is 53,612 gzip/199,957 raw
 bytes for the complete parser-free core, 67,573 gzip bytes for the PostgreSQL
 transitive graph, 50,470 gzip bytes for the BigQuery transitive graph, and
-150,985 gzip/669,106 raw bytes for the complete worker build output. The core
+164,513 gzip/725,798 raw bytes for the complete worker build output. The core
 measurement includes the four authenticated relation-dialect runtimes, their
 reserved-word tables, and relation-completion/session orchestration. The
 PostgreSQL and BigQuery figures each include their transitive shared chunks;
 the report also identifies those shared chunks explicitly.
 
-The fail-closed ceilings retain approximately 18% gzip and 22% raw headroom
-for the core, 8% gzip and 7% raw headroom for the complete worker output, and
+The fail-closed ceilings retain approximately 2–3% headroom for the core and
+complete worker output, plus
 the existing tight dialect-graph headroom:
 
-- Complete parser-free core: 48 KiB gzip and 180 KiB raw
+- Complete parser-free core: 54 KiB gzip and 200 KiB raw
 - PostgreSQL transitive graph: 68 KiB gzip
 - BigQuery transitive graph: 50 KiB gzip
-- Complete worker build output: 160 KiB gzip and 700 KiB raw
+- Complete worker build output: 164 KiB gzip and 720 KiB raw
 
 These are provisional placement limits, not product bundle promises. The
 orchestration script fails closed when they are exceeded, when the dialects no

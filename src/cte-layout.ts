@@ -14,6 +14,7 @@ import {
   type SqlStatementIndex,
 } from "./statement-index.js";
 import type { SqlIdentifierComponent } from "./types.js";
+import { MAX_QUERY_OUTPUT_COLUMNS } from "./query-output.js";
 
 const cteRangeBrand: unique symbol = Symbol("SqlCteRange");
 
@@ -41,6 +42,7 @@ export type SqlCteLayoutIssue =
 
 export type SqlCteLayoutResource =
   | "active-statement"
+  | "cte-column"
   | "cte-declaration"
   | "cte-frame"
   | "identifier-segment"
@@ -49,6 +51,11 @@ export type SqlCteLayoutResource =
 
 export interface SqlCteIdentifier {
   readonly component: SqlIdentifierComponent;
+}
+
+export interface SqlCteDeclaredColumn {
+  readonly name: SqlIdentifierComponent;
+  readonly range: SqlCteRange;
 }
 
 export type SqlCteIdentifierResult =
@@ -84,6 +91,7 @@ export interface SqlCteLayoutDialect {
 export interface SqlCteDeclaration {
   readonly ambiguous: boolean;
   readonly bodyRange: SqlCteRange;
+  readonly declaredColumns: readonly SqlCteDeclaredColumn[];
   readonly equivalenceClass: number;
   readonly frameIndex: number;
   readonly name: SqlIdentifierComponent;
@@ -96,6 +104,7 @@ export interface SqlCteDeclaration {
 export interface SqlCteDraftDeclaration {
   readonly ambiguous: boolean;
   readonly bodyRange: SqlCteRange;
+  readonly declaredColumns: readonly SqlCteDeclaredColumn[];
   readonly equivalenceClass: number;
   readonly frameIndex: number;
   readonly name: SqlIdentifierComponent;
@@ -247,6 +256,11 @@ interface DraftDeclaration {
   bodyLead: "select" | "with" | null;
   bodyLeadFrameIndex: number | null;
   component: SqlIdentifierComponent;
+  declaredColumns: {
+    readonly from: number;
+    readonly name: SqlIdentifierComponent;
+    readonly to: number;
+  }[];
   nameFrom: number;
   nameTo: number;
   sourceSpelling: string;
@@ -256,6 +270,7 @@ interface MutableDeclaration {
   ambiguous: boolean;
   bodyFrom: number;
   bodyTo: number;
+  declaredColumns: DraftDeclaration["declaredColumns"];
   identityIndex: number;
   frameIndex: number;
   name: SqlIdentifierComponent;
@@ -269,6 +284,7 @@ interface MutableDraftDeclaration {
   ambiguous: boolean;
   bodyFrom: number;
   bodyTo: number;
+  declaredColumns: DraftDeclaration["declaredColumns"];
   identityIndex: number;
   frameIndex: number;
   name: SqlIdentifierComponent;
@@ -788,6 +804,7 @@ function processName(
     bodyLead: null,
     bodyLeadFrameIndex: null,
     component: identifier.component,
+    declaredColumns: [],
     nameFrom: token.from - statementFrom,
     nameTo: token.to - statementFrom,
     sourceSpelling: text.slice(token.from, token.to),
@@ -817,6 +834,7 @@ function commitDeclaration(
     ambiguous: false,
     bodyFrom: current.bodyFrom,
     bodyTo,
+    declaredColumns: [...current.declaredColumns],
     frameIndex: frame.index,
     identityIndex,
     name: current.component,
@@ -885,6 +903,7 @@ function collectActiveBodyEvidence(
         ambiguous,
         bodyFrom: current.bodyFrom,
         bodyTo: exactThrough,
+        declaredColumns: [...current.declaredColumns],
         frameIndex: frame.index,
         identityIndex,
         name: current.component,
@@ -960,6 +979,14 @@ function freezeLayout(
           declaration.bodyFrom,
           declaration.bodyTo,
         ),
+        declaredColumns: Object.freeze(
+          declaration.declaredColumns.map((column) =>
+            Object.freeze({
+              name: column.name,
+              range: createRange(column.from, column.to),
+            })
+          ),
+        ),
         equivalenceClass: relationRoot(
           relations,
           declaration.identityIndex,
@@ -985,6 +1012,14 @@ function freezeLayout(
         bodyRange: createRange(
           declaration.bodyFrom,
           declaration.bodyTo,
+        ),
+        declaredColumns: Object.freeze(
+          declaration.declaredColumns.map((column) =>
+            Object.freeze({
+              name: column.name,
+              range: createRange(column.from, column.to),
+            })
+          ),
         ),
         equivalenceClass: relationRoot(
           relations,
@@ -1125,6 +1160,7 @@ export function analyzeSqlCteLayout(
   const declarationAttempts = { value: 0 };
   let depth = 0;
   let exactThrough = statementLength;
+  let recoveredThrough: number | null = null;
   let resource: SqlCteLayoutResource | undefined;
 
   scan: while (true) {
@@ -1151,6 +1187,16 @@ export function analyzeSqlCteLayout(
         if (frame.scopeTo === null) {
           frame.issues.add("opaque-template-context");
         }
+      }
+      if (
+        bodyOwners.size > 0 ||
+        frames.some((frame) => frame.state === "main")
+      ) {
+        recoveredThrough = recoveredThrough === null
+          ? exactThrough
+          : Math.min(recoveredThrough, exactThrough);
+        exactThrough = statementLength;
+        continue;
       }
       break;
     }
@@ -1528,7 +1574,13 @@ export function analyzeSqlCteLayout(
         }
         if (
           token.kind === "word" &&
-          wordEquals(text, token, "select")
+          (
+            wordEquals(text, token, "select") ||
+            wordEquals(text, token, "insert") ||
+            wordEquals(text, token, "update") ||
+            wordEquals(text, token, "delete") ||
+            wordEquals(text, token, "merge")
+          )
         ) {
           frame.mainQueryStart = token.from - statementFrom;
           frame.state = "main";
@@ -1547,14 +1599,13 @@ export function analyzeSqlCteLayout(
     const columnOwner = columnOwners.get(depth);
     if (columnOwner) {
       if (columnOwner.columnExpectIdentifier) {
-        if (
-          !normalizeIdentifier(
-            validatedDialect,
-            text,
-            token,
-            "cte-column",
-          )
-        ) {
+        const column = normalizeIdentifier(
+          validatedDialect,
+          text,
+          token,
+          "cte-column",
+        );
+        if (!column) {
           exactThrough = token.from - statementFrom;
           markPartial(
             columnOwner,
@@ -1562,6 +1613,23 @@ export function analyzeSqlCteLayout(
             "ambiguous-cte-header",
           );
           break;
+        }
+        if (
+          (columnOwner.current?.declaredColumns.length ?? 0) <
+            MAX_QUERY_OUTPUT_COLUMNS
+        ) {
+          columnOwner.current?.declaredColumns.push({
+            from: token.from - statementFrom,
+            name: column.component,
+            to: token.to - statementFrom,
+          });
+        } else {
+          resource ??= "cte-column";
+          markPartial(
+            columnOwner,
+            issues,
+            "ambiguous-cte-header",
+          );
         }
         columnOwner.columnCount += 1;
         columnOwner.columnExpectIdentifier = false;
@@ -1628,7 +1696,7 @@ export function analyzeSqlCteLayout(
     relations,
     exactThrough,
   );
-  const layout = freezeLayout(
+  const structuralLayout = freezeLayout(
     frames,
     declarations,
     draftDeclarations,
@@ -1638,6 +1706,15 @@ export function analyzeSqlCteLayout(
     issues,
     resource,
   );
+  const layout = recoveredThrough === null
+    ? structuralLayout
+    : Object.freeze({
+        ...structuralLayout,
+        exactThrough: Math.min(
+          structuralLayout.exactThrough,
+          recoveredThrough,
+        ),
+      });
   return registerSqlCteLayout(
     layout,
     source,

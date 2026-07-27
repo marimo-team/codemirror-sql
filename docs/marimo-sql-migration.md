@@ -133,14 +133,13 @@ columns. standard now provides all three through separate bounded providers,
 including qualified and unqualified query-site completion, ambiguity handling,
 stable provenance, cancellation, and batched column work.
 
-The remaining feature gaps are:
-
-- the dialect coverage described above; and
-- output-column inference for CTEs and derived relations. standard completes CTE
-  relation names but deliberately does not send a visible CTE name to the
-  physical column provider. Keep the legacy column source for those sites, or
-  defer full source replacement, until projection/output-column inference
-  lands.
+The remaining cutover gap is the dialect coverage described above. standard
+now infers provable output names for CTEs, derived relations, and the first arm
+of set operations. Explicit CTE column lists are authoritative. Simple column
+references and explicit aliases are inferred locally; stars and unaliased
+expressions remain explicitly partial rather than receiving invented names.
+Visible CTE and derived relation names are never sent to the physical column
+provider.
 
 The fixture feeds marimo's immutable namespace projection—stable entity ID,
 scope, canonical identifier path, and namespace kind—through one public,
@@ -158,8 +157,8 @@ scoped namespace provider on the shared service.
 4. Compare relation and column results with the golden corpus, including
    quoted insert text, aliases, ambiguity, partial/loading/failure states, and
    cold epoch behavior.
-5. Cut over supported physical-relation sites while preserving variable,
-   keyword, and legacy CTE/derived-output column sources.
+5. Cut over supported physical and inferred local-relation sites while
+   preserving variable and keyword sources.
 6. Add dialect coverage, expand the router, and remove completion-only legacy
    schema code. Keep legacy schema data while hover or diagnostics still use
    it.
@@ -185,9 +184,9 @@ Library tests cover relation and physical-column completion for `FROM`, `JOIN`,
 `alias.`, unqualified projections and predicates, `USING`, correlated nested
 queries, quoted identifiers, ambiguous columns, provider
 loading/invalidations, bounded batching, and template barriers. CTE tests prove
-declaration-order relation visibility and that CTE names are not incorrectly
-resolved through the physical column provider; they do not prove CTE
-output-column inference.
+declaration-order relation visibility, conservative output-column inference
+including partial stars and unaliased expressions, and that CTE names are not
+incorrectly resolved through the physical column provider.
 
 Marimo integration tests cover:
 

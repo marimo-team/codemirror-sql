@@ -263,6 +263,97 @@ describe("relation completion session integration", () => {
     service.dispose();
   });
 
+  it.each([
+    "INSERT INTO us",
+    "UPDATE us SET active = true",
+    "DELETE FROM us WHERE active = false",
+    "MERGE INTO target USING us ON true",
+    "WITH c AS (SELECT 1) UPDATE us SET active = true",
+    "WITH c AS (SELECT 1) DELETE FROM us WHERE active = false",
+    "WITH c AS (SELECT 1) INSERT INTO us",
+    "WITH c AS (SELECT 1) MERGE INTO us",
+  ])("completes a DML relation target in %s", async (text) => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "dml" },
+        relations: [{
+          canonicalPath: [{
+            quoted: false,
+            role: "relation",
+            value: "users",
+          }],
+          completionPathStart: 0,
+          entityId: "users",
+          matchQuality: "exact",
+          relationKind: "table",
+        }],
+        status: "ready",
+      })),
+      dialects: [duckdb],
+    });
+    const position = text.lastIndexOf("us") + 2;
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:dml" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [{ edit: { insert: "users" }, label: "users" }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("completes relations in a later set-operation arm", async () => {
+    const text = "SELECT * FROM current UNION ALL SELECT * FROM us";
+    const service = createSqlLanguageService<TestContext>({
+      catalog: catalogProvider(async () => ({
+        coverage: { kind: "complete" },
+        epoch: { generation: 0, token: "set-arm" },
+        relations: [{
+          canonicalPath: [{
+            quoted: false,
+            role: "relation",
+            value: "users",
+          }],
+          completionPathStart: 0,
+          entityId: "users",
+          matchQuality: "exact",
+          relationKind: "table",
+        }],
+        status: "ready",
+      })),
+      dialects: [duckdb],
+    });
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:set-arm" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.length,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: { items: [{ label: "users" }] },
+    });
+    service.dispose();
+  });
+
   it("keeps completion edits in absolute UTF-16 document coordinates", async () => {
     const service = createSqlLanguageService<TestContext>({
       catalog: catalogProvider(async () => ({
@@ -1263,6 +1354,473 @@ describe("column completion session integration", () => {
     });
   }
 
+  it("completes proven CTE output columns without a physical provider", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH recent AS (SELECT id, name AS label FROM users) " +
+      "SELECT recent.la FROM recent";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf("la FROM") + 2,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{
+        coverage: "complete",
+        feature: "query-output",
+        outcome: "ready",
+      }],
+      status: "ready",
+      value: {
+        isIncomplete: false,
+        items: [{
+          edit: { insert: "label" },
+          kind: "column",
+          label: "label",
+          provenance: { kind: "query-output" },
+        }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("uses an explicit CTE column list as the authoritative output shape", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [postgres],
+    });
+    const text =
+      'WITH recent("User ID", label) AS (SELECT *, upper(name) FROM users) ' +
+      'SELECT recent."U" FROM recent';
+    const session = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf('"U" FROM') + 2,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{
+        coverage: "complete",
+        feature: "query-output",
+      }],
+      status: "ready",
+      value: {
+        isIncomplete: false,
+        items: [{
+          edit: { insert: '"User ID"' },
+          label: "User ID",
+          provenance: { kind: "query-output" },
+        }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("completes derived and set-operation output names from the first arm", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "SELECT d.fi FROM (" +
+      "SELECT id AS first_name FROM users " +
+      "UNION ALL SELECT id AS later_name FROM archived" +
+      ") AS d";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf("fi FROM") + 2,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{ feature: "query-output" }],
+      status: "ready",
+      value: {
+        items: [{
+          edit: { insert: "first_name" },
+          label: "first_name",
+          provenance: { kind: "query-output" },
+        }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("uses derived and CTE relation-alias column lists", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [postgres],
+    });
+    const derivedText =
+      "SELECT d. FROM (SELECT original, other) AS d(renamed, second)";
+    const derived = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text: derivedText,
+    });
+    await expect(derived.complete({
+      position: derivedText.indexOf(" FROM"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          { label: "renamed" },
+          { label: "second" },
+        ],
+      },
+    });
+    derived.dispose();
+
+    const cteText =
+      "WITH c AS (SELECT original, other) " +
+      "SELECT x. FROM c AS x(renamed, second)";
+    const cte = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text: cteText,
+    });
+    await expect(cte.complete({
+      position: cteText.indexOf(" FROM c"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          { label: "renamed" },
+          { label: "second" },
+        ],
+      },
+    });
+    cte.dispose();
+    service.dispose();
+  });
+
+  it("keeps partial relation-alias evidence bounded and explicit", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [postgres],
+    });
+    const text =
+      "SELECT d. FROM (SELECT original, *) AS d(renamed, extra,)";
+    const session = service.openDocument({
+      context: { dialect: "postgresql", engine: "local" },
+      text,
+    });
+    await expect(session.complete({
+      position: text.indexOf(" FROM"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        isIncomplete: true,
+        issues: [{ reason: "query-binding-partial" }],
+        items: [
+          { label: "extra" },
+          { label: "renamed" },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
+  it("reuses one inferred CTE output across repeated aliases", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH c AS (SELECT id) SELECT  FROM c a, c b, c d";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+    await expect(session.complete({
+      position: text.indexOf(" FROM"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [
+          { detail: "a", label: "id" },
+          { detail: "b", label: "id" },
+          { detail: "d", label: "id" },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
+  it("keeps provable local columns while reporting unknown projections partial", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH recent AS (SELECT id, *, upper(name) FROM users) " +
+      "SELECT recent.i FROM recent";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf("i FROM") + 1,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{
+        coverage: "partial",
+        feature: "query-output",
+      }],
+      status: "ready",
+      value: {
+        isIncomplete: true,
+        issues: [{ reason: "query-binding-partial" }],
+        items: [{ label: "id" }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("merges inferred and physical columns in one completion result", async () => {
+    const service = serviceWithColumns(async (request) => ({
+      epoch: { generation: 1, token: "mixed" },
+      relations: request.relations.map((relation) => ({
+        columns: [{
+          columnEntityId: "physical:invoice_id",
+          identifier: { quoted: false, value: "invoice_id" },
+          insertText: "invoice_id",
+          ordinal: 0,
+        }],
+        coverage: "complete",
+        relationEntityId: "physical",
+        requestKey: relation.requestKey,
+        status: "ready",
+      })),
+    }));
+    const text =
+      "WITH c AS (SELECT id AS local_id) " +
+      "SELECT  FROM c JOIN physical p ON true";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:mixed" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf(" FROM"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [
+        { feature: "query-output" },
+        { feature: "column-catalog" },
+      ],
+      status: "ready",
+      value: {
+        items: [
+          { label: "local_id" },
+          { label: "invoice_id" },
+        ],
+      },
+    });
+    service.dispose();
+  });
+
+  it("retains local output when physical column completion is unavailable", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH c AS (SELECT id AS local_id) " +
+      "SELECT l FROM c JOIN physical p ON true";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf("l FROM") + 1,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [{ feature: "query-output" }],
+      status: "ready",
+      value: {
+        isIncomplete: true,
+        issues: [{ reason: "query-binding-partial" }],
+        items: [{ label: "local_id" }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("intersects local query outputs for JOIN USING completion", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH a AS (SELECT 1 AS id, 2 AS only_a), " +
+      "b AS (SELECT 1 AS id, 3 AS only_b) " +
+      "SELECT * FROM a JOIN b USING ()";
+    const session = service.openDocument({
+      context: { dialect: "duckdb", engine: "local" },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.lastIndexOf(")"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: { items: [{ label: "id" }] },
+    });
+    service.dispose();
+  });
+
+  it("intersects local and physical outputs for JOIN USING completion", async () => {
+    const service = serviceWithColumns(async (request) => ({
+      epoch: { generation: 1, token: "mixed-using" },
+      relations: request.relations.map((relation) => ({
+        columns: [
+          {
+            columnEntityId: "physical:id",
+            identifier: { quoted: false, value: "id" },
+            insertText: "id",
+            ordinal: 0,
+          },
+          {
+            columnEntityId: "physical:only_physical",
+            identifier: { quoted: false, value: "only_physical" },
+            insertText: "only_physical",
+            ordinal: 1,
+          },
+        ],
+        coverage: "complete",
+        relationEntityId: "physical",
+        requestKey: relation.requestKey,
+        status: "ready",
+      })),
+    }));
+    const text =
+      "WITH c AS (SELECT 1 AS id, 2 AS only_local) " +
+      "SELECT * FROM c JOIN physical p USING ()";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:mixed-using" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.lastIndexOf(")"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [
+        { feature: "query-output" },
+        { feature: "column-catalog" },
+      ],
+      status: "ready",
+      value: { items: [{ label: "id" }] },
+    });
+    service.dispose();
+  });
+
+  it("uses the left physical spelling for mixed JOIN USING completion", async () => {
+    const service = serviceWithColumns(async (request) => ({
+      epoch: { generation: 1, token: "physical-left-using" },
+      relations: request.relations.map((relation) => ({
+        columns: [
+          {
+            columnEntityId: "physical:id",
+            identifier: { quoted: false, value: "id" },
+            insertText: "id",
+            ordinal: 0,
+          },
+          {
+            columnEntityId: "physical:only_physical",
+            identifier: { quoted: false, value: "only_physical" },
+            insertText: "only_physical",
+            ordinal: 1,
+          },
+        ],
+        coverage: "complete",
+        relationEntityId: "physical",
+        requestKey: relation.requestKey,
+        status: "ready",
+      })),
+    }));
+    const text =
+      "WITH c AS (SELECT 1 AS id, 2 AS only_local) " +
+      "SELECT * FROM physical p JOIN c USING ()";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:physical-left-using" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.lastIndexOf(")"),
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      status: "ready",
+      value: {
+        items: [{
+          edit: { insert: "id" },
+          label: "id",
+          provenance: { kind: "column-catalog" },
+        }],
+      },
+    });
+    service.dispose();
+  });
+
+  it("returns local output while a physical column request exceeds its budget", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      catalog: relationCatalog,
+      columns: {
+        id: "columns",
+        loadColumns: () => new Promise(() => {}),
+      },
+      completion: { catalogResponseBudgetMs: 0 },
+      dialects: [duckdb],
+    });
+    const text =
+      "WITH c AS (SELECT id AS local_id) " +
+      "SELECT l FROM c JOIN physical p ON true";
+    const session = service.openDocument({
+      context: {
+        catalog: { scope: "connection:mixed-timeout" },
+        dialect: "duckdb",
+        engine: "local",
+      },
+      text,
+    });
+
+    await expect(session.complete({
+      position: text.indexOf("l FROM") + 1,
+      trigger: { kind: "invoked" },
+    })).resolves.toMatchObject({
+      sources: [
+        { feature: "query-output" },
+        { feature: "column-catalog", outcome: "loading" },
+      ],
+      status: "ready",
+      value: {
+        isIncomplete: true,
+        items: [{ label: "local_id" }],
+      },
+    });
+    service.dispose();
+  });
+
   it("batches and completes a qualified alias through the session", async () => {
     const requests: Parameters<
       SqlColumnCatalogProvider["loadColumns"]
@@ -1532,7 +2090,14 @@ describe("column completion session integration", () => {
       position,
       trigger: { kind: "invoked" },
     })).resolves.toMatchObject({
-      status: "unavailable",
+      sources: [{ feature: "query-output" }],
+      status: "ready",
+      value: {
+        items: [{
+          edit: { insert: "local_id" },
+          label: "local_id",
+        }],
+      },
     });
     expect(calls).toBe(0);
     service.dispose();

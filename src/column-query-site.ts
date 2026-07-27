@@ -17,18 +17,118 @@ import type {
   SqlIdentifierPath,
   SqlTextRange,
 } from "./types.js";
+import {
+  MAX_QUERY_OUTPUT_COLUMNS,
+  type SqlQueryOutput,
+  type SqlQueryOutputColumn,
+} from "./query-output.js";
 
 export const MAX_COLUMN_QUERY_RELATIONS = 256;
 
 export interface SqlColumnQueryRelation {
   readonly alias: SqlIdentifierComponent | null;
+  readonly columnAliases?: {
+    readonly columns: readonly SqlQueryOutputColumn[];
+    readonly coverage: "complete" | "partial";
+  };
+  readonly local?: {
+    readonly kind: "cte" | "derived";
+    readonly output?: SqlQueryOutput;
+    readonly queryRange: SqlTextRange;
+  };
   readonly path: SqlIdentifierPath;
   readonly range: SqlTextRange;
+}
+
+function parseColumnAliases(
+  source: SqlSourceSnapshot,
+  dialect: SqlRelationDialectRuntime,
+  tokens: readonly Token[],
+  start: number,
+  depth: number,
+): {
+  readonly aliases:
+    | SqlColumnQueryRelation["columnAliases"]
+    | undefined;
+  readonly next: number;
+} {
+  const open = tokens[start];
+  if (!punctuation(source, open, "(") || open?.depth !== depth) {
+    return { aliases: undefined, next: start };
+  }
+  const columns: SqlQueryOutputColumn[] = [];
+  let expectIdentifier = true;
+  let coverage: "complete" | "partial" = "complete";
+  let index = start + 1;
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (
+      token.kind === "comment" ||
+      token.kind === "line-comment"
+    ) {
+      continue;
+    }
+    if (punctuation(source, token, ")") && token.depth === depth) {
+      if (expectIdentifier) coverage = "partial";
+      return {
+        aliases: Object.freeze({
+          columns: Object.freeze(columns),
+          coverage,
+        }),
+        next: index + 1,
+      };
+    }
+    if (token.depth !== depth + 1) {
+      coverage = "partial";
+      continue;
+    }
+    if (expectIdentifier && isIdentifier(token)) {
+      const path = decodePath(
+        source,
+        dialect,
+        token.from,
+        token.to,
+      );
+      const identifier = path?.length === 1 ? path[0] : undefined;
+      if (!identifier) {
+        coverage = "partial";
+      } else if (columns.length < MAX_QUERY_OUTPUT_COLUMNS) {
+        columns.push(Object.freeze({
+          definition: Object.freeze({
+            from: token.from,
+            to: token.to,
+          }),
+          identifier,
+          insertText: source.originalText.slice(token.from, token.to),
+        }));
+      } else {
+        coverage = "partial";
+      }
+      expectIdentifier = false;
+      continue;
+    }
+    if (
+      !expectIdentifier &&
+      punctuation(source, token, ",")
+    ) {
+      expectIdentifier = true;
+      continue;
+    }
+    coverage = "partial";
+  }
+  return {
+    aliases: Object.freeze({
+      columns: Object.freeze(columns),
+      coverage: "partial",
+    }),
+    next: index,
+  };
 }
 
 export type SqlColumnQuerySiteIssue =
   | "derived-relation"
   | "incomplete-relation"
+  | "local-output-partial"
   | "nested-query"
   | "opaque-template-context"
   | "table-function";
@@ -53,6 +153,7 @@ export type SqlColumnQuerySiteResult =
   | {
       readonly status: "ready";
       readonly coverage: "complete" | "partial";
+      readonly context: SqlColumnCompletionContext;
       readonly issues: readonly SqlColumnQuerySiteIssue[];
       readonly prefix: SqlIdentifierComponent;
       readonly qualifier: SqlIdentifierPath;
@@ -64,7 +165,7 @@ interface Token extends BoundedSqlLexeme {
   readonly depth: number;
 }
 
-type Clause =
+export type SqlColumnCompletionContext =
   | "from"
   | "group"
   | "having"
@@ -73,6 +174,7 @@ type Clause =
   | "order"
   | "qualify"
   | "select-list"
+  | "using"
   | "where";
 
 const RELATION_END_WORDS: ReadonlySet<string> = new Set([
@@ -197,6 +299,81 @@ function parseNamedRelation(
   readonly issue: SqlColumnQuerySiteIssue | null;
 } {
   const first = tokens[start];
+  if (punctuation(source, first, "(") && first?.depth === depth) {
+    const closeIndex = tokens.findIndex((token, index) =>
+      index > start &&
+      token.depth === depth &&
+      punctuation(source, token, ")")
+    );
+    const close = tokens[closeIndex];
+    const hasSelect = tokens.some((token, index) =>
+      index > start &&
+      index < closeIndex &&
+      token.depth === depth + 1 &&
+      word(source, token) === "select"
+    );
+    if (closeIndex < 0 || !close || !hasSelect) {
+      return {
+        issue: "derived-relation" as const,
+        next: start + 1,
+        relation: null,
+      };
+    }
+    let end = closeIndex + 1;
+    const maybeAs = word(source, tokens[end]);
+    if (maybeAs === "as") end += 1;
+    const aliasToken = tokens[end];
+    const aliasPath =
+      isIdentifier(aliasToken) && aliasToken?.depth === depth
+        ? decodePath(
+            source,
+            dialect,
+            aliasToken.from,
+            aliasToken.to,
+          )
+        : null;
+    const alias = aliasPath?.length === 1
+      ? aliasPath[0] ?? null
+      : null;
+    if (alias !== null) end += 1;
+    const parsedAliases = alias === null
+      ? { aliases: undefined, next: end }
+      : parseColumnAliases(
+          source,
+          dialect,
+          tokens,
+          end,
+          depth,
+        );
+    end = parsedAliases.next;
+    return {
+      issue:
+        alias === null
+          ? "derived-relation" as const
+          : parsedAliases.aliases?.coverage === "partial"
+            ? "local-output-partial" as const
+            : null,
+      next: end,
+      relation: Object.freeze({
+        alias,
+        ...(parsedAliases.aliases === undefined
+          ? {}
+          : { columnAliases: parsedAliases.aliases }),
+        local: Object.freeze({
+          kind: "derived" as const,
+          queryRange: Object.freeze({
+            from: first.to,
+            to: close.from,
+          }),
+        }),
+        path: Object.freeze([]),
+        range: Object.freeze({
+          from: first.from,
+          to: close.to,
+        }),
+      }),
+    };
+  }
   if (!isIdentifier(first) || first?.depth !== depth) {
     return {
       issue: punctuation(source, first, "(")
@@ -258,14 +435,29 @@ function parseNamedRelation(
       end += 1;
     }
   }
+  const parsedAliases = alias === null
+    ? { aliases: undefined, next: end }
+    : parseColumnAliases(
+        source,
+        dialect,
+        tokens,
+        end,
+        depth,
+      );
+  end = parsedAliases.next;
   return {
     issue:
       maybeAs === "as" && alias === null
         ? "incomplete-relation"
-        : null,
+        : parsedAliases.aliases?.coverage === "partial"
+          ? "local-output-partial"
+          : null,
     next: end,
     relation: Object.freeze({
       alias,
+      ...(parsedAliases.aliases === undefined
+        ? {}
+        : { columnAliases: parsedAliases.aliases }),
       path,
       range: Object.freeze({
         from: first.from,
@@ -281,8 +473,8 @@ function clauseAt(
   selectIndex: number,
   depth: number,
   position: number,
-): Clause {
-  let clause: Clause = "select-list";
+): SqlColumnCompletionContext {
+  let clause: SqlColumnCompletionContext = "select-list";
   for (
     let index = selectIndex + 1;
     index < tokens.length && tokens[index]!.from < position;
@@ -306,8 +498,10 @@ function clauseAt(
         clause = "limit";
         break;
       case "on":
-      case "using":
         clause = "join-condition";
+        break;
+      case "using":
+        clause = "using";
         break;
       case "order":
         clause = "order";
@@ -488,6 +682,12 @@ function collectRelations(
     );
     if (parsed.issue !== null) issues.add(parsed.issue);
     if (parsed.relation !== null) {
+      if (
+        precedingOnly &&
+        parsed.relation.range.to >= visibilityPosition
+      ) {
+        break;
+      }
       relations.push(parsed.relation);
       if (relations.length > MAX_COLUMN_QUERY_RELATIONS) return false;
     }
@@ -671,6 +871,7 @@ export function recognizeSqlColumnQuerySite(
   const issueList = Object.freeze(Array.from(issues).sort());
   return Object.freeze({
     coverage: issueList.length === 0 ? "complete" : "partial",
+    context: clause,
     issues: issueList,
     prefix: path.prefix,
     qualifier: path.qualifier,

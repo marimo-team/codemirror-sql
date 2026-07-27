@@ -979,7 +979,6 @@ describe("fail-closed query-site behavior", () => {
     [", SELECT * FROM |", "inactive"],
     ["(SELECT 1) SELECT * FROM |", "inactive"],
     ["((SELECT 1)) SELECT * FROM |", "inactive"],
-    ["DELETE FROM |", "inactive"],
     ["COPY x FROM |", "inactive"],
     ["SELECT * FROM users alias |", "inactive"],
     ["SELECT * FROM|", "inactive"],
@@ -1060,6 +1059,9 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT * FROM a JOIN b USING(id other) JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b USING(id) other JOIN |", "unavailable"],
     ['SELECT * FROM a JOIN b USING(id) "other" JOIN |', "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id) + JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id) LEFT(1) JOIN |", "unavailable"],
+    ["SELECT * FROM a JOIN b USING(id) LEFT, |", "unavailable"],
     ["SELECT * FROM a JOIN b USING 'id' JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b USING FETCH JOIN |", "unavailable"],
     ["SELECT * FROM a JOIN b USING GROUP JOIN |", "unavailable"],
@@ -1135,7 +1137,6 @@ describe("fail-closed query-site behavior", () => {
     ["SELECT * FROM 'not a relation' JOIN |", "unavailable"],
     ["SELECT * FROM , |", "unavailable"],
     ["SELECT * FROM schema..|", "unavailable"],
-    ["SELECT * FROM a UNION SELECT * FROM |", "unavailable"],
     ["SELECT * FROM a QUALIFY x JOIN |", "unavailable"],
   ] as const)("does not invent a site for %s", (marked, status) => {
     expect(recognize(marked).status).toBe(status);
@@ -1565,14 +1566,128 @@ describe("fail-closed query-site behavior", () => {
     "SELECT * FROM users LEFT RIGHT JOIN |",
     "SELECT * FROM users LEFT potato JOIN |",
     "SELECT * FROM users a b JOIN |",
-    "SELECT * FROM users EXCEPT SELECT * FROM |",
-    "SELECT * FROM users INTERSECT SELECT * FROM |",
     "SELECT * FROM users WINDOW value JOIN |",
     "SELECT * FROM users alias . JOIN |",
     "SELECT * FROM users alias + JOIN |",
     "SELECT * FROM users \"one\" \"two\" JOIN |",
   ])("makes ambiguous transitions unavailable in %s", (marked) => {
     expect(recognize(marked).status).toBe("unavailable");
+  });
+
+  it.each([
+    "SELECT * FROM users UNION SELECT * FROM |",
+    "SELECT * FROM users UNION ALL SELECT * FROM |",
+    "SELECT * FROM users UNION DISTINCT SELECT * FROM |",
+    "SELECT * FROM users INTERSECT SELECT * FROM |",
+    "SELECT * FROM users EXCEPT SELECT * FROM |",
+  ])("recognizes a relation site in each set-operation arm for %s", (marked) => {
+    expect(recognize(marked)).toMatchObject({
+      anchor: "from",
+      prefix: { quoted: false, value: "" },
+      qualifier: [],
+      status: "ready",
+    });
+  });
+
+  it.each([
+    ["INSERT INTO |", "from"],
+    ["UPDATE app.us| SET name = 'x'", "from"],
+    ["DELETE FROM | WHERE true", "from"],
+    ["MERGE INTO target USING | ON true", "join"],
+    ["/* leading */ UPDATE |", "from"],
+  ] as const)("recognizes the DML relation site in %s", (marked, anchor) => {
+    expect(recognize(marked)).toMatchObject({
+      anchor,
+      status: "ready",
+    });
+  });
+
+  it.each([
+    "INSERT target|",
+    "MERGE target| USING source ON true",
+  ])("recognizes optional BigQuery INTO in %s", (marked) => {
+    expect(recognize(marked, {
+      dialect: bigQueryDialect,
+    })).toMatchObject({
+      anchor: "from",
+      status: "ready",
+    });
+  });
+
+  it.each([
+    "INSERT INTO target SELECT * FROM |",
+    "UPDATE target SET value = (SELECT value FROM |)",
+    "DELETE FROM target WHERE EXISTS (SELECT 1 FROM |)",
+    "MERGE INTO target USING source ON EXISTS (SELECT 1 FROM |)",
+  ])("continues into nested SELECT relation sites for %s", (marked) => {
+    expect(recognize(marked).status).toBe("ready");
+  });
+
+  it.each([
+    "INSERT |",
+    "INSERT target |",
+    "DELETE |",
+    "DELETE target |",
+    "MERGE USING |",
+    "MERGE target |",
+    "UPDATE (SELECT 1) |",
+    "UPDATE 'target' |",
+  ])("fails malformed DML relation transitions closed in %s", (marked) => {
+    expect(recognize(marked).status).not.toBe("ready");
+  });
+
+  it("keeps completed DML targets outside relation completion", () => {
+    expect(recognize("UPDATE target SET value = 1|")).toEqual({
+      reason: "not-select-query",
+      status: "inactive",
+    });
+    expect(recognize("MERGE INTO target USING source ON true|")).toEqual({
+      reason: "not-select-query",
+      status: "inactive",
+    });
+  });
+
+  it("classifies DML cursor barriers without inventing targets", () => {
+    expect(recognize("UP|DATE users").status).toBe("inactive");
+    expect(recognize("UPDATE /* tar|get */").status).toBe("inactive");
+    expect(recognize("UPDATE 'tar|get'").status).toBe("inactive");
+    const marked = "UPDATE {py|thon}";
+    const { position, text } = markedSource(marked);
+    const from = text.indexOf("{python}");
+    expect(recognize(marked, {
+      regions: [{
+        from,
+        language: "python",
+        to: from + "{python}".length,
+      }],
+    })).toEqual({
+      reason: "cursor-in-embedded-region",
+      status: "inactive",
+    });
+    expect(position).toBeGreaterThan(from);
+  });
+
+  it("fails closed when an embedded region precedes a DML target", () => {
+    const marked = "UPDATE {python} |";
+    const { text } = markedSource(marked);
+    const from = text.indexOf("{python}");
+    expect(recognize(marked, {
+      regions: [{
+        from,
+        language: "python",
+        to: from + "{python}".length,
+      }],
+    })).toEqual({
+      reason: "ambiguous-query-site",
+      status: "unavailable",
+    });
+  });
+
+  it("does not interpret non-USING MERGE suffixes as source relations", () => {
+    expect(recognize("MERGE INTO target ON |")).toEqual({
+      reason: "not-relation-position",
+      status: "inactive",
+    });
   });
 
   it("suppresses the three-word IS NOT DISTINCT FROM expression", () => {

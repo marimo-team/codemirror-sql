@@ -1415,6 +1415,7 @@ function createRuntime(spec: RelationDialectSpec): SqlRelationDialectRuntime {
     decodeRelationPath: createPathDecoder(spec, decodeIdentifier),
     lexicalProfile: spec.lexicalProfile,
     maximumPathDepth: spec.maximumPathDepth,
+    ...(spec.kind === "bigquery" ? { optionalDmlInto: true } : {}),
     supportsNaturalJoin: spec.supportsNaturalJoin,
   });
   return registerSqlRelationDialectRuntime(

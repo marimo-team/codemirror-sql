@@ -18,6 +18,8 @@ import {
 } from "./column-catalog-batch-coordinator.js";
 import {
   composeSqlColumnCompletion,
+  composeSqlLocalQueryOutputCompletion,
+  filterSqlUsingCompletionList,
   prepareSqlColumnCatalogRelations,
 } from "./column-completion.js";
 import {
@@ -667,6 +669,22 @@ function mergeCompletionLists(
     isIncomplete: true,
     issues: Object.freeze(incompleteIssues),
     items,
+  });
+}
+
+function completionListWithIssue(
+  value: SqlCompletionList,
+  reason: "query-binding-partial",
+): SqlCompletionList {
+  if (value.issues.some((issue) => issue.reason === reason)) return value;
+  const issues: [SqlCompletionIssue, ...SqlCompletionIssue[]] = [
+    Object.freeze({ reason }),
+    ...value.issues,
+  ];
+  return Object.freeze({
+    isIncomplete: true,
+    issues: Object.freeze(issues),
+    items: value.items,
   });
 }
 
@@ -1892,8 +1910,25 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
             columnSite,
             snapshot.dialect.relationDialect,
           );
+          const localComposition = composeSqlLocalQueryOutputCompletion(
+            columnSite,
+            snapshot.dialect.relationDialect,
+          );
           if (preparedRelations.references.length === 0) {
             cancelPrevious();
+            if (localComposition) {
+              return Object.freeze({
+                refreshToken: null,
+                revision: snapshot.revision,
+                sources: localComposition.sources,
+                status: "ready",
+                value: filterSqlUsingCompletionList(
+                  localComposition.value,
+                  columnSite,
+                  snapshot.dialect.relationDialect,
+                ),
+              });
+            }
             return Object.freeze({
               reason: unavailableCompletionReason(localSite),
               retryable: false,
@@ -1903,6 +1938,22 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           }
           if (!catalog || !columnOwner || !columnCoordinator) {
             cancelPrevious();
+            if (localComposition) {
+              return Object.freeze({
+                refreshToken: null,
+                revision: snapshot.revision,
+                sources: localComposition.sources,
+                status: "ready",
+                value: completionListWithIssue(
+                  filterSqlUsingCompletionList(
+                    localComposition.value,
+                    columnSite,
+                    snapshot.dialect.relationDialect,
+                  ),
+                  "query-binding-partial",
+                ),
+              });
+            }
             return Object.freeze({
               reason: "unsupported-query-site",
               retryable: false,
@@ -1939,24 +1990,37 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           if (raced.kind === "timeout") {
             const remainingIntentLeaseMs =
               this.#retainAuxiliaryRefresh(active, ticket.result);
+            const loadingValue = Object.freeze({
+              isIncomplete: true as const,
+              issues: Object.freeze([Object.freeze({
+                reason: "column-catalog-loading" as const,
+                remainingIntentLeaseMs,
+              })] as const),
+              items: Object.freeze([]),
+            });
             return Object.freeze({
               refreshToken: active.token,
               revision: snapshot.revision,
-              sources: Object.freeze([Object.freeze({
-                feature: "column-catalog" as const,
-                failures: Object.freeze([]),
-                outcome: "loading" as const,
-                providerId: columnCoordinator.providerId,
-              })]),
+              sources: Object.freeze([
+                ...(localComposition?.sources ?? []),
+                Object.freeze({
+                  feature: "column-catalog" as const,
+                  failures: Object.freeze([]),
+                  outcome: "loading" as const,
+                  providerId: columnCoordinator.providerId,
+                }),
+              ]),
               status: "ready",
-              value: Object.freeze({
-                isIncomplete: true,
-                issues: Object.freeze([Object.freeze({
-                  reason: "column-catalog-loading" as const,
-                  remainingIntentLeaseMs,
-                })] as const),
-                items: Object.freeze([]),
-              }),
+              value: localComposition
+                ? filterSqlUsingCompletionList(
+                    mergeCompletionLists(
+                      localComposition.value,
+                      loadingValue,
+                    ),
+                    columnSite,
+                    snapshot.dialect.relationDialect,
+                  )
+                : loadingValue,
             });
           }
           const composition = composeSqlColumnCompletion({
@@ -1995,15 +2059,33 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
           return Object.freeze({
             refreshToken: retryLoading ? active.token : null,
             revision: snapshot.revision,
-            sources: composition.sources,
+            sources: Object.freeze([
+              ...(localComposition?.sources ?? []),
+              ...composition.sources,
+            ]),
             status: "ready",
-            value: retryLoading
-              ? completionListWithLoadingLease(
-                  composition.value,
-                  "column-catalog-loading",
-                  remainingIntentLeaseMs,
+            value: localComposition
+              ? filterSqlUsingCompletionList(
+                  mergeCompletionLists(
+                    localComposition.value,
+                    retryLoading
+                      ? completionListWithLoadingLease(
+                          composition.value,
+                          "column-catalog-loading",
+                          remainingIntentLeaseMs,
+                        )
+                      : composition.value,
+                  ),
+                  columnSite,
+                  snapshot.dialect.relationDialect,
                 )
-              : composition.value,
+              : retryLoading
+                ? completionListWithLoadingLease(
+                    composition.value,
+                    "column-catalog-loading",
+                    remainingIntentLeaseMs,
+                  )
+                : composition.value,
           });
         }
         cancelPrevious();
