@@ -26,6 +26,11 @@ browser test now isolates virtualization instead of depending on iframe-level
 document focus. The hidden-until-focused policy remains covered in the
 deterministic editor unit suite. Production focus checks were not weakened.
 
+The final push also exposed a separate workflow configuration error: CodeQL
+completed analysis but could not upload SARIF because the security job had no
+`security-events` permission. The job now has scoped read access to actions and
+contents plus write access to security events.
+
 ## Verification
 
 - Firefox: 18 passed
@@ -33,6 +38,7 @@ deterministic editor unit suite. Production focus checks were not weakened.
 - WebKit: 18 passed
 - TypeScript: passed
 - Oxlint: passed
+- CodeQL SARIF upload permissions: corrected
 
 ## Retrospective
 
