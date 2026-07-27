@@ -31,6 +31,12 @@ completed analysis but could not upload SARIF because the security job had no
 `security-events` permission. The job now has scoped read access to actions and
 contents plus write access to security events.
 
+The cross-browser matrix then exposed an independent timing race in the worker
+crash fixture. A shared 250 ms limit covered startup, queueing, and execution,
+allowing a loaded Firefox runner to report `queue-timeout` before the deliberate
+worker crash became active. Failure tests now retain the real 4-second
+startup/queue allowances while using a 1-second execution deadline.
+
 ## Verification
 
 - Firefox: 18 passed

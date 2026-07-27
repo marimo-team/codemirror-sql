@@ -15,9 +15,7 @@ const REAL_WORKER_LIMITS = Object.freeze({
 });
 const FAILURE_WORKER_LIMITS = Object.freeze({
   ...REAL_WORKER_LIMITS,
-  executionDeadlineMs: 250,
-  queueDeadlineMs: 250,
-  startupDeadlineMs: 250,
+  executionDeadlineMs: 1_000,
 });
 
 function adaptWorker(
