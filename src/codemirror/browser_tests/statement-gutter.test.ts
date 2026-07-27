@@ -1,6 +1,5 @@
 import { EditorView } from "@codemirror/view";
 import { expect, onTestFinished, test } from "vitest";
-import { userEvent } from "vitest/browser";
 import {
   createSqlLanguageService,
   duckdbDialect,
@@ -54,7 +53,7 @@ test("standard statement gutter follows the current statement", async () => {
   }).toBe(0);
 });
 
-test("standard statement gutter virtualizes a tall focused editor", async () => {
+test("standard statement gutter virtualizes a tall editor", async () => {
   const parent = document.createElement("div");
   parent.style.height = "120px";
   parent.style.setProperty(
@@ -70,7 +69,7 @@ test("standard statement gutter virtualizes a tall focused editor", async () => 
   const support = sqlEditor({
     initialContext: { dialect: "duckdb" },
     service,
-    statementGutter: { hideWhenNotFocused: true },
+    statementGutter: {},
   });
   const documentText = Array.from(
     { length: 200 },
@@ -83,16 +82,8 @@ test("standard statement gutter virtualizes a tall focused editor", async () => 
   });
   onTestFinished(() => view.destroy());
 
-  expect(
-    view.dom.querySelectorAll(".cm-sql-statement-marker"),
-  ).toHaveLength(0);
-  const firstLine = view.contentDOM.querySelector(".cm-line");
-  expect(firstLine).not.toBeNull();
-  await userEvent.click(firstLine!);
-  await expect.poll(() => view.hasFocus, { timeout: 5_000 }).toBe(true);
   await expect.poll(
     () => view.dom.querySelectorAll(".cm-sql-statement-marker").length,
-    { timeout: 5_000 },
   ).toBeGreaterThan(0);
   const initialCount = view.dom.querySelectorAll(
     ".cm-sql-statement-marker",

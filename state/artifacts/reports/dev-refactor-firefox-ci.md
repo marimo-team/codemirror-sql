@@ -20,10 +20,11 @@ synthetic transaction that did not exercise Firefox's real input path.
 
 ## Resolution
 
-The browser tests now click a visible editor target through `userEvent`, wait
-for CodeMirror's focus state where rendering depends on it, restore the intended
-cursor where needed, and type through a real keyboard event. Production focus
-checks were not weakened.
+The completion browser tests now click the editor through `userEvent`, restore
+the intended cursor, and type through a real keyboard event. The tall-editor
+browser test now isolates virtualization instead of depending on iframe-level
+document focus. The hidden-until-focused policy remains covered in the
+deterministic editor unit suite. Production focus checks were not weakened.
 
 ## Verification
 
