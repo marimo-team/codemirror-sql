@@ -7,6 +7,7 @@ import {
 import { sql, StandardSQL } from "@codemirror/lang-sql";
 import { EditorView } from "@codemirror/view";
 import { expect, onTestFinished, test } from "vitest";
+import { userEvent } from "vitest/browser";
 import {
   createSqlLanguageService,
   duckdbDialect,
@@ -331,7 +332,8 @@ test("standard editor refreshes the first completion after a slow provider", asy
     selection: { anchor: documentText.length },
   });
   onTestFinished(() => view.destroy());
-  view.focus();
+  await userEvent.click(view.contentDOM);
+  view.dispatch({ selection: { anchor: documentText.length } });
 
   expect(startCompletion(view)).toBe(true);
   await expect.poll(() =>
@@ -382,11 +384,9 @@ test("standard editor activates catalog completion while typing", async () => {
     selection: { anchor: documentText.length },
   });
   onTestFinished(() => view.destroy());
-  view.focus();
-  view.dispatch({
-    changes: { from: documentText.length, insert: "s" },
-    userEvent: "input.type",
-  });
+  await userEvent.click(view.contentDOM);
+  view.dispatch({ selection: { anchor: documentText.length } });
+  await userEvent.keyboard("s");
 
   await expect.poll(() =>
     currentCompletions(view.state).map((item) => item.label)

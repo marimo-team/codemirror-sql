@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { expect, onTestFinished, test } from "vitest";
+import { userEvent } from "vitest/browser";
 import {
   createSqlLanguageService,
   duckdbDialect,
@@ -85,7 +86,7 @@ test("standard statement gutter virtualizes a tall focused editor", async () => 
   expect(
     view.dom.querySelectorAll(".cm-sql-statement-marker"),
   ).toHaveLength(0);
-  view.focus();
+  await userEvent.click(view.contentDOM);
   await expect.poll(() =>
     view.dom.querySelectorAll(".cm-sql-statement-marker").length
   ).toBeGreaterThan(0);
