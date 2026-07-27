@@ -1,6 +1,6 @@
 # ADR 0007: Bounded language-feature provider composition
 
-Status: accepted  
+Status: accepted
 Date: 2026-07-27
 
 ## Context
