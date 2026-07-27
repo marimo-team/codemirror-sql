@@ -33,6 +33,7 @@ columns.
 ## PR 2: language intelligence and release hardening
 
 Status: complete
+Delivery: PR #206
 
 The final PR adds the remaining feature methods and provider composition:
 
