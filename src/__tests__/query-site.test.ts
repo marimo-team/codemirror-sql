@@ -1590,6 +1590,19 @@ describe("fail-closed query-site behavior", () => {
   });
 
   it.each([
+    "SELECT * FROM users WHERE active UNION SELECT * FROM |",
+    "SELECT * FROM users GROUP BY team_id HAVING count(*) > 1 INTERSECT SELECT * FROM |",
+    "SELECT * FROM users ORDER BY id UNION ALL SELECT * FROM |",
+  ])("reopens a closed first arm at a set operation in %s", (marked) => {
+    expect(recognize(marked)).toMatchObject({
+      anchor: "from",
+      prefix: { quoted: false, value: "" },
+      qualifier: [],
+      status: "ready",
+    });
+  });
+
+  it.each([
     ["INSERT INTO |", "from"],
     ["UPDATE app.us| SET name = 'x'", "from"],
     ["DELETE FROM | WHERE true", "from"],

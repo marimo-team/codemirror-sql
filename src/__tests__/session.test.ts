@@ -314,8 +314,9 @@ describe("relation completion session integration", () => {
     service.dispose();
   });
 
-  it("completes relations in a later set-operation arm", async () => {
-    const text = "SELECT * FROM current UNION ALL SELECT * FROM us";
+  it("completes relations after a closed set-operation arm", async () => {
+    const text =
+      "SELECT * FROM current WHERE active UNION ALL SELECT * FROM us";
     const service = createSqlLanguageService<TestContext>({
       catalog: catalogProvider(async () => ({
         coverage: { kind: "complete" },
@@ -1583,7 +1584,7 @@ describe("column completion session integration", () => {
     service.dispose();
   });
 
-  it("merges inferred and physical columns in one completion result", async () => {
+  it("merges inferred and physical columns without duplicate issues", async () => {
     const service = serviceWithColumns(async (request) => ({
       epoch: { generation: 1, token: "mixed" },
       relations: request.relations.map((relation) => ({
@@ -1600,7 +1601,7 @@ describe("column completion session integration", () => {
       })),
     }));
     const text =
-      "WITH c AS (SELECT id AS local_id) " +
+      "WITH c AS (SELECT id AS local_id, *) " +
       "SELECT  FROM c JOIN physical p ON true";
     const session = service.openDocument({
       context: {
@@ -1611,22 +1612,29 @@ describe("column completion session integration", () => {
       text,
     });
 
-    await expect(session.complete({
+    const result = await session.complete({
       position: text.indexOf(" FROM"),
       trigger: { kind: "invoked" },
-    })).resolves.toMatchObject({
+    });
+    expect(result).toMatchObject({
       sources: [
         { feature: "query-output" },
         { feature: "column-catalog" },
       ],
       status: "ready",
       value: {
+        isIncomplete: true,
         items: [
           { label: "local_id" },
           { label: "invoice_id" },
         ],
       },
     });
+    if (result.status === "ready") {
+      expect(result.value.issues.map((issue) => issue.reason)).toEqual([
+        "query-binding-partial",
+      ]);
+    }
     service.dispose();
   });
 

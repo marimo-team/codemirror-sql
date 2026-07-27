@@ -323,8 +323,11 @@ function parseNamedRelation(
     const maybeAs = word(source, tokens[end]);
     if (maybeAs === "as") end += 1;
     const aliasToken = tokens[end];
+    const aliasWord = aliasToken ? word(source, aliasToken) : null;
     const aliasPath =
-      isIdentifier(aliasToken) && aliasToken?.depth === depth
+      isIdentifier(aliasToken) &&
+        aliasToken?.depth === depth &&
+        (aliasWord === null || !RELATION_END_WORDS.has(aliasWord))
         ? decodePath(
             source,
             dialect,

@@ -286,6 +286,50 @@ describe("recognizeSqlColumnQuerySite", () => {
     }]);
   });
 
+  it.each([
+    "WHERE",
+    "ON",
+    "GROUP",
+    "ORDER",
+    "UNION",
+  ])("does not consume %s as a derived relation alias", (keyword) => {
+    const result = ready(
+      analyze(
+        `SELECT i| FROM (SELECT id FROM users) ${keyword} other`,
+      ),
+    );
+    const derived = result.relations.find((relation) =>
+      relation.local?.kind === "derived"
+    );
+    expect(derived).toMatchObject({
+      alias: null,
+      local: { kind: "derived" },
+      path: [],
+    });
+    expect(result.issues).toContain("derived-relation");
+  });
+
+  it("continues parsing a join after an unaliased derived relation", () => {
+    const result = ready(
+      analyze(
+        "SELECT o.| FROM (SELECT id FROM users) JOIN orders o ON true",
+        { dialect: DUCKDB_SQL_RELATION_DIALECT },
+      ),
+    );
+    expect(result.relations).toMatchObject([
+      {
+        alias: null,
+        local: { kind: "derived" },
+        path: [],
+      },
+      {
+        alias: { value: "o" },
+        path: [{ value: "orders" }],
+      },
+    ]);
+    expect(result.issues).toContain("derived-relation");
+  });
+
   it("preserves authoritative relation-alias column lists", () => {
     const result = ready(
       analyze(

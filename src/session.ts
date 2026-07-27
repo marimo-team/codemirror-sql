@@ -652,7 +652,14 @@ function mergeCompletionLists(
   right: SqlCompletionList,
 ): SqlCompletionList {
   const items = Object.freeze([...left.items, ...right.items]);
-  const issues = Object.freeze([...left.issues, ...right.issues]);
+  const issueReasons = new Set<SqlCompletionIssue["reason"]>();
+  const issues = Object.freeze(
+    [...left.issues, ...right.issues].filter((issue) => {
+      if (issueReasons.has(issue.reason)) return false;
+      issueReasons.add(issue.reason);
+      return true;
+    }),
+  );
   const first = issues[0];
   if (first === undefined) {
     return Object.freeze({

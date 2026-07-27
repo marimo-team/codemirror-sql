@@ -73,6 +73,17 @@ describe("query output inference", () => {
     });
   });
 
+  it.each([
+    "SELECT id /* unterminated",
+    "SELECT id FROM users WHERE name = 'unterminated",
+  ])("marks output inference partial for %s", (text) => {
+    expect(infer(text)).toMatchObject({
+      columns: [{ identifier: { value: "id" } }],
+      coverage: "partial",
+      status: "ready",
+    });
+  });
+
   it("uses the first set-operation arm for output names", () => {
     expect(
       infer(

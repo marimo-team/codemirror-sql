@@ -205,7 +205,9 @@ export function inferSqlQueryOutput(
   const projectionDepth = selected.token.depth;
   const segments: Token[][] = [[]];
   let stopped = false;
-  let complete = !tokens.some((token) => token.kind === "barrier");
+  let complete = !tokens.some((token) =>
+    token.kind === "barrier" || !token.closed
+  );
   for (
     let index = selected.index + 1;
     index < tokens.length;

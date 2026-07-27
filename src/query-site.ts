@@ -463,10 +463,13 @@ function processFrameWord(
   text: string,
   token: Lexeme,
 ): void {
-  if (frame.state === "unavailable" || frame.state === "closed") {
+  if (frame.state === "unavailable") {
     return;
   }
   const word = wordValue(text, token);
+  if (frame.state === "closed" && !isSetOperation(word)) {
+    return;
+  }
   if (frame.state === "expect-alias") {
     if (word.length === 0) {
       markUnavailable(frame, "ambiguous-query-site");
