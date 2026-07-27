@@ -86,9 +86,13 @@ test("standard statement gutter virtualizes a tall focused editor", async () => 
   expect(
     view.dom.querySelectorAll(".cm-sql-statement-marker"),
   ).toHaveLength(0);
-  await userEvent.click(view.contentDOM);
-  await expect.poll(() =>
-    view.dom.querySelectorAll(".cm-sql-statement-marker").length
+  const firstLine = view.contentDOM.querySelector(".cm-line");
+  expect(firstLine).not.toBeNull();
+  await userEvent.click(firstLine!);
+  await expect.poll(() => view.hasFocus, { timeout: 5_000 }).toBe(true);
+  await expect.poll(
+    () => view.dom.querySelectorAll(".cm-sql-statement-marker").length,
+    { timeout: 5_000 },
   ).toBeGreaterThan(0);
   const initialCount = view.dom.querySelectorAll(
     ".cm-sql-statement-marker",
