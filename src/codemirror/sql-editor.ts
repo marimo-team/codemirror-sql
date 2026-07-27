@@ -52,7 +52,23 @@ import type {
   SqlLanguageService,
   SqlRevision,
   SqlTextChange,
+  SqlTextRange,
 } from "../types.js";
+import type {
+  SqlCodeAction,
+  SqlDiagnostic,
+  SqlDiagnosticsRequest,
+  SqlDocumentEditResult,
+  SqlDocumentSymbol,
+  SqlFeatureTask,
+  SqlFoldingRange,
+  SqlFormatRequest,
+  SqlHover,
+  SqlLocation,
+  SqlPositionFeatureRequest,
+  SqlRangeFeatureRequest,
+  SqlRenameRequest,
+} from "../language-features.js";
 import {
   createSqlStatementGutter,
   type SqlEditorStatementGutterOptions,
@@ -96,6 +112,36 @@ export interface SqlEditorSupport<
     readonly SqlEmbeddedRegion[]
   >;
   readonly extension: Extension;
+  readonly codeActions: (
+    view: EditorView,
+    request: SqlRangeFeatureRequest,
+  ) => SqlFeatureTask<readonly SqlCodeAction[]> | null;
+  readonly definitions: (
+    view: EditorView,
+    request: SqlPositionFeatureRequest,
+  ) => SqlFeatureTask<readonly SqlLocation[]> | null;
+  readonly diagnostics: (
+    view: EditorView,
+    request?: SqlDiagnosticsRequest,
+  ) => SqlFeatureTask<readonly SqlDiagnostic[]> | null;
+  readonly documentSymbols: (
+    view: EditorView,
+  ) => SqlFeatureTask<readonly SqlDocumentSymbol[]> | null;
+  readonly foldingRanges: (
+    view: EditorView,
+  ) => SqlFeatureTask<readonly SqlFoldingRange[]> | null;
+  readonly format: (
+    view: EditorView,
+    request?: SqlFormatRequest,
+  ) => SqlFeatureTask<SqlDocumentEditResult> | null;
+  readonly highlights: (
+    view: EditorView,
+    request: SqlPositionFeatureRequest,
+  ) => SqlFeatureTask<readonly SqlTextRange[]> | null;
+  readonly hover: (
+    view: EditorView,
+    request: SqlPositionFeatureRequest,
+  ) => SqlFeatureTask<SqlHover> | null;
   readonly invalidateCatalog: (view: EditorView) => SqlRevision | null;
   readonly statementBoundariesIntersecting: (
     view: EditorView,
@@ -113,6 +159,14 @@ export interface SqlEditorSupport<
     view: EditorView,
     regions: readonly SqlEmbeddedRegion[],
   ) => void;
+  readonly references: (
+    view: EditorView,
+    request: SqlPositionFeatureRequest,
+  ) => SqlFeatureTask<readonly SqlLocation[]> | null;
+  readonly rename: (
+    view: EditorView,
+    request: SqlRenameRequest,
+  ) => SqlFeatureTask<SqlDocumentEditResult> | null;
 }
 
 export interface SqlEditorRuntime {
@@ -225,6 +279,7 @@ function haveOneEditRange(items: readonly SqlCompletionItem[]): boolean {
 function completionType(item: SqlCompletionItem): string {
   if (item.kind === "column") return "property";
   if (item.kind === "namespace") return "namespace";
+  if (item.relationKind === "table-function") return "function";
   return item.relationKind === "cte" ? "type" : "table";
 }
 
@@ -313,6 +368,10 @@ export function createSqlEditorInternal<
     #sequence = 0;
     readonly #subscription;
     readonly #visibilityListener: () => void;
+
+    get destroyed(): boolean {
+      return this.#destroyed;
+    }
 
     constructor(view: EditorView) {
       this.#view = view;
@@ -725,6 +784,54 @@ export function createSqlEditorInternal<
       this.#clearCompletionState();
     };
 
+    readonly codeActions = (
+      request: SqlRangeFeatureRequest,
+    ): SqlFeatureTask<readonly SqlCodeAction[]> =>
+      this.#session.codeActions(request);
+
+    readonly definitions = (
+      request: SqlPositionFeatureRequest,
+    ): SqlFeatureTask<readonly SqlLocation[]> =>
+      this.#session.definitions(request);
+
+    readonly diagnostics = (
+      request?: SqlDiagnosticsRequest,
+    ): SqlFeatureTask<readonly SqlDiagnostic[]> =>
+      this.#session.diagnostics(request);
+
+    readonly documentSymbols = (): SqlFeatureTask<
+      readonly SqlDocumentSymbol[]
+    > => this.#session.documentSymbols();
+
+    readonly foldingRanges = (): SqlFeatureTask<
+      readonly SqlFoldingRange[]
+    > => this.#session.foldingRanges();
+
+    readonly format = (
+      request?: SqlFormatRequest,
+    ): SqlFeatureTask<SqlDocumentEditResult> =>
+      this.#session.format(request);
+
+    readonly highlights = (
+      request: SqlPositionFeatureRequest,
+    ): SqlFeatureTask<readonly SqlTextRange[]> =>
+      this.#session.highlights(request);
+
+    readonly hover = (
+      request: SqlPositionFeatureRequest,
+    ): SqlFeatureTask<SqlHover> =>
+      this.#session.hover(request);
+
+    readonly references = (
+      request: SqlPositionFeatureRequest,
+    ): SqlFeatureTask<readonly SqlLocation[]> =>
+      this.#session.references(request);
+
+    readonly rename = (
+      request: SqlRenameRequest,
+    ): SqlFeatureTask<SqlDocumentEditResult> =>
+      this.#session.rename(request);
+
     readonly invalidateCatalog = (): SqlRevision | null => {
       if (this.#destroyed) return null;
       try {
@@ -933,8 +1040,29 @@ export function createSqlEditorInternal<
           view.state.field(embeddedRegionsField),
         ],
       });
+  const withPlugin = <Value>(
+    view: EditorView,
+    run: (instance: SqlEditorPlugin) => Value,
+  ): Value | null => {
+    const instance = view.plugin(plugin);
+    return instance === null || instance.destroyed ? null : run(instance);
+  };
   return Object.freeze({
+    codeActions: (
+      view: EditorView,
+      request: SqlRangeFeatureRequest,
+    ) => withPlugin(view, (instance) => instance.codeActions(request)),
     contextEffect,
+    definitions: (
+      view: EditorView,
+      request: SqlPositionFeatureRequest,
+    ) => withPlugin(view, (instance) => instance.definitions(request)),
+    diagnostics: (
+      view: EditorView,
+      request?: SqlDiagnosticsRequest,
+    ) => withPlugin(view, (instance) => instance.diagnostics(request)),
+    documentSymbols: (view: EditorView) =>
+      withPlugin(view, (instance) => instance.documentSymbols()),
     embeddedRegionsEffect,
     extension: [
       contextField,
@@ -945,8 +1073,30 @@ export function createSqlEditorInternal<
       completionLanguageData,
       autocompletion(autocompleteOptions),
     ],
+    foldingRanges: (view: EditorView) =>
+      withPlugin(view, (instance) => instance.foldingRanges()),
+    format: (
+      view: EditorView,
+      request?: SqlFormatRequest,
+    ) => withPlugin(view, (instance) => instance.format(request)),
+    highlights: (
+      view: EditorView,
+      request: SqlPositionFeatureRequest,
+    ) => withPlugin(view, (instance) => instance.highlights(request)),
+    hover: (
+      view: EditorView,
+      request: SqlPositionFeatureRequest,
+    ) => withPlugin(view, (instance) => instance.hover(request)),
     invalidateCatalog: (view: EditorView): SqlRevision | null =>
       view.plugin(plugin)?.invalidateCatalog() ?? null,
+    references: (
+      view: EditorView,
+      request: SqlPositionFeatureRequest,
+    ) => withPlugin(view, (instance) => instance.references(request)),
+    rename: (
+      view: EditorView,
+      request: SqlRenameRequest,
+    ) => withPlugin(view, (instance) => instance.rename(request)),
     statementBoundariesIntersecting: (
       view: EditorView,
       request: SqlStatementBoundariesIntersectingRequest,

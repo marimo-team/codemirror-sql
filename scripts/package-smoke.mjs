@@ -239,6 +239,18 @@ const cleanup: SqlCatalogSubscriptionCleanup = () => undefined;
 
 const service = createSqlLanguageService<HostContext>({
   dialects: [duckdbDialect()],
+  featureProviders: [{
+    id: "marimo-duckdb",
+    diagnostics: ({ document }) => document.context.engine === "remote"
+      ? [{
+          from: 0,
+          message: "Remote validation",
+          severity: "information",
+          source: "duckdb",
+          to: 6,
+        }]
+      : [],
+  }],
 });
 const editorSupport = sqlEditor({
   initialContext: { dialect: "duckdb", engine: "local" },
@@ -262,12 +274,14 @@ const statement: SqlStatementBoundaryAtResult = session.statementBoundaryAt({
   affinity: "left",
   position: 0,
 });
+const diagnostics = session.diagnostics();
 
 void editorSupport.extension;
 void cleanup;
 void range;
 void session;
 void statement;
+void diagnostics;
 `,
   );
 
@@ -337,6 +351,37 @@ if (
   throw new Error("The packaged statement boundary is invalid");
 }
 service.dispose();
+
+const marimoService = api.createSqlLanguageService({
+  dialects: [api.duckdbDialect()],
+  featureProviders: [{
+    id: "marimo-duckdb",
+    diagnostics: ({ document }) => [{
+      from: 0,
+      message: \`Validated \${document.context.engine}\`,
+      severity: "information",
+      source: "duckdb",
+      to: 6,
+    }],
+  }],
+});
+const marimoSession = marimoService.openDocument({
+  context: { dialect: "duckdb", engine: "remote" },
+  embeddedRegions: [{ from: 14, language: "python", to: 18 }],
+  text: "SELECT * FROM {df}",
+});
+const diagnostics = await marimoSession.diagnostics().result;
+const symbols = await marimoSession.documentSymbols().result;
+if (
+  diagnostics.status !== "ready" ||
+  diagnostics.value[0]?.message !== "Validated remote" ||
+  symbols.status !== "ready" ||
+  symbols.value[0]?.name !== "SELECT statement"
+) {
+  throw new Error("The packed marimo language-feature fixture failed");
+}
+marimoSession.dispose();
+marimoService.dispose();
 `,
   );
 

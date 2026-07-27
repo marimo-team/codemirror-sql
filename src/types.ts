@@ -1,3 +1,8 @@
+import type {
+  SqlLanguageFeatureMethods,
+  SqlLanguageFeatureProvider,
+} from "./language-features.js";
+
 const revisionBrand: unique symbol = Symbol("SqlRevision");
 
 export function isDataArray(
@@ -143,7 +148,9 @@ export interface OpenSqlDocument<Context extends SqlDocumentContext> {
 }
 
 /** Owns all mutable state for one open SQL document. */
-export interface SqlDocumentSession<Context extends SqlDocumentContext> {
+export interface SqlDocumentSession<Context extends SqlDocumentContext>
+  extends SqlLanguageFeatureMethods
+{
   readonly revision: SqlRevision;
   /** Invalidates relation, column, and namespace catalog observations. */
   readonly invalidateCatalog: () => SqlRevision;
@@ -172,13 +179,19 @@ export interface SqlLanguageService<Context extends SqlDocumentContext> {
   readonly dispose: () => void;
 }
 
-export interface SqlLanguageServiceOptions {
+export interface SqlLanguageServiceOptions<
+  Context extends SqlDocumentContext = SqlDocumentContext,
+> {
   readonly catalog?: SqlRelationCatalogProvider | undefined;
   readonly columns?: SqlColumnCatalogProvider | undefined;
   readonly completion?: {
     readonly catalogResponseBudgetMs?: number | undefined;
   } | undefined;
   readonly dialects: readonly SqlDialect[];
+  readonly featureProviderBudgetMs?: number | undefined;
+  readonly featureProviders?:
+    | readonly SqlLanguageFeatureProvider<Context>[]
+    | undefined;
   readonly namespaces?: SqlNamespaceCatalogProvider | undefined;
 }
 
@@ -189,6 +202,7 @@ export type SqlSessionErrorCode =
   | "invalid-completion-request"
   | "invalid-dialect"
   | "invalid-document"
+  | "invalid-feature-request"
   | "invalid-service-options"
   | "invalid-statement-boundary-request"
   | "invalid-update"

@@ -1,6 +1,15 @@
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
+const configuredBrowser = process.env.VITEST_BROWSER ?? "chromium";
+if (
+  configuredBrowser !== "chromium" &&
+  configuredBrowser !== "firefox" &&
+  configuredBrowser !== "webkit"
+) {
+  throw new Error(`Unsupported browser: ${configuredBrowser}`);
+}
+
 export default defineConfig({
   optimizeDeps: {
     include: [
@@ -14,7 +23,7 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      instances: [{ browser: "chromium" }],
+      instances: [{ browser: configuredBrowser }],
       provider: playwright(),
       ui: false,
     },

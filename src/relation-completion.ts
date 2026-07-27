@@ -83,9 +83,10 @@ interface RankedCatalogItem {
 const CATALOG_KIND_ORDER = Object.freeze({
   "temporary-table": 0,
   table: 1,
-  view: 2,
-  "materialized-view": 3,
-  "external-relation": 4,
+  "table-function": 2,
+  view: 3,
+  "materialized-view": 4,
+  "external-relation": 5,
 } as const);
 
 const ISSUE_ORDER = Object.freeze([

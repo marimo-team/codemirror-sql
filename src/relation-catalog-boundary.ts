@@ -189,6 +189,7 @@ const RELATION_KINDS: ReadonlySet<string> = new Set([
   "external-relation",
   "materialized-view",
   "table",
+  "table-function",
   "temporary-table",
   "view",
 ]);

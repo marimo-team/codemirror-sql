@@ -3,6 +3,7 @@ import type {
   SqlDocumentContext,
   SqlDocumentSession,
   SqlDocumentUpdate,
+  SqlEmbeddedRegion,
   SqlLanguageService,
   SqlLanguageServiceOptions,
   SqlRevision,
@@ -114,6 +115,42 @@ import type {
   SqlStatementBoundaryAtResult,
   SqlStatementLexicalEnd,
 } from "./statement-boundary-types.js";
+import {
+  captureSqlLanguageFeatureProviders,
+  composeSqlCodeActionResults,
+  createSqlFeatureDocument,
+  invokeSqlFeatureProviders,
+  normalizeSqlCodeActions,
+  normalizeSqlDiagnostics,
+  normalizeSqlDocumentEdit,
+  normalizeSqlDocumentSymbols,
+  normalizeSqlFoldingRanges,
+  normalizeSqlHover,
+  normalizeSqlLocations,
+  normalizeSqlRanges,
+  type CapturedSqlLanguageFeatureProvider,
+  type SqlFeatureProviderInvocation,
+} from "./language-feature-runtime.js";
+import {
+  MAX_SQL_FEATURE_RESULTS,
+  type SqlCodeAction,
+  type SqlDiagnostic,
+  type SqlDiagnosticsRequest,
+  type SqlDocumentEditResult,
+  type SqlDocumentSymbol,
+  type SqlFeatureCancelled,
+  type SqlFeatureProviderRequest,
+  type SqlFeatureResult,
+  type SqlFeatureTask,
+  type SqlFoldingRange,
+  type SqlFormatRequest,
+  type SqlHover,
+  type SqlLanguageFeatureProvider,
+  type SqlLocation,
+  type SqlPositionFeatureRequest,
+  type SqlRangeFeatureRequest,
+  type SqlRenameRequest,
+} from "./language-features.js";
 
 const MAX_CONTEXT_DEPTH = 100;
 const MAX_CONTEXT_NODES = 10_000;
@@ -123,6 +160,8 @@ const MAX_CONTEXT_STRING_LENGTH = 1_000_000;
 const MAX_CONTEXT_ARRAY_LENGTH = 50_000;
 const MAX_CHANGES_PER_UPDATE = 10_000;
 const MAX_DIALECTS = 1_000;
+const DEFAULT_FEATURE_PROVIDER_BUDGET_MS = 150;
+const MAX_FEATURE_PROVIDER_BUDGET_MS = 5_000;
 const DEFAULT_CATALOG_RESPONSE_BUDGET_MS = 40;
 const MAX_CATALOG_RESPONSE_BUDGET_MS = 50;
 const TERMINAL_LOADING_INTENT_LEASE_MS = 1_000;
@@ -176,6 +215,12 @@ interface AuxiliaryLoadingRetry<Context extends SqlDocumentContext> {
 
 interface CompletionConfiguration {
   readonly catalogResponseBudgetMs: number;
+}
+
+interface ActiveFeatureRequest {
+  cancelReason: SqlFeatureCancelled["reason"] | null;
+  readonly controller: AbortController;
+  readonly revision: SqlRevision;
 }
 
 interface SqlDialectRuntime {
@@ -1121,6 +1166,245 @@ function statementBoundary(
       });
 }
 
+function featureRequestObject(value: unknown, subject: string): object {
+  if (value === null || typeof value !== "object") {
+    throw new SqlSessionError(
+      "invalid-feature-request",
+      `${subject} must be an object`,
+    );
+  }
+  return value;
+}
+
+function featureSignal(
+  request: object,
+  subject: string,
+): AbortSignal | undefined {
+  const candidate = readOwnDataProperty(
+    request,
+    "signal",
+    "invalid-feature-request",
+    subject,
+  );
+  if (!candidate.found || candidate.value === undefined) return undefined;
+  if (!(candidate.value instanceof AbortSignal)) {
+    throw new SqlSessionError(
+      "invalid-feature-request",
+      `${subject} signal must be an AbortSignal`,
+    );
+  }
+  return candidate.value;
+}
+
+function positionFeatureRequest(
+  value: unknown,
+  length: number,
+  subject: string,
+): SqlPositionFeatureRequest {
+  try {
+    const request = featureRequestObject(value, subject);
+    const position = readRequiredDataProperty(
+      request,
+      "position",
+      "invalid-feature-request",
+      subject,
+    );
+    if (
+      !Number.isSafeInteger(position) ||
+      Number(position) < 0 ||
+      Number(position) > length
+    ) {
+      throw new SqlSessionError(
+        "invalid-feature-request",
+        `${subject} position must be in bounds`,
+      );
+    }
+    return Object.freeze({
+      position: Number(position),
+      signal: featureSignal(request, subject),
+    });
+  } catch (error) {
+    if (error instanceof SqlSessionError) throw error;
+    throw new SqlSessionError(
+      "invalid-feature-request",
+      `${subject} could not be inspected safely`,
+    );
+  }
+}
+
+function rangeFeatureRequest(
+  value: unknown,
+  length: number,
+  subject: string,
+): SqlRangeFeatureRequest {
+  try {
+    const request = featureRequestObject(value, subject);
+    const candidate = readRequiredDataProperty(
+      request,
+      "range",
+      "invalid-feature-request",
+      subject,
+    );
+    return Object.freeze({
+      range: normalizeSqlTextRange(candidate, length, `${subject} range`),
+      signal: featureSignal(request, subject),
+    });
+  } catch (error) {
+    if (error instanceof SqlSessionError) throw error;
+    throw new SqlSessionError(
+      "invalid-feature-request",
+      `${subject} could not be inspected safely`,
+    );
+  }
+}
+
+function optionalRangeFeatureRequest(
+  value: unknown,
+  length: number,
+  subject: string,
+): SqlDiagnosticsRequest {
+  try {
+    const request = value === undefined
+      ? Object.freeze({})
+      : featureRequestObject(value, subject);
+    const candidate = readOwnDataProperty(
+      request,
+      "range",
+      "invalid-feature-request",
+      subject,
+    );
+    return Object.freeze({
+      range: !candidate.found || candidate.value === undefined
+        ? undefined
+        : normalizeSqlTextRange(candidate.value, length, `${subject} range`),
+      signal: featureSignal(request, subject),
+    });
+  } catch (error) {
+    if (error instanceof SqlSessionError) throw error;
+    throw new SqlSessionError(
+      "invalid-feature-request",
+      `${subject} could not be inspected safely`,
+    );
+  }
+}
+
+interface SqlFeatureComposition<Value> {
+  readonly isIncomplete: boolean;
+  readonly value: Value | null;
+}
+
+function composeFeatureArrays<Value>(
+  values: readonly (readonly Value[])[],
+): SqlFeatureComposition<readonly Value[]> {
+  const merged: Value[] = [];
+  let isIncomplete = false;
+  for (const value of values) {
+    if (value.length === MAX_SQL_FEATURE_RESULTS) isIncomplete = true;
+    for (const item of value) {
+      if (merged.length === MAX_SQL_FEATURE_RESULTS) {
+        return Object.freeze({
+          isIncomplete: true,
+          value: Object.freeze(merged),
+        });
+      }
+      merged.push(item);
+    }
+  }
+  return Object.freeze({
+    isIncomplete,
+    value: Object.freeze(merged),
+  });
+}
+
+function createLocalStructureProvider<
+  Context extends SqlDocumentContext,
+>(
+  dialects: ReadonlyMap<string, SqlDialectRuntime>,
+): SqlLanguageFeatureProvider<Context> {
+  const analyze = (
+    text: string,
+    embeddedRegions: readonly SqlEmbeddedRegion[],
+    dialectId: string,
+  ): {
+    readonly source: SqlSourceSnapshot;
+    readonly index: SqlStatementIndex;
+  } => {
+    const dialect = dialects.get(dialectId);
+    if (!dialect) throw new Error("Unknown SQL dialect");
+    const source = embeddedRegions.length === 0
+      ? createIdentitySqlSource(text)
+      : createMaskedSqlSource(text, embeddedRegions);
+    return Object.freeze({
+      index: buildSqlStatementIndex(
+        source.analysisText,
+        dialect.lexicalProfile,
+      ),
+      source,
+    });
+  };
+  return Object.freeze({
+    id: "@marimo/local-structure",
+    documentSymbols: ({
+      document,
+    }: SqlFeatureProviderRequest<object, Context>) => {
+      const { index, source } = analyze(
+        document.text,
+        document.embeddedRegions,
+        document.dialect,
+      );
+      const symbols: SqlDocumentSymbol[] = [];
+      for (const slot of index.slots) {
+        if (slot.boundaryQuality === "opaque") continue;
+        if (slot.code === null) continue;
+        const code = statementRange(source, slot.code);
+        const extent = statementRange(source, slot.extent);
+        const codeText = document.text.slice(code.from, code.to);
+        const keyword = /^[\s]*(?<keyword>[A-Za-z]+)/u.exec(codeText)
+          ?.groups?.keyword;
+        const selectionRange = keyword
+          ? Object.freeze({
+              from: code.from + codeText.indexOf(keyword),
+              to: code.from + codeText.indexOf(keyword) + keyword.length,
+            })
+          : Object.freeze({ from: code.from, to: code.from });
+        symbols.push(Object.freeze({
+          detail: slot.boundaryQuality,
+          kind: "statement",
+          name: keyword
+            ? `${keyword.toUpperCase()} statement`
+            : "SQL statement",
+          range: extent,
+          selectionRange,
+        }));
+        if (symbols.length === MAX_SQL_FEATURE_RESULTS) break;
+      }
+      return Object.freeze(symbols);
+    },
+    foldingRanges: ({
+      document,
+    }: SqlFeatureProviderRequest<object, Context>) => {
+      const { index, source } = analyze(
+        document.text,
+        document.embeddedRegions,
+        document.dialect,
+      );
+      const ranges: SqlFoldingRange[] = [];
+      for (const slot of index.slots) {
+        if (slot.boundaryQuality === "opaque") continue;
+        if (slot.code === null) continue;
+        const code = statementRange(source, slot.code);
+        if (!document.text.slice(code.from, code.to).includes("\n")) continue;
+        ranges.push(Object.freeze({
+          ...code,
+          kind: "statement",
+        }));
+        if (ranges.length === MAX_SQL_FEATURE_RESULTS) break;
+      }
+      return Object.freeze(ranges);
+    },
+  });
+}
+
 export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   implements SqlDocumentSession<Context>
 {
@@ -1129,7 +1413,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
   readonly #columnCoordinator: SqlColumnCatalogBatchCoordinator | null;
   readonly #namespaceCoordinator: SqlNamespaceCatalogCoordinator | null;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
+  readonly #featureProviderBudgetMs: number;
+  readonly #featureProviders:
+    readonly CapturedSqlLanguageFeatureProvider<Context>[];
   readonly #onDispose: () => void;
+  readonly #activeFeatures = new Set<ActiveFeatureRequest>();
   readonly #listeners = new Set<SessionChangeSubscription>();
   #activeCompletion: CompletionRequestState | null = null;
   #columnLoadingRetry: AuxiliaryLoadingRetry<Context> | null = null;
@@ -1162,6 +1450,9 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     columnCoordinator: SqlColumnCatalogBatchCoordinator | null,
     namespaceCoordinator: SqlNamespaceCatalogCoordinator | null,
     completion: CompletionConfiguration,
+    featureProviders:
+      readonly CapturedSqlLanguageFeatureProvider<Context>[],
+    featureProviderBudgetMs: number,
     onDispose: () => void,
   ) {
     this.#catalogCoordinator = catalogCoordinator;
@@ -1169,6 +1460,8 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     this.#namespaceCoordinator = namespaceCoordinator;
     this.#catalogResponseBudgetMs =
       completion.catalogResponseBudgetMs;
+    this.#featureProviders = featureProviders;
+    this.#featureProviderBudgetMs = featureProviderBudgetMs;
     this.#dialects = dialects;
     this.#onDispose = onDispose;
     const sequence = 0;
@@ -1232,6 +1525,14 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
 
   getStatementIndexForTesting(): SqlStatementIndex {
     return this.#getStatementIndex();
+  }
+
+  #supersedeFeatures(): void {
+    for (const feature of this.#activeFeatures) {
+      if (feature.cancelReason !== null) continue;
+      feature.cancelReason = "superseded";
+      feature.controller.abort();
+    }
   }
 
   readonly statementBoundaryAt = (
@@ -1435,6 +1736,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
               ? activeIntent.token
               : null;
     const previous = this.#snapshot;
+    this.#supersedeFeatures();
     const revision = createSqlRevisionToken();
     this.#snapshot = Object.freeze({
       ...previous,
@@ -2728,6 +3030,7 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
       nextSourceSequence !== this.#snapshot.sourceSequence ||
       nextDialect.relationDialect !==
         this.#snapshot.dialect.relationDialect;
+    this.#supersedeFeatures();
     this.#snapshot = nextSnapshot;
     this.#statementIndexCache = nextStatementIndexCache;
     if (invalidatesLocalRelationCache) {
@@ -2766,6 +3069,393 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     return !this.#disposed && revision === this.#snapshot.revision;
   };
 
+  #featureTask<Request, ProviderValue, Value>(
+    request: Request,
+    callerSignal: AbortSignal | undefined,
+    supports: (
+      provider: SqlLanguageFeatureProvider<Context>,
+    ) => boolean,
+    invoke: SqlFeatureProviderInvocation<Context, Request, unknown>,
+    normalize: (value: unknown, length: number) => ProviderValue,
+    compose: (
+      values: readonly ProviderValue[],
+    ) => SqlFeatureComposition<Value>,
+  ): SqlFeatureTask<Value> {
+    if (this.#disposed) {
+      throw new SqlSessionError(
+        "session-disposed",
+        "SQL document session is disposed",
+      );
+    }
+    const snapshot = this.#snapshot;
+    const active: ActiveFeatureRequest = {
+      cancelReason: null,
+      controller: new AbortController(),
+      revision: snapshot.revision,
+    };
+    this.#activeFeatures.add(active);
+    const cancel = (): void => {
+      if (active.cancelReason !== null) return;
+      active.cancelReason = "caller";
+      active.controller.abort();
+    };
+    const onCallerAbort = (): void => cancel();
+    if (callerSignal?.aborted) {
+      cancel();
+    } else {
+      callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+    }
+    const result = (async (): Promise<SqlFeatureResult<Value>> => {
+      try {
+        await Promise.resolve();
+        if (active.cancelReason !== null) {
+          return Object.freeze({
+            reason: active.cancelReason,
+            revision: snapshot.revision,
+            status: "cancelled",
+          });
+        }
+        const document = createSqlFeatureDocument(
+          snapshot.source.originalText,
+          snapshot.context,
+          snapshot.source.embeddedRegions,
+        );
+        const invocation = await invokeSqlFeatureProviders(
+          this.#featureProviders,
+          document,
+          request,
+          active.controller.signal,
+          this.#featureProviderBudgetMs,
+          supports,
+          invoke,
+          (value) => normalize(value, snapshot.source.originalText.length),
+        );
+        if (
+          active.cancelReason !== null ||
+          this.#disposed ||
+          this.#snapshot.revision !== snapshot.revision
+        ) {
+          const reason = active.cancelReason ??
+            (this.#disposed ? "disposed" : "superseded");
+          return Object.freeze({
+            reason,
+            revision: snapshot.revision,
+            status: "cancelled",
+          });
+        }
+        if (invocation.values.length === 0) {
+          return Object.freeze({
+            reason: invocation.reports.length === 0
+              ? "no-provider"
+              : "no-result",
+            revision: snapshot.revision,
+            sources: invocation.reports,
+            status: "unavailable",
+          });
+        }
+        const composition = compose(invocation.values);
+        if (composition.value === null) {
+          return Object.freeze({
+            reason: "no-result",
+            revision: snapshot.revision,
+            sources: invocation.reports,
+            status: "unavailable",
+          });
+        }
+        return Object.freeze({
+          isIncomplete: composition.isIncomplete,
+          revision: snapshot.revision,
+          sources: invocation.reports,
+          status: "ready",
+          value: composition.value,
+        });
+      } finally {
+        callerSignal?.removeEventListener("abort", onCallerAbort);
+        this.#activeFeatures.delete(active);
+      }
+    })();
+    return Object.freeze({ cancel, result });
+  }
+
+  readonly diagnostics = (
+    input?: SqlDiagnosticsRequest,
+  ): SqlFeatureTask<readonly SqlDiagnostic[]> => {
+    const request = optionalRangeFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL diagnostics request",
+    );
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.diagnostics !== undefined,
+      (provider, document, current, signal) =>
+        provider.diagnostics?.({
+          document,
+          request: Object.freeze({ range: current.range }),
+          signal,
+        }),
+      normalizeSqlDiagnostics,
+      composeFeatureArrays,
+    );
+  };
+
+  readonly hover = (
+    input: SqlPositionFeatureRequest,
+  ): SqlFeatureTask<SqlHover> => {
+    const request = positionFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL hover request",
+    );
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.hover !== undefined,
+      (provider, document, current, signal) =>
+        provider.hover?.({
+          document,
+          request: Object.freeze({ position: current.position }),
+          signal,
+        }),
+      normalizeSqlHover,
+      (values) => Object.freeze({
+        isIncomplete: false,
+        value: values.find((value) => value !== null) ?? null,
+      }),
+    );
+  };
+
+  readonly definitions = (
+    input: SqlPositionFeatureRequest,
+  ): SqlFeatureTask<readonly SqlLocation[]> =>
+    this.#locationFeature(input, "definitions", "SQL definition request");
+
+  readonly references = (
+    input: SqlPositionFeatureRequest,
+  ): SqlFeatureTask<readonly SqlLocation[]> =>
+    this.#locationFeature(input, "references", "SQL references request");
+
+  #locationFeature(
+    input: SqlPositionFeatureRequest,
+    kind: "definitions" | "references",
+    subject: string,
+  ): SqlFeatureTask<readonly SqlLocation[]> {
+    const request = positionFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      subject,
+    );
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => (
+        kind === "definitions"
+          ? provider.definitions !== undefined
+          : provider.references !== undefined
+      ),
+      (provider, document, current, signal) => {
+        const method = kind === "definitions"
+          ? provider.definitions
+          : provider.references;
+        return method?.({
+          document,
+          request: Object.freeze({ position: current.position }),
+          signal,
+        });
+      },
+      normalizeSqlLocations,
+      composeFeatureArrays,
+    );
+  }
+
+  readonly highlights = (
+    input: SqlPositionFeatureRequest,
+  ): SqlFeatureTask<readonly SqlTextRange[]> => {
+    const request = positionFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL highlights request",
+    );
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.highlights !== undefined,
+      (provider, document, current, signal) =>
+        provider.highlights?.({
+          document,
+          request: Object.freeze({ position: current.position }),
+          signal,
+        }),
+      normalizeSqlRanges,
+      composeFeatureArrays,
+    );
+  };
+
+  readonly documentSymbols = (): SqlFeatureTask<
+    readonly SqlDocumentSymbol[]
+  > => this.#featureTask(
+    Object.freeze({}),
+    undefined,
+    (provider) => provider.documentSymbols !== undefined,
+    (provider, document, request, signal) =>
+      provider.documentSymbols?.({ document, request, signal }),
+    normalizeSqlDocumentSymbols,
+    composeFeatureArrays,
+  );
+
+  readonly foldingRanges = (): SqlFeatureTask<
+    readonly SqlFoldingRange[]
+  > => this.#featureTask(
+    Object.freeze({}),
+    undefined,
+    (provider) => provider.foldingRanges !== undefined,
+    (provider, document, request, signal) =>
+      provider.foldingRanges?.({ document, request, signal }),
+    normalizeSqlFoldingRanges,
+    composeFeatureArrays,
+  );
+
+  readonly rename = (
+    input: SqlRenameRequest,
+  ): SqlFeatureTask<SqlDocumentEditResult> => {
+    const position = positionFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL rename request",
+    );
+    const candidate = featureRequestObject(input, "SQL rename request");
+    const newName = readRequiredDataProperty(
+      candidate,
+      "newName",
+      "invalid-feature-request",
+      "SQL rename request",
+    );
+    if (
+      typeof newName !== "string" ||
+      newName.length === 0 ||
+      newName.length > 1_024
+    ) {
+      throw new SqlSessionError(
+        "invalid-feature-request",
+        "SQL rename name must be a bounded non-empty string",
+      );
+    }
+    const request: SqlRenameRequest = Object.freeze({
+      ...position,
+      newName,
+    });
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.rename !== undefined,
+      (provider, document, current, signal) =>
+        provider.rename?.({
+          document,
+          request: Object.freeze({
+            newName: current.newName,
+            position: current.position,
+          }),
+          signal,
+        }),
+      normalizeSqlDocumentEdit,
+      (values) => Object.freeze({
+        isIncomplete: false,
+        value: values.find((value) => value !== null) ?? null,
+      }),
+    );
+  };
+
+  readonly format = (
+    input?: SqlFormatRequest,
+  ): SqlFeatureTask<SqlDocumentEditResult> => {
+    const base = optionalRangeFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL format request",
+    );
+    const candidate = input === undefined
+      ? Object.freeze({})
+      : featureRequestObject(input, "SQL format request");
+    const tabSizeValue = readOwnDataProperty(
+      candidate,
+      "tabSize",
+      "invalid-feature-request",
+      "SQL format request",
+    );
+    const useTabsValue = readOwnDataProperty(
+      candidate,
+      "useTabs",
+      "invalid-feature-request",
+      "SQL format request",
+    );
+    const tabSize = tabSizeValue.found ? tabSizeValue.value : undefined;
+    const useTabs = useTabsValue.found ? useTabsValue.value : undefined;
+    if (
+      tabSize !== undefined &&
+      (!Number.isSafeInteger(tabSize) || Number(tabSize) < 1 || Number(tabSize) > 16)
+    ) {
+      throw new SqlSessionError(
+        "invalid-feature-request",
+        "SQL format tab size must be an integer from 1 through 16",
+      );
+    }
+    if (useTabs !== undefined && typeof useTabs !== "boolean") {
+      throw new SqlSessionError(
+        "invalid-feature-request",
+        "SQL format useTabs must be a boolean",
+      );
+    }
+    const request: SqlFormatRequest = Object.freeze({
+      ...base,
+      tabSize: tabSize === undefined ? undefined : Number(tabSize),
+      useTabs,
+    });
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.format !== undefined,
+      (provider, document, current, signal) =>
+        provider.format?.({
+          document,
+          request: Object.freeze({
+            range: current.range,
+            tabSize: current.tabSize,
+            useTabs: current.useTabs,
+          }),
+          signal,
+        }),
+      normalizeSqlDocumentEdit,
+      (values) => Object.freeze({
+        isIncomplete: false,
+        value: values.find((value) => value !== null) ?? null,
+      }),
+    );
+  };
+
+  readonly codeActions = (
+    input: SqlRangeFeatureRequest,
+  ): SqlFeatureTask<readonly SqlCodeAction[]> => {
+    const request = rangeFeatureRequest(
+      input,
+      this.#snapshot.source.originalText.length,
+      "SQL code actions request",
+    );
+    return this.#featureTask(
+      request,
+      request.signal,
+      (provider) => provider.codeActions !== undefined,
+      (provider, document, current, signal) =>
+        provider.codeActions?.({
+          document,
+          request: Object.freeze({ range: current.range }),
+          signal,
+        }),
+      normalizeSqlCodeActions,
+      composeSqlCodeActionResults,
+    );
+  };
+
   readonly dispose = (): void => {
     if (this.#disposed) {
       return;
@@ -2786,6 +3476,11 @@ export class DefaultSqlDocumentSession<Context extends SqlDocumentContext>
     this.#clearSoftRefreshIntentTimer();
     this.#clearTerminalIntent();
     this.#listeners.clear();
+    for (const feature of this.#activeFeatures) {
+      feature.cancelReason = "disposed";
+      feature.controller.abort();
+    }
+    this.#activeFeatures.clear();
     this.#localRelationStatementCache = null;
     this.#statementIndexCache = null;
     if (
@@ -2820,10 +3515,13 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
   readonly #namespaceCoordinator: SqlNamespaceCatalogCoordinator | null;
   readonly #completion: CompletionConfiguration;
   readonly #dialects: ReadonlyMap<string, SqlDialectRuntime>;
+  readonly #featureProviderBudgetMs: number;
+  readonly #featureProviders:
+    readonly CapturedSqlLanguageFeatureProvider<Context>[];
   readonly #sessions = new Set<DefaultSqlDocumentSession<Context>>();
   #disposed = false;
 
-  constructor(options: SqlLanguageServiceOptions) {
+  constructor(options: SqlLanguageServiceOptions<Context>) {
     try {
       if (options === null || typeof options !== "object") {
         throw new SqlSessionError(
@@ -2922,6 +3620,62 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
       this.#completion = Object.freeze({
         catalogResponseBudgetMs,
       });
+
+      const featureProviders = readOwnDataProperty(
+        options,
+        "featureProviders",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      const configuredFeatureProviders =
+        captureSqlLanguageFeatureProviders<Context>(
+        featureProviders.found ? featureProviders.value : undefined,
+      );
+      const localStructureProviders =
+        captureSqlLanguageFeatureProviders<Context>(
+          Object.freeze([createLocalStructureProvider(this.#dialects)]),
+        );
+      const localProviderId = localStructureProviders[0]?.id;
+      if (
+        localProviderId !== undefined &&
+        configuredFeatureProviders.some(
+          (provider) => provider.id === localProviderId,
+        )
+      ) {
+        throw new SqlSessionError(
+          "invalid-service-options",
+          `SQL feature provider ID ${localProviderId} is reserved`,
+        );
+      }
+      this.#featureProviders = Object.freeze([
+        ...localStructureProviders,
+        ...configuredFeatureProviders,
+      ]);
+      const featureBudget = readOwnDataProperty(
+        options,
+        "featureProviderBudgetMs",
+        "invalid-service-options",
+        "SQL language service options",
+      );
+      if (
+        featureBudget.found &&
+        featureBudget.value !== undefined &&
+        (
+          typeof featureBudget.value !== "number" ||
+          !Number.isFinite(featureBudget.value) ||
+          featureBudget.value < 0 ||
+          featureBudget.value > MAX_FEATURE_PROVIDER_BUDGET_MS
+        )
+      ) {
+        throw new SqlSessionError(
+          "invalid-service-options",
+          `Feature provider budget must be between 0 and ${MAX_FEATURE_PROVIDER_BUDGET_MS} milliseconds`,
+        );
+      }
+      this.#featureProviderBudgetMs =
+        featureBudget.found && featureBudget.value !== undefined
+          ? featureBudget.value
+          : DEFAULT_FEATURE_PROVIDER_BUDGET_MS;
 
       const catalog = readOwnDataProperty(
         options,
@@ -3076,6 +3830,8 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
         this.#columnCoordinator,
         this.#namespaceCoordinator,
         this.#completion,
+        this.#featureProviders,
+        this.#featureProviderBudgetMs,
         () => {
           this.#sessions.delete(session);
         },
@@ -3124,6 +3880,8 @@ export class DefaultSqlLanguageService<Context extends SqlDocumentContext>
 /** Creates a framework-independent SQL service with an immutable dialect registry. */
 export function createSqlLanguageService<
   Context extends SqlDocumentContext = SqlDocumentContext,
->(options: SqlLanguageServiceOptions): SqlLanguageService<Context> {
+>(
+  options: SqlLanguageServiceOptions<Context>,
+): SqlLanguageService<Context> {
   return new DefaultSqlLanguageService<Context>(options);
 }

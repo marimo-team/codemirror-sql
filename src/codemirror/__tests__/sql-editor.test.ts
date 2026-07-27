@@ -25,6 +25,8 @@ import {
   type SqlDocumentContext,
   type SqlDocumentSession,
   type SqlDocumentUpdate,
+  type SqlFeatureTask,
+  type SqlLanguageFeatureMethods,
   type SqlLanguageService,
   type SqlRelationCatalogProvider,
   type SqlRevision,
@@ -95,7 +97,7 @@ function relationResponse(
 function completionItem(
   from = 14,
   to = 16,
-  relationKind: "cte" | "table" = "table",
+  relationKind: "cte" | "table" | "table-function" = "table",
 ): SqlCompletionItem {
   const edit = {
     from,
@@ -151,7 +153,29 @@ function fakeService(
     openDocument: () => {
       let disposed = false;
       let revision = createSqlRevisionToken();
+      const unavailable = <Value,>(): SqlFeatureTask<Value> => ({
+        cancel: () => undefined,
+        result: Promise.resolve({
+          reason: "no-provider",
+          revision,
+          sources: [],
+          status: "unavailable",
+        }),
+      });
+      const featureMethods: SqlLanguageFeatureMethods = {
+        codeActions: () => unavailable(),
+        definitions: () => unavailable(),
+        diagnostics: () => unavailable(),
+        documentSymbols: () => unavailable(),
+        foldingRanges: () => unavailable(),
+        format: () => unavailable(),
+        highlights: () => unavailable(),
+        hover: () => unavailable(),
+        references: () => unavailable(),
+        rename: () => unavailable(),
+      };
       const session: SqlDocumentSession<TestContext> = {
+        ...featureMethods,
         complete: (request): SqlCompletionTask => {
           completionRequests.push(request);
           completeSignals.push(request.signal ?? new AbortController().signal);
@@ -704,6 +728,47 @@ describe("sqlEditor", () => {
     service.dispose();
   });
 
+  it("exposes every language feature through the editor lifecycle", async () => {
+    const service = createSqlLanguageService<TestContext>({
+      dialects: [duckdbDialect()],
+      featureProviders: [{
+        id: "host",
+        codeActions: () => [],
+        definitions: () => [],
+        diagnostics: () => [],
+        format: () => ({ changes: [] }),
+        highlights: () => [],
+        hover: () => null,
+        references: () => [],
+        rename: () => ({ changes: [] }),
+      }],
+    });
+    const support = sqlEditor({
+      initialContext: { dialect: "duckdb", engine: "local" },
+      service,
+    });
+    const view = createView(support.extension, "select\n1");
+
+    const tasks = [
+      support.codeActions(view, { range: { from: 0, to: 6 } }),
+      support.definitions(view, { position: 1 }),
+      support.diagnostics(view),
+      support.documentSymbols(view),
+      support.foldingRanges(view),
+      support.format(view),
+      support.highlights(view, { position: 1 }),
+      support.hover(view, { position: 1 }),
+      support.references(view, { position: 1 }),
+      support.rename(view, { newName: "value", position: 1 }),
+    ];
+    expect(tasks.every((task) => task !== null)).toBe(true);
+    await Promise.all(tasks.map((task) => task?.result));
+
+    view.destroy();
+    expect(support.diagnostics(view)).toBeNull();
+    service.dispose();
+  });
+
   it("marks internal blank lines but not separator trivia", async () => {
     const service = createSqlLanguageService<TestContext>({
       dialects: [duckdbDialect()],
@@ -819,6 +884,20 @@ describe("sqlEditor", () => {
 
     view.destroy();
     service.dispose();
+  });
+
+  it("presents table-valued relation completions as functions", async () => {
+    const harness = fakeService((revision) =>
+      readyResult(revision, [completionItem(14, 16, "table-function")])
+    );
+    const support = sqlEditor({
+      initialContext: context(),
+      service: harness.service,
+    });
+    const view = createView(support.extension);
+    expect(startCompletion(view)).toBe(true);
+    await waitForActiveCompletion(view);
+    expect(currentCompletions(view.state)[0]?.type).toBe("function");
   });
 
   it("owns rich completion info until CodeMirror destroys it", async () => {

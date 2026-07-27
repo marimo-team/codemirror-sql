@@ -13,6 +13,9 @@ Published as [`@marimo-team/codemirror-sql`](https://www.npmjs.com/package/@mari
 - **Schema-aware completion** — complete relations, namespaces, physical columns, inferred CTE/derived outputs, aliases, correlated scopes, set-operation arms, and DML targets
 - **CodeMirror integration** — cancellation-safe completion, disposable detail panels, atomic context updates, and an optional virtualized statement gutter
 - **Composable completion** — package results coexist with SQL keywords, functions, embedded-language sources, and host sources
+- **Language intelligence** — bounded diagnostics, hover, navigation, rename,
+  symbols, folding, formatting, and code-action providers share one revision
+  and cancellation model
 - **Isolated parsing** — optional browser-worker parser execution kept off the public API surface
 
 ## Installation
@@ -64,6 +67,8 @@ service.dispose();
 Configure relation, column, and namespace providers on the shared service for
 schema-aware completion. See the [CodeMirror adapter](./docs/codemirror-adapter.md)
 and [session primitives](./docs/session-primitives.md) for the full contracts.
+See [language feature providers](./docs/language-features.md) for native-engine,
+LSP, formatter, and host-validation integration.
 
 ## Demo
 

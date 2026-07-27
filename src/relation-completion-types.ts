@@ -44,6 +44,7 @@ export interface SqlCatalogEpoch {
 export type SqlCatalogRelationKind =
   | "temporary-table"
   | "table"
+  | "table-function"
   | "view"
   | "materialized-view"
   | "external-relation";

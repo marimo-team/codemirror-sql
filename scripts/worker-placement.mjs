@@ -35,11 +35,11 @@ const PARSER_MARKERS = [
   "tableList",
 ];
 const BIGQUERY_GZIP_LIMIT = 50 * 1024;
-const CORE_TOTAL_GZIP_LIMIT = 54 * 1024;
-const CORE_TOTAL_RAW_LIMIT = 200 * 1024;
+const CORE_TOTAL_GZIP_LIMIT = 57 * 1024;
+const CORE_TOTAL_RAW_LIMIT = 212 * 1024;
 const POSTGRESQL_GZIP_LIMIT = 68 * 1024;
-const WORKER_TOTAL_GZIP_LIMIT = 164 * 1024;
-const WORKER_TOTAL_RAW_LIMIT = 720 * 1024;
+const WORKER_TOTAL_GZIP_LIMIT = 165 * 1024;
+const WORKER_TOTAL_RAW_LIMIT = 725 * 1024;
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],

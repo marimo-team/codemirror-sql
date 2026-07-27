@@ -1,6 +1,6 @@
 # SQL editor completion plan
 
-Status: active  
+Status: complete
 Updated: 2026-07-27
 
 The standard language-service overhaul is delivered by PR #204. Two additional
@@ -31,6 +31,8 @@ Completion provenance distinguishes inferred query outputs from catalog
 columns.
 
 ## PR 2: language intelligence and release hardening
+
+Status: complete
 
 The final PR adds the remaining feature methods and provider composition:
 

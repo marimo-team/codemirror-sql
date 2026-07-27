@@ -1046,6 +1046,18 @@ describe("catalog response decoding", () => {
     }
   });
 
+  it("accepts table-valued functions as relation-site entities", () => {
+    const value = accepted(decodeSqlCatalogSearchResponse(
+      readyResponse([{ ...relation(), relationKind: "table-function" }]),
+      20,
+      POSTGRESQL_SQL_RELATION_DIALECT,
+    ));
+    expect(value).toMatchObject({
+      relations: [{ relationKind: "table-function" }],
+      status: "ready",
+    });
+  });
+
   it("rejects present undefined detail and enforces relation bounds", () => {
     expectMalformed(
       decodeSqlCatalogSearchResponse(

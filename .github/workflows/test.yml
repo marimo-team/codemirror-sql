@@ -58,6 +58,9 @@ jobs:
       - name: ⚡ Performance Gates
         run: pnpm run test:performance
 
+      - name: 🧬 Mutation Pilot
+        run: pnpm run test:mutation
+
       - name: 📈 Changed-Code Coverage
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
@@ -77,6 +80,13 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser:
+          - chromium
+          - firefox
+          - webkit
 
     permissions:
       contents: read
@@ -96,13 +106,16 @@ jobs:
       - name: 📥 Install dependencies
         run: pnpm install --ignore-scripts --frozen-lockfile
 
-      - name: 🎭 Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      - name: 🎭 Install ${{ matrix.browser }}
+        run: pnpm exec playwright install --with-deps "${{ matrix.browser }}"
 
-      - name: 🧪 Browser Tests
+      - name: 🧪 Browser Tests (${{ matrix.browser }})
+        env:
+          VITEST_BROWSER: ${{ matrix.browser }}
         run: pnpm run test:browser
 
       - name: 🧵 Worker Placement Evidence
+        if: matrix.browser == 'chromium'
         run: pnpm run test:worker-placement
 
   package:

@@ -54,6 +54,37 @@ export type {
   SqlTextRange,
 } from "./types.js";
 export { SqlSessionError } from "./types.js";
+export {
+  MAX_SQL_FEATURE_RESULTS,
+  MAX_SQL_FEATURE_TEXT_LENGTH,
+} from "./language-features.js";
+export type {
+  SqlCodeAction,
+  SqlDiagnostic,
+  SqlDiagnosticSeverity,
+  SqlDiagnosticsRequest,
+  SqlDocumentEditResult,
+  SqlDocumentSymbol,
+  SqlDocumentSymbolKind,
+  SqlFeatureCancelled,
+  SqlFeatureDocument,
+  SqlFeatureProviderReport,
+  SqlFeatureProviderRequest,
+  SqlFeatureReady,
+  SqlFeatureResult,
+  SqlFeatureTask,
+  SqlFeatureUnavailable,
+  SqlFoldingRange,
+  SqlFormatRequest,
+  SqlHover,
+  SqlLanguageFeatureMethods,
+  SqlLanguageFeatureProvider,
+  SqlLocation,
+  SqlMarkupContent,
+  SqlPositionFeatureRequest,
+  SqlRangeFeatureRequest,
+  SqlRenameRequest,
+} from "./language-features.js";
 export type {
   SqlExactStatementBoundary,
   SqlOpaqueStatementBoundary,
