@@ -3,6 +3,7 @@ import type {
   SqlIdentifierPath,
   SqlRevision,
   SqlTextChange,
+  SqlTextRange,
 } from "./types.js";
 
 // Provisional package-private declarations until the vertical slice is proven.
@@ -258,6 +259,12 @@ export interface SqlColumnCompletionProvenance {
   readonly columnEntityId: string;
 }
 
+export interface SqlQueryOutputCompletionProvenance {
+  readonly definition: SqlTextRange;
+  readonly kind: "query-output";
+  readonly relation: SqlTextRange;
+}
+
 export interface SqlNamespaceCompletionProvenance {
   readonly containerEntityId: string;
   readonly epoch: SqlCatalogEpoch;
@@ -287,6 +294,11 @@ export type SqlCompletionItem =
       readonly dataType?: string;
       readonly kind: "column";
       readonly provenance: SqlColumnCompletionProvenance;
+      readonly relationRequestKey: string;
+    })
+  | (SqlCompletionItemBase & {
+      readonly kind: "column";
+      readonly provenance: SqlQueryOutputCompletionProvenance;
       readonly relationRequestKey: string;
     })
   | (SqlCompletionItemBase & {
@@ -457,10 +469,17 @@ export type SqlNamespaceCatalogProviderReport =
         | "provider-failed";
     };
 
+export interface SqlQueryOutputProviderReport {
+  readonly coverage: "complete" | "partial";
+  readonly feature: "query-output";
+  readonly outcome: "ready";
+}
+
 export type SqlCompletionProviderReport =
   | SqlCatalogProviderReport
   | SqlColumnCatalogProviderReport
-  | SqlNamespaceCatalogProviderReport;
+  | SqlNamespaceCatalogProviderReport
+  | SqlQueryOutputProviderReport;
 
 export interface SqlServiceFailure {
   readonly code: "internal";

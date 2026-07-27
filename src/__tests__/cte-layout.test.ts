@@ -29,6 +29,7 @@ import {
   findSqlStatementSlot,
   type ExactSqlStatementSlot,
 } from "../statement-index.js";
+import { MAX_QUERY_OUTPUT_COLUMNS } from "../query-output.js";
 
 const postgres = POSTGRESQL_SQL_RELATION_DIALECT.cteLayout;
 const duckdb = DUCKDB_SQL_RELATION_DIALECT.cteLayout;
@@ -494,8 +495,8 @@ describe("bounded CTE layout", () => {
       "ambiguous-cte-header",
     ],
     ["WITH a AS (WITH) SELECT 1", "ambiguous-cte-header"],
-    ["WITH a AS (SELECT 1) DELETE FROM t", "unsupported-cte-extension"],
     ["WITH a AS (SELECT 1),", "ambiguous-cte-header"],
+    ["WITH a AS (SELECT 1) + SELECT 1", "unsupported-cte-extension"],
     [
       "WITH a AS (SELECT 1), SELECT",
       "ambiguous-cte-header",
@@ -529,7 +530,7 @@ describe("bounded CTE layout", () => {
     );
   });
 
-  it("stops exact structural coverage at an embedded barrier", () => {
+  it("keeps structural coverage around an embedded query expression", () => {
     const text =
       "WITH a AS (SELECT {value}), b AS (SELECT 2) " +
       "SELECT * FROM b";
@@ -539,17 +540,19 @@ describe("bounded CTE layout", () => {
     ]);
     expect(layout.status).toBe("partial");
     expect(layout.exactThrough).toBe(from);
-    expect(layout.declarations).toEqual([]);
-    expect(layout.draftDeclarations).toHaveLength(1);
-    expect(layout.draftDeclarations[0]).toMatchObject({
-      bodyRange: { from: text.indexOf("SELECT"), to: from },
-      name: { quoted: false, value: "a" },
-    });
+    expect(layout.declarations.map((item) => item.name.value)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(layout.draftDeclarations).toEqual([]);
     expect(layout.issues).toContain("opaque-template-context");
     expect(
       visibleSqlCtesAt(layout, text.lastIndexOf("FROM b") + 5),
     ).toMatchObject({
-      ctes: [],
+      ctes: [
+        { name: { value: "a" } },
+        { name: { value: "b" } },
+      ],
       quality: "recovered",
       shadowing: { coverage: "unknown" },
     });
@@ -557,6 +560,28 @@ describe("bounded CTE layout", () => {
       ctes: [],
       quality: "recovered",
       shadowing: { coverage: "unknown" },
+    });
+
+    const repeatedBarrierText =
+      "WITH a AS (SELECT {first} AS x, {second} AS y) SELECT 1";
+    const firstBarrier = repeatedBarrierText.indexOf("{first}");
+    const secondBarrier = repeatedBarrierText.indexOf("{second}");
+    expect(
+      analyze(repeatedBarrierText, postgres, [
+        {
+          from: firstBarrier,
+          language: "python",
+          to: firstBarrier + "{first}".length,
+        },
+        {
+          from: secondBarrier,
+          language: "python",
+          to: secondBarrier + "{second}".length,
+        },
+      ]),
+    ).toMatchObject({
+      exactThrough: firstBarrier,
+      status: "partial",
     });
 
     const laterBarrierText =
@@ -855,6 +880,21 @@ describe("bounded CTE layout", () => {
     expect(declarationLayout.status).toBe("partial");
     expect(declarationLayout).toMatchObject({
       resource: "cte-declaration",
+    });
+
+    const columns = Array.from(
+      { length: MAX_QUERY_OUTPUT_COLUMNS + 1 },
+      (_, index) => `column_${index}`,
+    ).join(", ");
+    const columnLayout = analyze(
+      `WITH c(${columns}) AS (SELECT 1) SELECT 1`,
+    );
+    expect(columnLayout).toMatchObject({
+      declarations: [{
+        declaredColumns: { length: MAX_QUERY_OUTPUT_COLUMNS },
+      }],
+      resource: "cte-column",
+      status: "partial",
     });
 
     const acceptedDeclarations = Array.from(

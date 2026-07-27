@@ -3,6 +3,7 @@ import type {
 } from "./column-catalog-batch-coordinator.js";
 import {
   MAX_COLUMN_BATCH_RELATIONS,
+  MAX_COLUMNS_PER_BATCH,
 } from "./column-catalog-boundary.js";
 import type {
   SqlColumnCatalogRelationReference,
@@ -18,6 +19,8 @@ import type {
   SqlCompletionIssue,
   SqlCompletionItem,
   SqlCompletionList,
+  SqlCompletionProviderReport,
+  SqlQueryOutputProviderReport,
 } from "./relation-completion-types.js";
 import type { SqlRelationDialectRuntime } from "./relation-dialect.js";
 import type {
@@ -40,9 +43,14 @@ export interface SqlPreparedColumnCatalogRelations {
 }
 
 export interface SqlColumnCompletionComposition {
-  readonly sources: readonly SqlColumnCatalogProviderReport[];
+  readonly sources: readonly SqlCompletionProviderReport[];
   readonly value: SqlCompletionList;
 }
+
+const completionIdentifiers = new WeakMap<
+  SqlCompletionItem,
+  SqlIdentifierComponent
+>();
 
 function sameIdentifier(
   dialect: SqlRelationDialectRuntime,
@@ -94,10 +102,15 @@ export function prepareSqlColumnCatalogRelations(
     SqlColumnQueryRelation
   >();
   let coverage: "complete" | "partial" = "complete";
-  for (let index = 0; index < site.relations.length; index += 1) {
+  const firstRelation =
+    site.context === "using"
+      ? Math.max(0, site.relations.length - 2)
+      : 0;
+  for (let index = firstRelation; index < site.relations.length; index += 1) {
     const relation = site.relations[index];
     if (
       relation === undefined ||
+      relation.local !== undefined ||
       !relationMatchesQualifier(
         dialect,
         relation,
@@ -127,6 +140,135 @@ export function prepareSqlColumnCatalogRelations(
 function relationLabel(relation: SqlColumnQueryRelation): string {
   return relation.alias?.value ??
     relation.path.map((component) => component.value).join(".");
+}
+
+export function composeSqlLocalQueryOutputCompletion(
+  site: ReadyColumnSite,
+  dialect: SqlRelationDialectRuntime,
+): SqlColumnCompletionComposition | null {
+  const items: SqlCompletionItem[] = [];
+  const seen = new Set<string>();
+  let found = false;
+  let partial = site.coverage === "partial";
+  const firstRelation = site.context === "using"
+    ? Math.max(0, site.relations.length - 2)
+    : 0;
+  relations: for (
+    let index = firstRelation;
+    index < site.relations.length;
+    index += 1
+  ) {
+    const relation = site.relations[index];
+    if (
+      !relation?.local ||
+      !relationMatchesQualifier(dialect, relation, site.qualifier)
+    ) {
+      continue;
+    }
+    found = true;
+    const output = relation.local.output;
+    if (!output || output.status !== "ready") {
+      partial = true;
+      continue;
+    }
+    if (output.coverage === "partial") partial = true;
+    for (const column of output.columns) {
+      if (
+        dialect.completion.cteIdentifierMatchesPrefix(
+          column.identifier,
+          site.prefix,
+        ) !== "match"
+      ) {
+        continue;
+      }
+      const identity = [
+        relation.range.from,
+        relation.range.to,
+        column.identifier.quoted,
+        column.identifier.value,
+        column.definition.from,
+        column.definition.to,
+      ].join("\u0000");
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      if (items.length === MAX_COLUMNS_PER_BATCH) {
+        partial = true;
+        break relations;
+      }
+      const item = Object.freeze({
+        detail: relationLabel(relation),
+        edit: Object.freeze({
+          from: site.replacementRange.from,
+          insert: column.insertText,
+          to: site.replacementRange.to,
+        }),
+        kind: "column",
+        label: column.identifier.value,
+        provenance: Object.freeze({
+          definition: column.definition,
+          kind: "query-output",
+          relation: relation.range,
+        }),
+        relationRequestKey: `local:${index}`,
+      });
+      completionIdentifiers.set(item, column.identifier);
+      items.push(item);
+    }
+  }
+  if (!found) return null;
+  const source: SqlQueryOutputProviderReport = Object.freeze({
+    coverage: partial ? "partial" : "complete",
+    feature: "query-output",
+    outcome: "ready",
+  });
+  return Object.freeze({
+    sources: Object.freeze([source]),
+    value: list(
+      Object.freeze(items.sort(compareItems)),
+      partial ? Object.freeze([issue("query-binding-partial")]) : Object.freeze([]),
+    ),
+  });
+}
+
+export function filterSqlUsingCompletionList(
+  value: SqlCompletionList,
+  site: ReadyColumnSite,
+  dialect: SqlRelationDialectRuntime,
+): SqlCompletionList {
+  if (site.context !== "using" || site.relations.length < 2) return value;
+  const leftIndex = site.relations.length - 2;
+  const rightIndex = site.relations.length - 1;
+  const left = site.relations[leftIndex];
+  const right = site.relations[rightIndex];
+  if (!left || !right) return value;
+  const leftKey = left.local ? `local:${leftIndex}` : `binding:${leftIndex}`;
+  const rightKey = right.local
+    ? `local:${rightIndex}`
+    : `binding:${rightIndex}`;
+  const rightIdentifiers = value.items.flatMap((item) => {
+    if (
+      item.kind !== "column" ||
+      item.relationRequestKey !== rightKey
+    ) {
+      return [];
+    }
+    const identifier = completionIdentifiers.get(item);
+    return identifier ? [identifier] : [];
+  });
+  const items = value.items.filter((item) => {
+    if (
+      item.kind !== "column" ||
+      item.relationRequestKey !== leftKey
+    ) {
+      return false;
+    }
+    const candidate = completionIdentifiers.get(item);
+    return candidate !== undefined &&
+      rightIdentifiers.some((identifier) =>
+        sameIdentifier(dialect, candidate, identifier)
+      );
+  });
+  return list(Object.freeze(items), value.issues);
 }
 
 function issue(
@@ -239,6 +381,7 @@ export function composeSqlColumnCompletion(
   let hasLoading = false;
   let hasFailure = false;
   const seen = new Set<string>();
+  const usingIdentifiers = new Map<string, SqlIdentifierComponent[]>();
   const failures: SqlColumnCatalogFailure[] = [];
   for (const result of input.outcome.relations) {
     issues.push(...resultIssues(result));
@@ -263,10 +406,26 @@ export function composeSqlColumnCompletion(
       issues.push(issue("column-catalog-malformed"));
       continue;
     }
-    for (const column of result.columns) {
+    if (
+      relation.columnAliases?.coverage === "partial" ||
+      (relation.columnAliases?.columns.length ?? 0) >
+        result.columns.length
+    ) {
+      hasPartial = true;
+      issues.push(issue("query-binding-partial"));
+    }
+    for (
+      let columnIndex = 0;
+      columnIndex < result.columns.length;
+      columnIndex += 1
+    ) {
+      const column = result.columns[columnIndex]!;
+      const alias = relation.columnAliases?.columns[columnIndex];
+      const completionIdentifier = alias?.identifier ?? column.identifier;
+      const insertText = alias?.insertText ?? column.insertText;
       if (
         input.dialect.completion.cteIdentifierMatchesPrefix(
-          column.identifier,
+          completionIdentifier,
           input.site.prefix,
         ) !== "match"
       ) {
@@ -277,13 +436,16 @@ export function composeSqlColumnCompletion(
         column.provenance.scope,
         column.provenance.relationEntityId,
         column.provenance.columnEntityId,
-        column.insertText,
+        insertText,
       ].join("\u0000");
+      const identifiers = usingIdentifiers.get(result.requestKey) ?? [];
+      identifiers.push(completionIdentifier);
+      usingIdentifiers.set(result.requestKey, identifiers);
       if (seen.has(identity)) continue;
       seen.add(identity);
       const relationName = relationLabel(relation);
       const metadata = column.detail ?? column.dataType;
-      items.push(Object.freeze({
+      const item = Object.freeze({
         ...(column.dataType === undefined
           ? {}
           : { dataType: column.dataType }),
@@ -292,11 +454,11 @@ export function composeSqlColumnCompletion(
           : `${metadata} — ${relationName}`,
         edit: Object.freeze({
           from: input.site.replacementRange.from,
-          insert: column.insertText,
+          insert: insertText,
           to: input.site.replacementRange.to,
         }),
         kind: "column",
-        label: column.identifier.value,
+        label: completionIdentifier.value,
         provenance: Object.freeze({
           columnEntityId: column.provenance.columnEntityId,
           epoch: column.provenance.epoch,
@@ -306,7 +468,33 @@ export function composeSqlColumnCompletion(
           scope: column.provenance.scope,
         }),
         relationRequestKey: result.requestKey,
-      }));
+      });
+      completionIdentifiers.set(item, completionIdentifier);
+      items.push(item);
+    }
+  }
+  if (
+    input.site.context === "using" &&
+    input.prepared.references.length === 2
+  ) {
+    const leftKey = input.prepared.references[0]?.requestKey;
+    const rightKey = input.prepared.references[1]?.requestKey;
+    if (leftKey && rightKey) {
+      const rightIdentifiers = usingIdentifiers.get(rightKey) ?? [];
+      const shared = items.filter((item) => {
+        if (
+          item.kind !== "column" ||
+          item.relationRequestKey !== leftKey
+        ) {
+          return false;
+        }
+        const left = completionIdentifiers.get(item);
+        return left !== undefined &&
+          rightIdentifiers.some((right) =>
+            sameIdentifier(input.dialect, left, right)
+          );
+      });
+      items.splice(0, items.length, ...shared);
     }
   }
   const deduplicatedIssues = Array.from(

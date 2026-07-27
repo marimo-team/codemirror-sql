@@ -126,6 +126,7 @@ export interface SqlQuerySiteDialect {
       };
   readonly lexicalProfile: SqlLexicalProfile;
   readonly maximumPathDepth: number;
+  readonly optionalDmlInto?: boolean;
   readonly supportsNaturalJoin: boolean;
   readonly decodeRelationPath: (
     rawPath: string,
@@ -462,10 +463,13 @@ function processFrameWord(
   text: string,
   token: Lexeme,
 ): void {
-  if (frame.state === "unavailable" || frame.state === "closed") {
+  if (frame.state === "unavailable") {
     return;
   }
   const word = wordValue(text, token);
+  if (frame.state === "closed" && !isSetOperation(word)) {
+    return;
+  }
   if (frame.state === "expect-alias") {
     if (word.length === 0) {
       markUnavailable(frame, "ambiguous-query-site");
@@ -502,7 +506,13 @@ function processFrameWord(
     return;
   }
   if (isSetOperation(word)) {
-    markUnavailable(frame, "unsupported-query-site");
+    frame.anchor = "from";
+    frame.blocksNestedQuery = false;
+    frame.joinConstraint = null;
+    frame.joinConstraintAllowed = false;
+    frame.joinPrefix = null;
+    frame.selectWords = [null, null, null];
+    frame.state = "select-list";
     return;
   }
   if (word === "lateral" || word === "qualify" || word === "window") {
@@ -1073,6 +1083,136 @@ function resultAtGap(
   return inactive("not-relation-position");
 }
 
+function recognizeDmlRelationQuerySite(
+  source: SqlSourceSnapshot,
+  slot: ExactSqlStatementSlot,
+  start: number,
+  position: number,
+  dialect: SqlQuerySiteDialect,
+  lexicalProfile: SqlLexicalProfile,
+  maximumPathDepth: number,
+): SqlQuerySiteResult | "continue-select" | null {
+  const lexer = new BoundedSqlLexer(
+    source,
+    start,
+    slot.source.to,
+    lexicalProfile,
+  );
+  let first = lexer.next();
+  while (first && isCommentLexeme(first)) {
+    if (cursorIsInComment(first, position)) {
+      return inactive("cursor-in-comment");
+    }
+    first = lexer.next();
+  }
+  if (!first || first.kind !== "word") return null;
+  const leader = wordValue(source.analysisText, first);
+  let expectedKeyword: "from" | "into" | null;
+  let keywordOptional = false;
+  let merge = false;
+  if (leader === "update") {
+    expectedKeyword = null;
+  } else if (leader === "insert") {
+    expectedKeyword = "into";
+    keywordOptional = dialect.optionalDmlInto === true;
+  } else if (leader === "delete") {
+    expectedKeyword = "from";
+  } else if (leader === "merge") {
+    expectedKeyword = "into";
+    keywordOptional = dialect.optionalDmlInto === true;
+    merge = true;
+  } else {
+    return null;
+  }
+  if (first.from <= position && position < first.to) {
+    return inactive("not-relation-position");
+  }
+  let expectRelation = expectedKeyword === null;
+  let targetComplete = false;
+  let anchor: QueryFrame["anchor"] = "from";
+  while (true) {
+    const token = lexer.next();
+    if (lexer.resource) {
+      return unavailable(
+        "resource-limit",
+        querySiteLexerResource(lexer.resource),
+      );
+    }
+    if (!token || token.from > position) {
+      if (expectRelation) {
+        const frame = createFrame(0, false);
+        frame.anchor = anchor;
+        frame.state = "expect-relation";
+        return readyEmpty(slot, frame, position);
+      }
+      return inactive("not-relation-position");
+    }
+    if (isCommentLexeme(token)) {
+      if (cursorIsInComment(token, position)) {
+        return inactive("cursor-in-comment");
+      }
+      if (!token.closed) return unavailable("ambiguous-query-site");
+      continue;
+    }
+    if (token.kind === "barrier") {
+      return token.from <= position && position <= token.to
+        ? inactive("cursor-in-embedded-region")
+        : unavailable("ambiguous-query-site");
+    }
+    if (token.from <= position && position < token.to) {
+      if (token.kind === "string") return inactive("cursor-in-string");
+      if (!expectRelation) return inactive("not-relation-position");
+    }
+    if (expectedKeyword !== null) {
+      const keywordMatches =
+        token.kind === "word" &&
+        wordValue(source.analysisText, token) === expectedKeyword;
+      if (!keywordMatches && !keywordOptional) {
+        return unavailable("ambiguous-query-site");
+      }
+      expectedKeyword = null;
+      expectRelation = true;
+      if (keywordMatches) continue;
+    }
+    if (expectRelation) {
+      if (
+        token.kind !== "word" &&
+        token.kind !== "quoted-identifier"
+      ) {
+        return unavailable("unsupported-query-site");
+      }
+      const frame = createFrame(0, false);
+      frame.anchor = anchor;
+      frame.state = "expect-relation";
+      const result = recognizePath(
+        lexer,
+        source,
+        slot,
+        frame,
+        dialect,
+        maximumPathDepth,
+        token,
+        position,
+      );
+      if (result) return result;
+      expectRelation = false;
+      targetComplete = true;
+      if (!merge || anchor === "join") return "continue-select";
+      continue;
+    }
+    if (
+      merge &&
+      targetComplete &&
+      token.kind === "word" &&
+      wordValue(source.analysisText, token) === "using"
+    ) {
+      anchor = "join";
+      expectRelation = true;
+      targetComplete = false;
+    }
+  }
+}
+
 function recognizeSqlRelationQuerySiteInternal(
   source: SqlSourceSnapshot,
   slot: SqlStatementSlot,
@@ -1120,6 +1260,29 @@ function recognizeSqlRelationQuerySiteInternal(
   ) {
     return unavailable("ambiguous-query-site");
   }
+  const dmlStarts = [
+    slot.source.from,
+    ...(authenticatedEntrypoints ?? [])
+      .filter((entrypoint) => entrypoint.depth === 0)
+      .map((entrypoint) => slot.source.from + entrypoint.from),
+  ];
+  let dml: SqlQuerySiteResult | "continue-select" | null = null;
+  for (let index = dmlStarts.length - 1; index >= 0; index -= 1) {
+    const start = dmlStarts[index];
+    if (start === undefined || start > position) continue;
+    dml = recognizeDmlRelationQuerySite(
+      source,
+      slot,
+      start,
+      position,
+      dialect,
+      lexicalProfile,
+      maximumPathDepth,
+    );
+    if (dml !== null) break;
+  }
+  const continueAfterDml = dml === "continue-select";
+  if (dml !== null && dml !== "continue-select") return dml;
   const lexer = new BoundedSqlLexer(
     source,
     slot.source.from,
@@ -1445,17 +1608,20 @@ function recognizeSqlRelationQuerySiteInternal(
         queryCandidates.has(depth) ||
         isAuthenticatedEntrypoint
       ) {
-        queryCandidates.delete(depth);
         if (
           isSelect &&
           !topFrame(frames)?.blocksNestedQuery
         ) {
+          queryCandidates.delete(depth);
           frames.push(createFrame(depth, statementTainted));
           sawSelect = true;
           if (token.to === position) {
             return inactive("not-relation-position");
           }
           continue;
+        }
+        if (!(continueAfterDml && depth === 0)) {
+          queryCandidates.delete(depth);
         }
       }
       const activeFrame = topFrame(frames);

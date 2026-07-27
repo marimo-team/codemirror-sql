@@ -10,7 +10,7 @@ Published as [`@marimo-team/codemirror-sql`](https://www.npmjs.com/package/@mari
 - **Document sessions** — open SQL documents, apply atomic text and context updates, and track opaque revisions
 - **Built-in dialects** — PostgreSQL, DuckDB, BigQuery, and Dremio
 - **Embedded regions** — mask non-SQL spans (for example notebook interpolations) in document coordinates
-- **Schema-aware completion** — complete relations, namespaces, physical columns, aliases, correlated scopes, and visible CTEs
+- **Schema-aware completion** — complete relations, namespaces, physical columns, inferred CTE/derived outputs, aliases, correlated scopes, set-operation arms, and DML targets
 - **CodeMirror integration** — cancellation-safe completion, disposable detail panels, atomic context updates, and an optional virtualized statement gutter
 - **Composable completion** — package results coexist with SQL keywords, functions, embedded-language sources, and host sources
 - **Isolated parsing** — optional browser-worker parser execution kept off the public API surface
@@ -72,9 +72,10 @@ pnpm install
 pnpm dev
 ```
 
-The playground exercises relation, namespace, physical-column, CTE, correlated
-scope, and `LATERAL` completion against an in-memory catalog. It also exposes
-provider latency and catalog invalidation controls.
+The playground exercises relation, namespace, physical-column, CTE-output,
+derived/set, `USING`, DML, correlated-scope, and `LATERAL` completion against
+an in-memory catalog. It also exposes provider latency and catalog invalidation
+controls.
 
 ## Development
 

@@ -6,8 +6,14 @@ import {
 } from "./cte-layout.js";
 import {
   recognizeSqlColumnQuerySite,
+  type SqlColumnQueryRelation,
   type SqlColumnQuerySiteResult,
 } from "./column-query-site.js";
+import {
+  inferSqlQueryOutput,
+  MAX_QUERY_OUTPUT_COLUMNS,
+  type SqlQueryOutput,
+} from "./query-output.js";
 import {
   recognizeSqlRelationQuerySiteWithEntrypoints,
   type SqlQuerySiteResult,
@@ -24,10 +30,43 @@ import {
   type SqlStatementIndex,
   type SqlStatementSlot,
 } from "./statement-index.js";
+import type { SqlTextRange } from "./types.js";
 
 const localRelationStatementBrand: unique symbol = Symbol(
   "SqlLocalRelationStatement",
 );
+
+export function applySqlQueryOutputAliases(
+  output: SqlQueryOutput,
+  aliases: NonNullable<SqlColumnQueryRelation["columnAliases"]>,
+): SqlQueryOutput {
+  if (output.status !== "ready") {
+    return Object.freeze({
+      columns: aliases.columns,
+      coverage: "partial" as const,
+      status: "ready" as const,
+    });
+  }
+  const columns = output.columns.map((column, index) =>
+    aliases.columns[index] ?? column
+  );
+  if (aliases.columns.length > columns.length) {
+    columns.push(...aliases.columns.slice(columns.length));
+  }
+  return Object.freeze({
+    columns: Object.freeze(
+      columns.slice(0, MAX_QUERY_OUTPUT_COLUMNS),
+    ),
+    coverage:
+      aliases.coverage === "partial" ||
+        output.coverage === "partial" ||
+        columns.length > MAX_QUERY_OUTPUT_COLUMNS ||
+        aliases.columns.length > output.columns.length
+        ? "partial" as const
+        : "complete" as const,
+    status: "ready" as const,
+  });
+}
 
 export interface SqlLocalRelationStatement {
   readonly [localRelationStatementBrand]: "SqlLocalRelationStatement";
@@ -227,22 +266,116 @@ export function analyzeSqlLocalColumnSite(
     context.layout,
     position - context.slot.source.from,
   );
-  const relations = result.relations.filter((relation) => {
-    const name = relation.path.length === 1
-      ? relation.path[0]
-      : undefined;
-    return name === undefined ||
-      !visibility.ctes.some((cte) =>
-        context.dialect.completion.compareCteIdentifiers(
-          name,
-          cte.name,
-        ) === "equal"
+  const outputCache = new Map<string, SqlQueryOutput>();
+  const inferOutput = (range: SqlTextRange): SqlQueryOutput => {
+    const key = `${range.from}:${range.to}`;
+    const cached = outputCache.get(key);
+    if (cached) return cached;
+    const output = inferSqlQueryOutput(
+      context.source,
+      range,
+      context.dialect,
+    );
+    outputCache.set(key, output);
+    return output;
+  };
+  const applyAliases = (
+    output: SqlQueryOutput,
+    relation: SqlColumnQueryRelation,
+  ): SqlQueryOutput => {
+    const aliases = relation.columnAliases;
+    if (!aliases) return output;
+    return applySqlQueryOutputAliases(output, aliases);
+  };
+  const relations: SqlColumnQueryRelation[] = result.relations.map(
+    (relation) => {
+      if (relation.local?.kind === "derived") {
+        return Object.freeze({
+          ...relation,
+          local: Object.freeze({
+            ...relation.local,
+            output: applyAliases(
+              inferOutput(relation.local.queryRange),
+              relation,
+            ),
+          }),
+        });
+      }
+      const name = relation.path.length === 1
+        ? relation.path[0]
+        : undefined;
+      const visible = name === undefined
+        ? undefined
+        : visibility.ctes.find((cte) =>
+            context.dialect.completion.compareCteIdentifiers(
+              name,
+              cte.name,
+            ) === "equal"
+          );
+      if (!visible) return relation;
+      const declaration = context.layout.declarations.find((candidate) =>
+        candidate.nameRange.from === visible.declarationPosition
       );
-  });
-  return relations.length === result.relations.length
-    ? result
-    : Object.freeze({
-        ...result,
-        relations: Object.freeze(relations),
+      if (!declaration) return relation;
+      const queryRange = Object.freeze({
+        from: context.slot.source.from + declaration.bodyRange.from,
+        to: context.slot.source.from + declaration.bodyRange.to,
       });
+      const inferredOutput = inferOutput(queryRange);
+      const output = declaration.declaredColumns.length === 0
+        ? inferredOutput
+        : Object.freeze({
+            columns: Object.freeze(
+              declaration.declaredColumns.map((column) => {
+                const definition = Object.freeze({
+                  from: context.slot.source.from + column.range.from,
+                  to: context.slot.source.from + column.range.to,
+                });
+                return Object.freeze({
+                  definition,
+                  identifier: column.name,
+                  insertText: context.source.originalText.slice(
+                    definition.from,
+                    definition.to,
+                  ),
+                });
+              }),
+            ),
+            coverage:
+              context.layout.status === "partial"
+                ? "partial" as const
+                : "complete" as const,
+            status: "ready" as const,
+          });
+      return Object.freeze({
+        ...relation,
+        local: Object.freeze({
+          kind: "cte" as const,
+          output: applyAliases(output, relation),
+          queryRange,
+        }),
+      });
+    },
+  );
+  const localPartial = relations.some((relation) =>
+    relation.local !== undefined &&
+    (
+      relation.local.output?.status !== "ready" ||
+      relation.local.output.coverage === "partial"
+    )
+  ) || visibility.shadowing.coverage === "unknown";
+  const issues = localPartial &&
+      !result.issues.includes("local-output-partial")
+    ? Object.freeze([
+        ...result.issues,
+        "local-output-partial" as const,
+      ].sort())
+    : result.issues;
+  return Object.freeze({
+    ...result,
+    coverage:
+      result.coverage === "partial" || localPartial ? "partial" : "complete",
+    issues,
+    relations: Object.freeze(relations),
+  });
 }

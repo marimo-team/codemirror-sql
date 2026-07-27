@@ -92,6 +92,8 @@ export type {
   SqlColumnCatalogProviderReport,
   SqlColumnCatalogFailure,
   SqlColumnCompletionProvenance,
+  SqlQueryOutputCompletionProvenance,
+  SqlQueryOutputProviderReport,
   SqlCompletionProviderReport,
   SqlCompletionIssue,
   SqlCompletionRequest,

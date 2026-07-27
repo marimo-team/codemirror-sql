@@ -5,8 +5,18 @@ Import: `@marimo-team/codemirror-sql`
 
 This entry point provides document ownership, atomic text/context updates,
 opaque revisions, dialect registration, lifecycle management, and
-parser-independent relation completion. Diagnostics, hover, navigation, and
-general expression completion are not yet available.
+parser-independent relation and column completion. Relation sites include
+`SELECT` set-operation arms and bounded `INSERT`, `UPDATE`, `DELETE`, and
+`MERGE` targets. Column completion combines physical catalog columns with
+locally inferred CTE and derived-query outputs. Diagnostics, hover, navigation,
+and general expression completion are not yet available.
+
+Local output inference only publishes names it can prove: explicit CTE column
+lists, explicit projection aliases, and simple column references. Set
+operations take their output names from the first arm. Stars, unaliased
+expressions, opaque templates without an explicit alias, and resource-limited
+shapes make the result incomplete; the service does not guess engine-generated
+column names or query a physical provider with a CTE/derived relation name.
 
 CodeMirror consumers should use the separate
 [standard CodeMirror adapter](./codemirror-adapter.md).

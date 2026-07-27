@@ -210,6 +210,43 @@ test("standard editor can accept the first completion immediately", async () => 
   expect(view.state.doc.toString()).toBe("SELECT * FROM users");
 });
 
+test("standard editor completes and applies a CTE output column", async () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  onTestFinished(() => parent.remove());
+  const service = createSqlLanguageService({
+    dialects: [duckdbDialect()],
+  });
+  onTestFinished(() => service.dispose());
+  const support = sqlEditor({
+    autocomplete: { selectOnOpen: true },
+    initialContext: { dialect: "duckdb" },
+    service,
+  });
+  const documentText =
+    "WITH c AS (SELECT id AS user_id) SELECT c. FROM c";
+  const position = documentText.indexOf("c. FROM") + 2;
+  const view = new EditorView({
+    doc: documentText,
+    extensions: support.extension,
+    parent,
+    selection: { anchor: position },
+  });
+  onTestFinished(() => view.destroy());
+
+  view.focus();
+  expect(startCompletion(view)).toBe(true);
+  await expect.poll(() =>
+    currentCompletions(view.state).map((item) => item.label)
+  ).toEqual(["user_id"]);
+  await expect.poll(() => selectedCompletionIndex(view.state)).toBe(0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(acceptCompletion(view)).toBe(true);
+  expect(view.state.doc.toString()).toBe(
+    "WITH c AS (SELECT id AS user_id) SELECT c.user_id FROM c",
+  );
+});
+
 test("standard editor preserves SQL language completions", async () => {
   const parent = document.createElement("div");
   document.body.append(parent);

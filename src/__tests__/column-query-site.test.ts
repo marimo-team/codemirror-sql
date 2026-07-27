@@ -254,7 +254,7 @@ describe("recognizeSqlColumnQuerySite", () => {
     expect(position).toBeGreaterThan(0);
   });
 
-  it("marks derived and table-function evidence partial", () => {
+  it("represents derived relations and marks table functions partial", () => {
     expect(
       ready(
         analyze(
@@ -263,12 +263,145 @@ describe("recognizeSqlColumnQuerySite", () => {
       ),
     ).toMatchObject({
       coverage: "partial",
-      issues: [
-        "derived-relation",
-        "nested-query",
-        "table-function",
-      ],
+      issues: ["table-function"],
     });
+  });
+
+  it("keeps a bounded derived query source and its explicit alias", () => {
+    const result = ready(
+      analyze(
+        "SELECT d.i| FROM (SELECT id FROM users) AS d",
+      ),
+    );
+    expect(result.relations).toMatchObject([{
+      alias: { value: "d" },
+      local: {
+        kind: "derived",
+        queryRange: {
+          from: "SELECT d.i FROM (".length,
+          to: "SELECT d.i FROM (SELECT id FROM users".length,
+        },
+      },
+      path: [],
+    }]);
+  });
+
+  it.each([
+    "WHERE",
+    "ON",
+    "GROUP",
+    "ORDER",
+    "UNION",
+  ])("does not consume %s as a derived relation alias", (keyword) => {
+    const result = ready(
+      analyze(
+        `SELECT i| FROM (SELECT id FROM users) ${keyword} other`,
+      ),
+    );
+    const derived = result.relations.find((relation) =>
+      relation.local?.kind === "derived"
+    );
+    expect(derived).toMatchObject({
+      alias: null,
+      local: { kind: "derived" },
+      path: [],
+    });
+    expect(result.issues).toContain("derived-relation");
+  });
+
+  it("continues parsing a join after an unaliased derived relation", () => {
+    const result = ready(
+      analyze(
+        "SELECT o.| FROM (SELECT id FROM users) JOIN orders o ON true",
+        { dialect: DUCKDB_SQL_RELATION_DIALECT },
+      ),
+    );
+    expect(result.relations).toMatchObject([
+      {
+        alias: null,
+        local: { kind: "derived" },
+        path: [],
+      },
+      {
+        alias: { value: "o" },
+        path: [{ value: "orders" }],
+      },
+    ]);
+    expect(result.issues).toContain("derived-relation");
+  });
+
+  it("preserves authoritative relation-alias column lists", () => {
+    const result = ready(
+      analyze(
+        'SELECT d.| FROM (SELECT original, other) AS d("Renamed", second)',
+      ),
+    );
+    expect(result.relations).toMatchObject([{
+      alias: { value: "d" },
+      columnAliases: {
+        columns: [
+          {
+            identifier: { quoted: true, value: "Renamed" },
+            insertText: '"Renamed"',
+          },
+          {
+            identifier: { quoted: false, value: "second" },
+            insertText: "second",
+          },
+        ],
+        coverage: "complete",
+      },
+      local: { kind: "derived" },
+    }]);
+  });
+
+  it.each([
+    "SELECT d.| FROM (SELECT original) d()",
+    "SELECT d.| FROM (SELECT original) d(schema.name)",
+    "SELECT d.| FROM (SELECT original) d((nested))",
+    "SELECT d.| FROM (SELECT original) d(name,)",
+    "SELECT d.| FROM (SELECT original) d(/*comment*/ name",
+  ])("marks malformed relation-alias column lists partial in %s", (marked) => {
+    expect(analyze(marked)).toMatchObject({
+      coverage: "partial",
+      issues: ["local-output-partial"],
+      status: "ready",
+    });
+  });
+
+  it("bounds relation-alias column lists", () => {
+    const columns = Array.from(
+      { length: 257 },
+      (_, index) => `column_${index}`,
+    ).join(", ");
+    const result = ready(
+      analyze(`SELECT d.| FROM (SELECT original) d(${columns})`),
+    );
+    expect(result).toMatchObject({
+      coverage: "partial",
+      issues: ["local-output-partial"],
+      relations: [{
+        columnAliases: {
+          columns: { length: 256 },
+          coverage: "partial",
+        },
+      }],
+    });
+  });
+
+  it.each([
+    "SELECT i| FROM (SELECT id FROM users)",
+    "SELECT i| FROM (VALUES (1)) v",
+    "SELECT i| FROM (SELECT id FROM users AS",
+  ])("marks an unprovable derived source partial in %s", (marked) => {
+    const result = analyze(marked);
+    expect(result).toMatchObject({
+      coverage: "partial",
+      status: "ready",
+    });
+    if (result.status === "ready") {
+      expect(result.issues).toContain("derived-relation");
+    }
   });
 
   it.each([
