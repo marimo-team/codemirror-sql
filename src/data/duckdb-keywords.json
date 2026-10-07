@@ -14,7 +14,7 @@
     },
     "array_apply": {
       "description": "Returns a list that is the result of applying the lambda function to each element of the input list. See the Lambda Functions section for more details",
-      "example": "list_transform([1, 2, 3], x -> x + 1)"
+      "example": "list_transform([1, 2, 3], lambda x: x + 1)"
     },
     "array_cat": {
       "description": "Concatenates two lists.",
@@ -58,7 +58,7 @@
     },
     "array_filter": {
       "description": "Constructs a list from those elements of the input list for which the lambda function returns true",
-      "example": "list_filter([3, 4, 5], x -> x > 4)"
+      "example": "list_filter([3, 4, 5], lambda x: x > 4)"
     },
     "array_grade_up": {
       "description": "Returns the index of their sorted position.",
@@ -102,7 +102,7 @@
     },
     "array_reduce": {
       "description": "Returns a single value that is the result of applying the lambda function to each element of the input list, starting with the first element and then repeatedly applying the lambda function to the result of the previous application and the next element of the list. When an initial value is provided, it is used as the first argument to the lambda function",
-      "example": "list_reduce([1, 2, 3], (x, y) -> x + y)"
+      "example": "list_reduce([1, 2, 3], lambda x, y: x + y)"
     },
     "array_resize": {
       "description": "Resizes the list to contain size elements. Initializes new elements with value or NULL if value is not set.",
@@ -126,7 +126,7 @@
     },
     "array_transform": {
       "description": "Returns a list that is the result of applying the lambda function to each element of the input list. See the Lambda Functions section for more details",
-      "example": "list_transform([1, 2, 3], x -> x + 1)"
+      "example": "list_transform([1, 2, 3], lambda x: x + 1)"
     },
     "array_unique": {
       "description": "Counts the unique elements of a list",

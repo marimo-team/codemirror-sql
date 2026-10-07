@@ -353,12 +353,21 @@ def _(functions):
 
     filtered_fn = filtered_fn.filter(prefix_filter, pl.col("description") != "")
 
+    # DuckDB 1.3.2 still advertises arrow lambdas, which DuckDB 2 disables
+    # by default. Keep generated examples compatible with both versions.
+    lambda_examples = {
+        "array_apply": "list_transform([1, 2, 3], lambda x: x + 1)",
+        "array_filter": "list_filter([3, 4, 5], lambda x: x > 4)",
+        "array_reduce": "list_reduce([1, 2, 3], lambda x, y: x + y)",
+        "array_transform": "list_transform([1, 2, 3], lambda x: x + 1)",
+    }
+
     # transform to {keyword: {description, example }}
     fn_dict = {}
     for row in filtered_fn.iter_rows(named=True):
         fn_dict[row["function_name"]] = {
             "description": row["description"],
-            "example": row["example"],
+            "example": lambda_examples.get(row["function_name"], row["example"]),
         }
     return (fn_dict,)
 
