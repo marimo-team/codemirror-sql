@@ -3,5 +3,20 @@
   "extends": [
     "local>marimo-team/.github:renovate-config",
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Match pnpm-workspace.yaml's 14-day release cooldown",
+      "matchDatasources": ["npm"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "minimumReleaseAge": "14 days",
+      "internalChecksFilter": "strict"
+    },
+    {
+      "description": "Match pnpm-workspace.yaml's exemption for internal packages",
+      "matchDatasources": ["npm"],
+      "matchPackageNames": ["@marimo-team/*"],
+      "minimumReleaseAge": null
+    }
   ]
 }
