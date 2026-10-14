@@ -88,7 +88,10 @@ export function aliasColumnCompletionSource(config: AliasCompletionConfig = {}):
     } else if (!cte) {
       const schema = resolveSchema(config.schema, context);
       if (schema != null) {
-        columns = findTableColumns(schema, target);
+        const table = queryContext.tables.find(
+          (table) => table.alias?.toLowerCase() === qualifier.toLowerCase(),
+        );
+        columns = findTableColumns(schema, table?.path ?? target);
       }
     }
 

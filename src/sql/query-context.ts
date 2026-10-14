@@ -395,7 +395,7 @@ function buildContextByRegex(rawSql: string): QueryContext {
     const rawPath = match[1];
     const rawAlias = match[2];
     if (rawPath) {
-      const path = rawPath.split(".").map(stripIdentifierQuotes);
+      const path = (rawPath.match(new RegExp(IDENT, "g")) ?? []).map(stripIdentifierQuotes);
       const name = path[path.length - 1] ?? "";
       const alias =
         rawAlias && !NON_ALIAS_KEYWORDS.has(rawAlias.toLowerCase())
