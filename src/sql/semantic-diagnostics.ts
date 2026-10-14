@@ -68,8 +68,8 @@ interface AstNode {
 
 /** A table-like source in a query scope (FROM entry, DML target, CTE, subquery) */
 interface TableSource {
-  /** Full dotted path as written, e.g. "mydb.users" (empty for subqueries) */
-  path: string;
+  /** Identifier segments, preserving dots inside quoted names (empty for subqueries) */
+  path: readonly string[];
   /** Unqualified table name */
   name: string;
   alias: string | null;
@@ -172,7 +172,7 @@ function addTableEntry(
       collectSelect(sub, ctes, scopes, false);
     }
     scope.sources.push({
-      path: "",
+      path: [],
       name: "",
       alias: typeof entry.as === "string" ? entry.as : null,
       isCte: false,
@@ -187,7 +187,7 @@ function addTableEntry(
       (part): part is string => typeof part === "string" && part.length > 0,
     );
     scope.sources.push({
-      path: parts.join("."),
+      path: parts,
       name: entry.table,
       alias: typeof entry.as === "string" ? entry.as : null,
       isCte: parts.length === 1 && ctes.has(entry.table.toLowerCase()),
@@ -438,13 +438,13 @@ interface ResolvedTable {
  * a table nested deeper in the namespace (e.g. `users` matches `mydb.users`)
  * so that under-qualified references are never flagged.
  */
-function resolveTable(schema: SQLNamespace, path: string): ResolvedTable {
+function resolveTable(schema: SQLNamespace, path: readonly string[]): ResolvedTable {
   const exact = traverseNamespacePath(schema, path, { caseSensitive: false });
   if (exact) {
     return { exists: true, columns: columnsOf(exact.namespace) };
   }
 
-  const segments = path.split(".").map((segment) => segment.toLowerCase());
+  const segments = path.map((segment) => segment.toLowerCase());
   const lastSegment = segments[segments.length - 1];
   if (!lastSegment) {
     return { exists: false, columns: null };
@@ -506,7 +506,7 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
         addFinding({
           kind: "unknownTable",
           identifier: source.name,
-          message: `Unknown table '${source.path}'`,
+          message: `Unknown table '${source.path.join(".")}'`,
         });
       }
     }
@@ -525,14 +525,14 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
           resolved.find(
             (entry) =>
               entry.source.name.toLowerCase() === lowerQualifier ||
-              entry.source.path.toLowerCase() === lowerQualifier,
+              entry.source.path.join(".").toLowerCase() === lowerQualifier,
           );
         // An unresolved qualifier may be an outer-scope alias; skip it
         if (match?.columns && !includesIgnoreCase(match.columns, name)) {
           addFinding({
             kind: "unknownColumn",
             identifier: name,
-            message: `Column '${name}' not found in table '${match.source.path || qualifier}'`,
+            message: `Column '${name}' not found in table '${match.source.path.join(".") || qualifier}'`,
           });
         }
         continue;
@@ -563,7 +563,7 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
         addFinding({
           kind: "unknownColumn",
           identifier: name,
-          message: `Column '${name}' not found in table '${only.source.path}'`,
+          message: `Column '${name}' not found in table '${only.source.path.join(".")}'`,
         });
       }
     }

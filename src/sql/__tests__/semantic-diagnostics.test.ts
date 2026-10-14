@@ -100,6 +100,24 @@ describe("unknown tables", () => {
     expect(await lint("SELECT * FROM users", { schema: nested })).toEqual([]);
   });
 
+  it.each([
+    ['SELECT u.id FROM "my.db".users u', { "my.db": { users: ["id"] } }],
+    ['SELECT u.id FROM "my.table" u', { "my.table": ["id"] }],
+  ])("resolves quoted dots in %s", async (doc, schema) => {
+    expect(await lint(doc, { schema })).toEqual([]);
+  });
+
+  it("checks columns against the quoted table rather than a dotted namespace", async () => {
+    const schema = {
+      "my.table": ["id"],
+      my: { table: ["other_column"] },
+    };
+    expect(await lint('SELECT u.id FROM "my.table" u', { schema })).toEqual([]);
+    const diagnostics = await lint('SELECT u.other_column FROM "my.table" u', { schema });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain("Column 'other_column' not found");
+  });
+
   it("does not flag CTE names", async () => {
     const doc = "WITH t AS (SELECT id FROM users) SELECT * FROM t";
     expect(await lint(doc, { schema: SCHEMA })).toEqual([]);
