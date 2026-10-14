@@ -50,6 +50,17 @@ describe("analyzeQueryContext", () => {
     expect(context.aliases.get("u")).toBe("users");
   });
 
+  it.each([
+    'SELECT u.id FROM "my.db"."user.table" u',
+    'SELECT u. FROM "my.db"."user.table" u',
+  ])("preserves quoted path segments in %s", async (sql) => {
+    const context = await analyze(sql);
+    expect(context.tables).toEqual([
+      { name: "user.table", path: ["my.db", "user.table"], alias: "u" },
+    ]);
+    expect(context.aliases.get("u")).toBe("my.db.user.table");
+  });
+
   it("records tables without aliases", async () => {
     const context = await analyze("SELECT name FROM users");
     expect(context.tables).toEqual([{ name: "users", path: ["users"] }]);

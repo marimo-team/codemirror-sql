@@ -54,6 +54,21 @@ describe("aliasColumnCompletionSource", () => {
     expect(labels(result)).toEqual(["id", "username"]);
   });
 
+  it.each([
+    {
+      table: '"my.db".users',
+      schema: { "my.db": { users: ["quoted_column"] }, my: { db: { users: ["other_column"] } } },
+    },
+    {
+      table: '"my.table"',
+      schema: { "my.table": ["quoted_column"], my: { table: ["other_column"] } },
+    },
+  ])("preserves quoted dots in aliased table $table", async ({ table, schema }) => {
+    const doc = `SELECT u. FROM ${table} u`;
+    const result = await complete(doc, { schema, pos: "SELECT u.".length });
+    expect(labels(result)).toEqual(["quoted_column"]);
+  });
+
   it("offers CTE columns for a CTE alias", async () => {
     const doc = "WITH recent AS (SELECT x, y FROM logs) SELECT r. FROM recent r";
     const result = await complete(doc, { schema, pos: doc.indexOf("r. FROM") + 2 });
