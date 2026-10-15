@@ -72,8 +72,10 @@ describe("quoted column qualifiers", () => {
     ['SELECT my."table".other_column FROM "my.table" CROSS JOIN my."table"', null],
     ['SELECT "my.table".other_column FROM my."table" CROSS JOIN "my.table"', "other_column"],
     ['SELECT my."table".id FROM "my.table" CROSS JOIN my."table"', "id"],
+    ['SELECT "my.table".id FROM my."table" CROSS JOIN users AS "my.table"', null],
+    ['SELECT my."table".other_column FROM users AS "my.table" CROSS JOIN my."table"', null],
   ])("distinguishes quoted and qualified names in %s", async (doc, unknownColumn) => {
-    const schema = { "my.table": ["id"], my: { table: ["other_column"] } };
+    const schema = { users: ["id"], "my.table": ["id"], my: { table: ["other_column"] } };
     const parser = new NodeSqlParser({
       getParserOptions: () => ({ database: "PostgreSQL" }),
     });
