@@ -404,14 +404,13 @@ function getColumnName(ref: AstNode): string | null {
   return null;
 }
 
-function getColumnQualifier(ref: AstNode): string | null {
+function getColumnQualifier(ref: AstNode): readonly string[] | null {
   if (typeof ref.table !== "string" || ref.table.length === 0) {
     return null;
   }
-  if (typeof ref.db === "string" && ref.db.length > 0) {
-    return `${ref.db}.${ref.table}`;
-  }
-  return ref.table;
+  return [ref.db, ref.schema, ref.table].filter(
+    (segment): segment is string => typeof segment === "string" && segment.length > 0,
+  );
 }
 
 /** Extracts column names when the namespace node is a column array */
@@ -519,20 +518,25 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
 
       const qualifier = getColumnQualifier(ref);
       if (qualifier) {
-        const lowerQualifier = qualifier.toLowerCase();
+        const segments = qualifier.map((segment) => segment.toLowerCase());
+        const unqualifiedName = segments.length === 1 ? segments[0] : undefined;
+        const aliasMatch = unqualifiedName
+          ? resolved.find((entry) => entry.source.alias?.toLowerCase() === unqualifiedName)
+          : undefined;
         const match =
-          resolved.find((entry) => entry.source.alias?.toLowerCase() === lowerQualifier) ??
+          aliasMatch ??
           resolved.find(
             (entry) =>
-              entry.source.name.toLowerCase() === lowerQualifier ||
-              entry.source.path.join(".").toLowerCase() === lowerQualifier,
+              entry.source.name.toLowerCase() === unqualifiedName ||
+              (entry.source.path.length === segments.length &&
+                entry.source.path.every((segment, i) => segment.toLowerCase() === segments[i])),
           );
         // An unresolved qualifier may be an outer-scope alias; skip it
         if (match?.columns && !includesIgnoreCase(match.columns, name)) {
           addFinding({
             kind: "unknownColumn",
             identifier: name,
-            message: `Column '${name}' not found in table '${match.source.path.join(".") || qualifier}'`,
+            message: `Column '${name}' not found in table '${match.source.path.join(".") || qualifier.join(".")}'`,
           });
         }
         continue;
