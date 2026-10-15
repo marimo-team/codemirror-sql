@@ -929,6 +929,39 @@ describe("Query-aware hover behavior - edge cases", () => {
         expect(html).toContain("users");
       });
 
+      it.each([
+        [
+          'SELECT u.id FROM "my.table" u',
+          {
+            "my.table": [createCompletion("id", "quoted table column")],
+            my: { table: [createCompletion("id", "nested table column")] },
+          },
+        ],
+        [
+          'SELECT u.id FROM "my.db".users u',
+          {
+            "my.db": { users: [createCompletion("id", "quoted table column")] },
+            my: { db: { users: [createCompletion("id", "nested table column")] } },
+          },
+        ],
+      ])("preserves quoted identifier boundaries in %s", async (doc, quotedSchema) => {
+        const source = createHoverSource({ schema: quotedSchema });
+        const view = createMockView(doc);
+        const tooltip = await source(view, doc.indexOf("u.id") + 3, 1);
+        const html = renderTooltip(tooltip, view);
+        expect(html).toContain("quoted table column");
+        expect(html).not.toContain("nested table column");
+      });
+
+      it("does not resolve a quoted table alias through a different nested table", async () => {
+        const source = createHoverSource({
+          schema: { "my.db": { users: ["id"] }, my: { db: { users: ["other_column"] } } },
+        });
+        const doc = 'SELECT u.other_column FROM "my.db".users u';
+        const view = createMockView(doc);
+        expect(await source(view, doc.indexOf("u.other_column") + 3, 1)).toBeNull();
+      });
+
       it("supports AS aliases", async () => {
         const source = createHoverSource({ schema });
         const doc = "SELECT u.email FROM users AS u";

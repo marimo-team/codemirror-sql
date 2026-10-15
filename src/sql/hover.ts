@@ -7,6 +7,7 @@ import {
   isObjectNamespace,
   type ResolvedNamespaceItem,
   resolveNamespaceItem,
+  traverseNamespacePath,
 } from "./namespace-utils.js";
 import { NodeSqlParser } from "./parser.js";
 import { QueryContextAnalyzer } from "./query-context.js";
@@ -264,15 +265,22 @@ function createHoverSource(
         ? [aliasTarget, ...restSegments].join(".").toLowerCase()
         : word;
 
+      const aliasTable = queryContext.tables.find(
+        (table) => table.alias?.toLowerCase() === firstSegment,
+      );
+      const quotedAliasPath = aliasTable?.path.some((segment) => segment.includes("."))
+        ? [...aliasTable.path, ...restSegments]
+        : null;
+
       const tableRefs = new Set(queryContext.tables.map((table) => table.name.toLowerCase()));
 
       // Filter schema to only include tables referenced in the current statement
       const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
 
       // Try to resolve in the filtered schema first (query-aware)
-      let namespaceResult = resolveNamespaceItem(filteredSchema, lookupWord, {
-        enableFuzzySearch,
-      });
+      let namespaceResult = quotedAliasPath
+        ? traverseNamespacePath(filteredSchema, quotedAliasPath)
+        : resolveNamespaceItem(filteredSchema, lookupWord, { enableFuzzySearch });
 
       // If no result in filtered schema and no tables were found in the
       // statement, fall back to the full schema to show any relevant information
