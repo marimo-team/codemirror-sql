@@ -2,6 +2,7 @@ import { type Diagnostic, forceLinting, forEachDiagnostic } from "@codemirror/li
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
+import { NodeSqlParser } from "../parser.js";
 import { sqlSchemaFacet } from "../schema-facet.js";
 import {
   exportedForTesting,
@@ -61,6 +62,31 @@ describe("sqlSemanticLinter", () => {
       expect(diagnostics[0].severity).toBe("error");
     } finally {
       view.destroy();
+    }
+  });
+});
+
+describe("quoted column qualifiers", () => {
+  it.each([
+    ['SELECT "my.table".id FROM my."table" CROSS JOIN "my.table"', null],
+    ['SELECT my."table".other_column FROM "my.table" CROSS JOIN my."table"', null],
+    ['SELECT "my.table".other_column FROM my."table" CROSS JOIN "my.table"', "other_column"],
+    ['SELECT my."table".id FROM "my.table" CROSS JOIN my."table"', "id"],
+    ['SELECT "my.table".id FROM my."table" CROSS JOIN users AS "my.table"', null],
+    ['SELECT my."table".other_column FROM users AS "my.table" CROSS JOIN my."table"', null],
+  ])("distinguishes quoted and qualified names in %s", async (doc, unknownColumn) => {
+    const schema = { users: ["id"], "my.table": ["id"], my: { table: ["other_column"] } };
+    const parser = new NodeSqlParser({
+      getParserOptions: () => ({ database: "PostgreSQL" }),
+    });
+    const parsed = await parser.parse(doc, { state: EditorState.create({ doc }) });
+    expect(parsed.success).toBe(true);
+    const diagnostics = await lint(doc, { schema, parser });
+    if (unknownColumn === null) {
+      expect(diagnostics).toEqual([]);
+    } else {
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0].message).toContain(`Column '${unknownColumn}' not found`);
     }
   });
 });
