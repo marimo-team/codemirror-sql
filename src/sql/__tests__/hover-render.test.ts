@@ -7,6 +7,77 @@ import type { ResolvedNamespaceItem } from "../namespace-utils.js";
 
 const { createHoverSource } = exportedForTesting;
 
+describe("default tooltip text escaping", () => {
+  const text = `<img src=x onerror="alert(1)"> &lt;b&gt; 'quoted'`;
+
+  function renderDom(html: string): HTMLElement {
+    const dom = document.createElement("div");
+    dom.innerHTML = html;
+    expect(dom.querySelector("img, script, svg")).toBeNull();
+    return dom;
+  }
+
+  it.each(["database", "schema", "table", "column", "namespace"] as const)(
+    "renders %s names, paths, details, and info as literal text",
+    (semanticType) => {
+      const dom = renderDom(DefaultSqlTooltipRenders.namespace({
+        semanticType,
+        type: "namespace",
+        path: [text, "item"],
+        completion: { label: text, detail: text, info: text },
+        namespace: [text, { label: text }],
+      }));
+      expect(dom.querySelector("strong")?.textContent).toBe(text);
+      expect(dom.querySelector(".sql-hover-description")?.textContent).toContain(text);
+      expect(dom.querySelector(".sql-hover-info")?.textContent).toBe(text);
+      if (semanticType !== "database") {
+        expect(dom.querySelector(".sql-hover-path code")?.textContent).toBe(
+          semanticType === "schema" || semanticType === "namespace" ? `${text}.item` : text,
+        );
+      }
+      if (semanticType === "table") {
+        expect([...dom.querySelectorAll(".sql-hover-columns code")].map((node) => node.textContent))
+          .toEqual([text, text]);
+      }
+    },
+  );
+
+  it("escapes fallback names from values and paths", () => {
+    for (const value of [text, undefined]) {
+      const dom = renderDom(DefaultSqlTooltipRenders.namespace({
+        semanticType: "column", type: "string", path: [text], value,
+      }));
+      expect(dom.querySelector("strong")?.textContent).toBe(text);
+    }
+  });
+
+  const metadata = { [`" onmouseover="alert(1)" data-key="${text}`]: text };
+
+  it.each([
+    ["keyword", () => DefaultSqlTooltipRenders.keyword({
+      keyword: text,
+      info: { description: text, syntax: text, example: text, metadata },
+    })],
+    ["table", () => DefaultSqlTooltipRenders.table({ tableName: text, columns: [text], metadata })],
+    ["column", () => DefaultSqlTooltipRenders.column({
+      tableName: text, columnName: text, schema: { [text]: [text, `${text} other`] }, metadata,
+    })],
+  ] as const)("escapes the exported %s renderer, including metadata attributes", (name, render) => {
+    const dom = renderDom(render());
+    const tag = dom.querySelector(".sql-hover-tag");
+    expect(tag?.getAttributeNames()).toEqual(["class", "title"]);
+    expect(tag?.getAttribute("title")).toBe(Object.keys(metadata)[0]);
+    expect(tag?.textContent).toBe(text);
+    expect(dom.textContent).toContain(text);
+    for (const code of dom.querySelectorAll("code")) {
+      expect(code.textContent).toContain(text);
+    }
+    if (name === "column") {
+      expect(dom.querySelector(".sql-hover-related code")?.textContent).toBe(`${text} other`);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Pure tooltip HTML builders (exposed via DefaultSqlTooltipRenders)
 // ---------------------------------------------------------------------------
@@ -38,6 +109,15 @@ describe("DefaultSqlTooltipRenders.keyword", () => {
     expect(html).toContain('title="since"');
     expect(html).toContain("SQL-92");
     expect(html).toContain('title="category"');
+  });
+
+  it("preserves SQL operators, placeholders, and entity-like text", () => {
+    const example = "SELECT '<name>', '&amp;' FROM t WHERE value < 5 AND value > 0";
+    const dom = document.createElement("div");
+    dom.innerHTML = render({ keyword: "select", info: { syntax: "SELECT <columns> FROM <table>", example } });
+    expect(dom.querySelector(".sql-hover-syntax code")?.textContent).toBe("SELECT <columns> FROM <table>");
+    expect(dom.querySelector(".sql-hover-example code")?.textContent).toBe(example);
+    expect(dom.querySelector(".sql-hover-description")?.textContent).toBe("");
   });
 
   it("omits the metadata block for empty metadata", () => {
@@ -466,6 +546,17 @@ describe("hover source tooltip DOM creation", () => {
     expect(dom.innerHTML).toContain("table");
   });
 
+  it.each(["string", "completion"] as const)("renders untrusted %s column names through the hover source as text", async (kind) => {
+    const label = `<img src=x onerror="alert(1)"> &lt;b&gt;`;
+    const { tooltip, view } = await hoverWord("SELECT * FROM users", "users", {
+      schema: { users: [kind === "string" ? label : { label }, "id"] },
+    });
+    expect(tooltip).not.toBeNull();
+    const { dom } = tooltip!.create(view);
+    expect(dom.querySelector("img")).toBeNull();
+    expect(dom.querySelector(".sql-hover-columns code")?.textContent).toBe(label);
+  });
+
   it("renders a default column tooltip DOM when hovering a column", async () => {
     const { tooltip, view } = await hoverWord("SELECT username FROM users", "username");
     expect(tooltip).not.toBeNull();
@@ -510,7 +601,7 @@ describe("hover source tooltip DOM creation", () => {
     });
     const { dom } = tooltip!.create(view);
     expect(table).toHaveBeenCalledOnce();
-    expect(dom.innerHTML).toContain("custom table");
+    expect(dom.querySelector("div")?.textContent).toBe("custom table");
   });
 
   it("uses a custom column renderer for column items", async () => {
