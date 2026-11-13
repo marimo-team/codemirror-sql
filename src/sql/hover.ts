@@ -145,7 +145,7 @@ export interface SqlHoverConfig {
   contextAnalyzer?: QueryContextAnalyzer;
   /** Custom tooltip render function - highest priority, returns HTMLElement or null for fallback */
   tooltipRender?: (word: string, view: EditorView, pos: number) => HTMLElement | null;
-  /** Custom tooltip renderers for different item types */
+  /** Custom tooltip renderers returning trusted HTML. Escape untrusted values. */
   tooltipRenderers?: {
     /** Custom renderer for SQL keywords */
     keyword?: (data: KeywordTooltipData) => string;
@@ -420,16 +420,18 @@ function escapeHtml(text: string): string {
  * Creates HTML content for namespace-resolved items
  */
 function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
-  const pathStr = item.path.join(".");
-  const name = item.completion?.label || item.value || item.path[item.path.length - 1] || "unknown";
+  const semanticType = escapeHtml(item.semanticType);
+  const pathStr = escapeHtml(item.path.join("."));
+  const name = escapeHtml(item.completion?.label || item.value || item.path[item.path.length - 1] || "unknown");
+  const detail = item.completion?.detail ? `: ${escapeHtml(item.completion.detail)}` : "";
 
-  let html = `<div class="sql-hover-${item.semanticType}">`;
-  html += `<div class="sql-hover-header"><strong>${name}</strong> <span class="sql-hover-type">${item.semanticType}</span></div>`;
+  let html = `<div class="sql-hover-${semanticType}">`;
+  html += `<div class="sql-hover-header"><strong>${name}</strong> <span class="sql-hover-type">${semanticType}</span></div>`;
 
   // Add semantic-specific descriptions and information
   switch (item.semanticType) {
     case "database":
-      html += `<div class="sql-hover-description">Database${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
+      html += `<div class="sql-hover-description">Database${detail}</div>`;
       if (item.namespace) {
         const childCount = countNamespaceChildren(item.namespace);
         if (childCount > 0) {
@@ -439,7 +441,7 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
       break;
 
     case "schema":
-      html += `<div class="sql-hover-description">Schema${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
+      html += `<div class="sql-hover-description">Schema${detail}</div>`;
       if (pathStr) {
         html += `<div class="sql-hover-path"><strong>Path:</strong> <code>${pathStr}</code></div>`;
       }
@@ -452,11 +454,11 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
       break;
 
     case "table":
-      html += `<div class="sql-hover-description">Table${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
+      html += `<div class="sql-hover-description">Table${detail}</div>`;
       if (pathStr) {
         const pathParts = item.path;
         if (pathParts.length > 1) {
-          html += `<div class="sql-hover-path"><strong>Schema:</strong> <code>${pathParts.slice(0, -1).join(".")}</code></div>`;
+          html += `<div class="sql-hover-path"><strong>Schema:</strong> <code>${escapeHtml(pathParts.slice(0, -1).join("."))}</code></div>`;
         }
       }
 
@@ -469,7 +471,7 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
           const columnNames = displayColumns.map((col) =>
             typeof col === "string" ? col : col.label,
           );
-          html += columnNames.map((col) => `<code>${col}</code>`).join(", ");
+          html += columnNames.map((col) => `<code>${escapeHtml(col)}</code>`).join(", ");
 
           if (columns.length > 8) {
             html += `, <em>and ${columns.length - 8} more...</em>`;
@@ -480,16 +482,16 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
       break;
 
     case "column":
-      html += `<div class="sql-hover-description">Column${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
+      html += `<div class="sql-hover-description">Column${detail}</div>`;
       if (pathStr) {
         const pathParts = item.path;
         if (pathParts.length > 1) {
-          html += `<div class="sql-hover-path"><strong>Table:</strong> <code>${pathParts.slice(0, -1).join(".")}</code></div>`;
+          html += `<div class="sql-hover-path"><strong>Table:</strong> <code>${escapeHtml(pathParts.slice(0, -1).join("."))}</code></div>`;
         }
       }
       break;
     default:
-      html += `<div class="sql-hover-description">Namespace${item.completion?.detail ? `: ${item.completion.detail}` : ""}</div>`;
+      html += `<div class="sql-hover-description">Namespace${detail}</div>`;
       if (pathStr) {
         html += `<div class="sql-hover-path"><strong>Path:</strong> <code>${pathStr}</code></div>`;
       }
@@ -504,7 +506,7 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
 
   // Add completion-specific info if available
   if (item.completion?.info && typeof item.completion.info === "string") {
-    html += `<div class="sql-hover-info">${item.completion.info}</div>`;
+    html += `<div class="sql-hover-info">${escapeHtml(item.completion.info)}</div>`;
   }
 
   html += `</div>`;
@@ -535,21 +537,21 @@ function createKeywordTooltip(opts: { keyword: string; info: SqlKeywordInfo }): 
   const { keyword, info } = opts;
 
   let html = `<div class="sql-hover-keyword">`;
-  html += `<div class="sql-hover-header"><strong>${keyword.toUpperCase()}</strong> <span class="sql-hover-type">keyword</span></div>`;
-  html += `<div class="sql-hover-description">${info.description}</div>`;
+  html += `<div class="sql-hover-header"><strong>${escapeHtml(keyword.toUpperCase())}</strong> <span class="sql-hover-type">keyword</span></div>`;
+  html += `<div class="sql-hover-description">${escapeHtml(info.description ?? "")}</div>`;
 
   if (info.syntax) {
-    html += `<div class="sql-hover-syntax"><strong>Syntax:</strong> <code>${info.syntax}</code></div>`;
+    html += `<div class="sql-hover-syntax"><strong>Syntax:</strong> <code>${escapeHtml(info.syntax)}</code></div>`;
   }
 
   if (info.example) {
-    html += `<div class="sql-hover-example"><strong>Example:</strong><br><code>${info.example}</code></div>`;
+    html += `<div class="sql-hover-example"><strong>Example:</strong><br><code>${escapeHtml(info.example)}</code></div>`;
   }
 
   if (info.metadata && typeof info.metadata === "object" && Object.keys(info.metadata).length > 0) {
     html += `<div class="sql-hover-metadata">`;
     for (const [key, value] of Object.entries(info.metadata)) {
-      html += `<span class="sql-hover-tag" title="${key}">${value}</span> `;
+      html += `<span class="sql-hover-tag" title="${escapeHtml(key)}">${escapeHtml(value)}</span> `;
     }
     html += `</div>`;
   }
@@ -569,13 +571,13 @@ function createTableTooltip(opts: {
   const { tableName, columns, metadata } = opts;
 
   let html = `<div class="sql-hover-table">`;
-  html += `<div class="sql-hover-header"><strong>${tableName}</strong> <span class="sql-hover-type">table</span></div>`;
+  html += `<div class="sql-hover-header"><strong>${escapeHtml(tableName)}</strong> <span class="sql-hover-type">table</span></div>`;
   html += `<div class="sql-hover-description">Table with ${columns.length} column${columns.length !== 1 ? "s" : ""}</div>`;
 
   if (columns.length > 0) {
     html += `<div class="sql-hover-columns"><strong>Columns:</strong><br>`;
     const displayColumns = columns.slice(0, 10); // Show max 10 columns
-    html += displayColumns.map((col) => `<code>${col}</code>`).join(", ");
+    html += displayColumns.map((col) => `<code>${escapeHtml(col)}</code>`).join(", ");
 
     if (columns.length > 10) {
       html += `, <em>and ${columns.length - 10} more...</em>`;
@@ -586,7 +588,7 @@ function createTableTooltip(opts: {
   if (metadata && typeof metadata === "object" && Object.keys(metadata).length > 0) {
     html += `<div class="sql-hover-metadata">`;
     for (const [key, value] of Object.entries(metadata)) {
-      html += `<span class="sql-hover-tag" title="${key}">${value}</span> `;
+      html += `<span class="sql-hover-tag" title="${escapeHtml(key)}">${escapeHtml(value)}</span> `;
     }
     html += `</div>`;
   }
@@ -607,16 +609,16 @@ function createColumnTooltip(opts: {
   const { tableName, columnName, schema, metadata } = opts;
 
   let html = `<div class="sql-hover-column">`;
-  html += `<div class="sql-hover-header"><strong>${columnName}</strong> <span class="sql-hover-type">column</span></div>`;
-  html += `<div class="sql-hover-description">Column in table <code>${tableName}</code></div>`;
+  html += `<div class="sql-hover-header"><strong>${escapeHtml(columnName)}</strong> <span class="sql-hover-type">column</span></div>`;
+  html += `<div class="sql-hover-description">Column in table <code>${escapeHtml(tableName)}</code></div>`;
 
   const allColumns = schema[tableName];
   if (allColumns && allColumns.length > 1) {
     const otherColumns = allColumns.filter((col) => col !== columnName);
     if (otherColumns.length > 0) {
-      html += `<div class="sql-hover-related"><strong>Other columns in ${tableName}:</strong><br>`;
+      html += `<div class="sql-hover-related"><strong>Other columns in ${escapeHtml(tableName)}:</strong><br>`;
       const displayColumns = otherColumns.slice(0, 8); // Show max 8 other columns
-      html += displayColumns.map((col) => `<code>${col}</code>`).join(", ");
+      html += displayColumns.map((col) => `<code>${escapeHtml(col)}</code>`).join(", ");
 
       if (otherColumns.length > 8) {
         html += `, <em>and ${otherColumns.length - 8} more...</em>`;
@@ -628,7 +630,7 @@ function createColumnTooltip(opts: {
   if (metadata && typeof metadata === "object" && Object.keys(metadata).length > 0) {
     html += `<div class="sql-hover-metadata">`;
     for (const [key, value] of Object.entries(metadata)) {
-      html += `<span class="sql-hover-tag" title="${key}">${value}</span> `;
+      html += `<span class="sql-hover-tag" title="${escapeHtml(key)}">${escapeHtml(value)}</span> `;
     }
     html += `</div>`;
   }
@@ -637,6 +639,7 @@ function createColumnTooltip(opts: {
   return html;
 }
 
+/** Default renderers display schema and keyword data as literal text. */
 export const DefaultSqlTooltipRenders = {
   keyword: createKeywordTooltip,
   table: createTableTooltip,
