@@ -1,7 +1,8 @@
+import { acceptCompletion, currentCompletions, startCompletion } from "@codemirror/autocomplete";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
-import { expect, test } from "vitest";
-import { NodeSqlParser, sqlExtension } from "../index.js";
+import { expect, onTestFinished, test, vi } from "vitest";
+import { NodeSqlParser, sqlCompletion, sqlExtension } from "../index.js";
 
 const schema: Record<string, string[]> = {
   users: ["id", "name", "email", "active", "status", "created_at"],
@@ -61,6 +62,10 @@ test("SQL editor with input", { timeout: 5000 }, async () => {
   document.body.appendChild(container);
 
   const editor = initializeEditor(container);
+  onTestFinished(() => {
+    editor.destroy();
+    container.remove();
+  });
 
   const sqlText = "select * from tbl\n inner join";
 
@@ -84,4 +89,33 @@ test("SQL editor with input", { timeout: 5000 }, async () => {
   // If we get here, test should complete quickly
   const content = editor.state.doc.toString();
   expect(content).toBe(sqlText);
+});
+
+test("completes a column using the current editor view's schema", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const schemaSource = vi.fn((_view: EditorView) => schema);
+  const editor = new EditorView({
+    doc: "SELECT e FROM users",
+    selection: { anchor: "SELECT e".length },
+    extensions: [
+      basicSetup,
+      sql({ dialect: PostgreSQL }),
+      sqlCompletion({ dialect: PostgreSQL, schema: schemaSource }),
+    ],
+    parent: container,
+  });
+  onTestFinished(() => {
+    editor.destroy();
+    container.remove();
+  });
+
+  editor.focus();
+  expect(startCompletion(editor)).toBe(true);
+  await expect.poll(() => currentCompletions(editor.state).map((option) => option.label))
+    .toContain("email");
+  expect(schemaSource).toHaveBeenCalledWith(editor);
+  expect(container.querySelector(".cm-tooltip-autocomplete")).not.toBeNull();
+  await expect.poll(() => acceptCompletion(editor)).toBe(true);
+  expect(editor.state.doc.toString()).toBe("SELECT email FROM users");
 });
