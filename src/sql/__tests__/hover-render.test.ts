@@ -51,6 +51,22 @@ describe("default tooltip text escaping", () => {
     }
   });
 
+  it("escapes semantic types supplied by untyped callers", () => {
+    const item: ResolvedNamespaceItem = {
+      semanticType: "table",
+      type: "namespace",
+      path: ["users"],
+      namespace: ["id"],
+    };
+    const semanticType = `table" data-injected="true">${text}`;
+    Reflect.set(item, "semanticType", semanticType);
+
+    const dom = renderDom(DefaultSqlTooltipRenders.namespace(item));
+    expect(dom.firstElementChild?.getAttributeNames()).toEqual(["class"]);
+    expect(dom.firstElementChild?.getAttribute("class")).toBe(`sql-hover-${semanticType}`);
+    expect(dom.querySelector(".sql-hover-type")?.textContent).toBe(semanticType);
+  });
+
   const metadata = { [`" onmouseover="alert(1)" data-key="${text}`]: text };
 
   it.each([

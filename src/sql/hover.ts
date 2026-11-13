@@ -420,12 +420,13 @@ function escapeHtml(text: string): string {
  * Creates HTML content for namespace-resolved items
  */
 function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
+  const semanticType = escapeHtml(item.semanticType);
   const pathStr = escapeHtml(item.path.join("."));
   const name = escapeHtml(item.completion?.label || item.value || item.path[item.path.length - 1] || "unknown");
   const detail = item.completion?.detail ? `: ${escapeHtml(item.completion.detail)}` : "";
 
-  let html = `<div class="sql-hover-${item.semanticType}">`;
-  html += `<div class="sql-hover-header"><strong>${name}</strong> <span class="sql-hover-type">${item.semanticType}</span></div>`;
+  let html = `<div class="sql-hover-${semanticType}">`;
+  html += `<div class="sql-hover-header"><strong>${name}</strong> <span class="sql-hover-type">${semanticType}</span></div>`;
 
   // Add semantic-specific descriptions and information
   switch (item.semanticType) {
