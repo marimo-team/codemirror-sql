@@ -20,7 +20,7 @@
     "build": "tsc",
     "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build",
     "release": "pnpm version",
-    "test:browser": "vitest --config=vitest.browser.config.ts"
+    "test:browser": "vitest --project browser"
   },
   "keywords": [
     "codemirror",
@@ -28,7 +28,7 @@
     "sql"
   ],
   "license": "Apache-2.0",
-  "packageManager": "pnpm@12.9.1",
+  "packageManager": "pnpm@12.16.1",
   "peerDependencies": {
     "@codemirror/autocomplete": "^6",
     "@codemirror/lint": "^6",
@@ -37,17 +37,17 @@
   },
   "devDependencies": {
     "@codemirror/lang-sql": "6.10.0",
-    "@codemirror/view": "6.43.13",
+    "@codemirror/view": "6.43.15",
     "@testing-library/dom": "10.4.2",
-    "@vitest/browser-playwright": "5.0.3",
-    "@vitest/coverage-v8": "5.0.3",
+    "@vitest/browser-playwright": "5.0.5",
+    "@vitest/coverage-v8": "5.0.5",
     "codemirror": "6.0.2",
-    "jsdom": "30.1.1",
-    "oxlint": "1.86.0",
-    "playwright": "1.63.0",
+    "jsdom": "30.1.3",
+    "oxlint": "1.90.0",
+    "playwright": "1.64.1",
     "typescript": "7.0.2",
-    "vite": "8.3.1",
-    "vitest": "5.0.3"
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
   },
   "files": [
     "dist",

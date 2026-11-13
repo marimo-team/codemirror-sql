@@ -14,7 +14,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-p-small
 
     permissions:
       contents: read
@@ -24,12 +24,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: ⎔ Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
 
       - name: ⎔ Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
 
       - name: 📥 Install dependencies
@@ -41,17 +41,25 @@ jobs:
       - name: 🔍 Type Check
         run: pnpm run typecheck
 
+      - name: 🌐 Install browser
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: 🧪 Test
         run: pnpm run test
 
+      - name: 🏗️ Build package and demo
+        run: |
+          pnpm run build
+          pnpm run demo
+
       - name: 📊 Report Coverage
-        if: always()
-        uses: davelosert/vitest-coverage-report-action@c4bbc33a89b7ace0e63d35f1f7d4bcee31155a73 # v2
+        if: ${{ always() && hashFiles('coverage/coverage-summary.json') != '' }}
+        uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2
         with:
           pr-number: auto
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-p-small
 
     permissions:
       contents: read
@@ -61,18 +69,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: 🔍 Run CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           languages: javascript
 
       - name: 🔍 Perform Analysis
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
 
 
   spelling:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-p-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: 🔍 Spell Check Repo
-        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+        uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888 # v1.52.2
