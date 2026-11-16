@@ -216,11 +216,19 @@ function containsRange(ranges: SqlRange[], inner: SqlRange): boolean {
 
 function hasAdditionalDeclaration(text: string, name: string, definition: SqlRange): boolean {
   const tokens = scanSql(text).filter((token) => token.kind !== "comment");
+  const parenContexts: string[] = [];
   return tokens.some((token, index) => {
+    const previous = tokens[index - 1];
+    if (token.kind === "symbol" && token.text === "(") {
+      parenContexts.push(previous?.kind === "word" ? previous.text.toLowerCase() : "");
+    } else if (token.kind === "symbol" && token.text === ")") {
+      parenContexts.pop();
+    }
     if (token.from === definition.from) return false;
     if (token.kind !== "word" && token.kind !== "identifier") return false;
     if (stripIdentifierQuotes(token.text).toLowerCase() !== name.toLowerCase()) return false;
-    const previous = tokens[index - 1];
+    const context = parenContexts[parenContexts.length - 1];
+    if (context === "cast" || context === "try_cast" || context === "safe_cast") return false;
     return (previous?.kind === "word" && previous.text.toLowerCase() === "as") ||
       (previous?.kind === "symbol" && previous.text === ")");
   });

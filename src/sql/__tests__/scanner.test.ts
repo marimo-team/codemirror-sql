@@ -4,8 +4,10 @@ import { scanSql, maskLiteralsAndComments, stripSqlComments } from "../scanner.j
 import { SqlStructureAnalyzer } from "../structure-analyzer.js";
 
 it.each([
-  "SELECT 'a; b'", 'SELECT "a; b"', "SELECT `a; b`", "SELECT [a; b]",
-  "SELECT 'it''s; fine'", 'SELECT "a"";b"', "SELECT [a]];b]",
+  "SELECT 'a; b'", 'SELECT "a; b"', "SELECT `a; b`",
+  "SELECT 'it''s; fine'", 'SELECT "a"";b"',
+  "SELECT [[1], [2]]", "SELECT ARRAY[ARRAY[1], ARRAY[2]]", "SELECT [']', ';']",
+  "SELECT ['--', '/*'] /* comment */", "SELECT values[1][2] FROM users",
   "SELECT $$a; b$$", "SELECT $body$a; b$body$", "SELECT 1 /* outer /* ; */ ; */",
   "SELECT 1 -- ;\n",
 ])("keeps semicolons inside tokens in one statement: %s", async (sql) => {
@@ -29,6 +31,14 @@ it("preserves offsets and line breaks while masking strings and comments", () =>
 
 it("does not concatenate identifiers when removing comments", () => {
   expect(stripSqlComments("SELECT/* hint */id FROM users")).toBe("SELECT id FROM users");
+  expect(stripSqlComments("SELECT/* a *//* b */id FROM users")).toBe("SELECT id FROM users");
+  expect(stripSqlComments("a/* x */".repeat(1000))).toBe(Array(1000).fill("a").join(" "));
+});
+
+it.each(["[a; b]", "[a]];b]"])("supports bracket-quoted identifiers in identifier mode: %s", (sql) => {
+  expect(scanSql(sql, { bracketIdentifiers: true })).toEqual([
+    { kind: "identifier", from: 0, to: sql.length, text: sql },
+  ]);
 });
 
 it.each(["'unterminated", '"unterminated', "[unterminated", "/* unterminated", "$tag$unterminated"])(

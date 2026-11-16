@@ -156,11 +156,13 @@ function createSqlGutterMarkers(
 function createStructurePlugin(analyzer: SqlStructureAnalyzer, config: SqlGutterConfig): Extension {
   return ViewPlugin.define((view: EditorView) => {
     let generation = 0;
-    const analyze = async () => {
+    let pending: Promise<SqlStatement[]> | undefined;
+    const analyze = async (refresh = false) => {
       const currentGeneration = ++generation;
       const { state } = view;
       try {
-        const allStatements = await analyzer.analyzeDocument(state);
+        if (refresh || !pending) pending = analyzer.analyzeDocument(state);
+        const allStatements = await pending;
         if (currentGeneration !== generation) return;
         const position = state.selection.main.head;
         const currentStatement = allStatements.find(
@@ -174,13 +176,15 @@ function createStructurePlugin(analyzer: SqlStructureAnalyzer, config: SqlGutter
           }),
         });
       } catch (error) {
+        if (currentGeneration === generation) pending = undefined;
         debug("SQL gutter analysis failed", error);
       }
     };
     void analyze();
     return {
       update(update: ViewUpdate) {
-        if (update.docChanged || update.selectionSet || update.focusChanged || config.needsRefresh?.(update)) void analyze();
+        const refresh = update.docChanged || config.needsRefresh?.(update) === true;
+        if (refresh || update.selectionSet || update.focusChanged) void analyze(refresh);
       },
       destroy() { generation++; },
     };

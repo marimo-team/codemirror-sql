@@ -2,6 +2,7 @@ import { createSqlAnalysis } from "../analysis.js";
 import type { SqlParseResult } from "../types.js";
 import { createTestView, required } from "./test-utils.js";
 import { EditorView } from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
 import { computeMarkerStyle, sqlStructureGutter } from "../structure-extension.js";
 
@@ -229,4 +230,48 @@ it("does not dispatch a pending gutter result after destruction", async () => {
   required(finish)({ success: true, errors: [] });
   await analysis.structureAnalyzer.analyzeDocument(state);
   expect(dispatch).not.toHaveBeenCalled();
+});
+
+it("reuses gutter analysis on selection and focus changes while refreshing parser configuration", async () => {
+  let release: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  const invalidate = StateEffect.define<boolean>();
+  const invalid = StateField.define<boolean>({
+    create: () => false,
+    update: (value, transaction) => transaction.effects.find((effect) => effect.is(invalidate))?.value ?? value,
+  });
+  const analysis = createSqlAnalysis({ parser: {
+    parse: async (_sql, { state }) => {
+      await ready;
+      return { success: !state.field(invalid), errors: [] };
+    },
+  } });
+  const parse = vi.spyOn(analysis.parser, "parse");
+  const view = createTestView({
+    doc: "SELECT 1;\nSELECT 2;",
+    extensions: [invalid, sqlStructureGutter({
+      ...analysis,
+      needsRefresh: (update) => update.startState.field(invalid) !== update.state.field(invalid),
+    })],
+  });
+  const markers = () => [...view.dom.querySelectorAll<HTMLElement>(".cm-sql-gutter-marker")];
+  await vi.waitFor(() => expect(parse).toHaveBeenCalledTimes(1));
+  view.focus();
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+  required(release)();
+  await vi.waitFor(() => expect(markers()).toHaveLength(2));
+  expect(markers().map((marker) => marker.style.opacity)).toEqual(["0.3", "1"]);
+  expect(parse).toHaveBeenCalledTimes(2);
+
+  view.dispatch({ selection: { anchor: 0 } });
+  await vi.waitFor(() => expect(markers().map((marker) => marker.style.opacity)).toEqual(["1", "0.3"]));
+  expect(parse).toHaveBeenCalledTimes(2);
+
+  view.dispatch({ effects: invalidate.of(true) });
+  await vi.waitFor(() => expect(markers().every((marker) => marker.style.background === "rgb(239, 68, 68)")).toBe(true));
+  expect(parse).toHaveBeenCalledTimes(4);
+
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT 3;" } });
+  await vi.waitFor(() => expect(markers()).toHaveLength(1));
+  expect(parse).toHaveBeenCalledTimes(5);
 });

@@ -6,7 +6,10 @@ export interface SqlToken {
 }
 
 /** Offsets always refer to the original SQL, including incomplete tokens. */
-export function scanSql(sql: string, options: { backslashEscapes?: boolean } = {}): SqlToken[] {
+export function scanSql(
+  sql: string,
+  options: { backslashEscapes?: boolean; bracketIdentifiers?: boolean } = {},
+): SqlToken[] {
   const tokens: SqlToken[] = [];
   let pos = 0;
   while (pos < sql.length) {
@@ -29,7 +32,7 @@ export function scanSql(sql: string, options: { backslashEscapes?: boolean } = {
         else if (sql.startsWith("*/", pos)) { depth--; pos += 2; }
         else pos++;
       }
-    } else if (char === "'" || char === '"' || char === "`" || char === "[") {
+    } else if (char === "'" || char === '"' || char === "`" || (char === "[" && options.bracketIdentifiers !== false)) {
       kind = char === "'" ? "literal" : "identifier";
       const close = char === "[" ? "]" : char;
       pos++;
@@ -75,14 +78,18 @@ export function maskLiteralsAndComments(sql: string): string {
   return maskSql(sql, ["comment", "literal"]);
 }
 
-export function stripSqlComments(sql: string): string {
-  let result = "";
+export function stripSqlComments(sql: string, options: { bracketIdentifiers?: boolean } = {}): string {
+  const chunks: string[] = [];
   let from = 0;
-  for (const token of scanSql(sql)) {
+  for (const token of scanSql(sql, options)) {
     if (token.kind !== "comment") continue;
-    result += sql.slice(from, token.from);
-    if (/\S$/.test(result) && /^\S/.test(sql.slice(token.to))) result += " ";
+    const chunk = sql.slice(from, token.from);
+    chunks.push(chunk);
+    if (/\S/.test(chunk[chunk.length - 1] ?? "") && /\S/.test(sql[token.to] ?? "")) {
+      chunks.push(" ");
+    }
     from = token.to;
   }
-  return result + sql.slice(from);
+  chunks.push(sql.slice(from));
+  return chunks.join("");
 }

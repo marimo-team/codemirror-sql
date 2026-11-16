@@ -115,7 +115,8 @@ export class SqlStructureAnalyzer {
   private splitByStatementSeparators(content: string): string[] {
     const parts: string[] = [];
     let from = 0;
-    for (const token of scanSql(content)) {
+    // Brackets remain array/subscript syntax here, matching the original statement splitter.
+    for (const token of scanSql(content, { bracketIdentifiers: false })) {
       if (token.kind === "symbol" && token.text === ";") {
         parts.push(content.slice(from, token.to));
         from = token.to;
@@ -141,7 +142,7 @@ export class SqlStructureAnalyzer {
   }
 
   private stripComments(sql: string): string {
-    return stripSqlComments(sql);
+    return stripSqlComments(sql, { bracketIdentifiers: false });
   }
 
   clearCache(): void {

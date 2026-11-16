@@ -28,6 +28,20 @@ function texts(sql: string, result: SqlReferenceResult): string[] {
   return result.references.map((range) => sql.slice(range.from, range.to));
 }
 
+it("distinguishes CAST type names from select-alias declarations", async () => {
+  const sql = "SELECT CAST(created_at AS DATE) AS date FROM events ORDER BY date";
+  const result = await resolveAt(sql, "date", 1);
+  expect(result?.kind).toBe("select-alias");
+  expect(result?.references.map((range) => range.from)).toEqual([sql.indexOf("date"), sql.lastIndexOf("date")]);
+});
+
+it("distinguishes CAST type names from CTE declarations", async () => {
+  const sql = "WITH date AS (SELECT created_at FROM events) SELECT CAST(created_at AS DATE) FROM date";
+  const result = await resolveAt(sql, "date", 1);
+  expect(result?.kind).toBe("cte");
+  expect(result?.references.map((range) => range.from)).toEqual([sql.indexOf("date"), sql.lastIndexOf("date")]);
+});
+
 describe("findReferences", () => {
   describe("CTE names", () => {
     const sql = "WITH recent AS (SELECT x FROM logs) SELECT r.x FROM recent r JOIN recent r2 ON 1=1";

@@ -35,6 +35,13 @@ export function resolveTable(
     return { exists: true, columns: exactColumns };
   }
 
+  return resolveTableSuffix(schema, tablePath);
+}
+
+function resolveTableSuffix(
+  schema: SQLNamespace,
+  tablePath: string | readonly string[],
+): { exists: boolean; columns: readonly (Completion | string)[] | null } {
   const segments = (typeof tablePath === "string" ? tablePath.split(".") : tablePath).map(
     (segment) => segment.toLowerCase(),
   );
@@ -67,5 +74,6 @@ export function findTableColumns(
   schema: SQLNamespace,
   tablePath: string | readonly string[],
 ): readonly (Completion | string)[] | null {
-  return resolveTable(schema, tablePath).columns;
+  const exact = traverseNamespacePath(schema, tablePath, { caseSensitive: false });
+  return columnsOf(exact?.namespace) ?? resolveTableSuffix(schema, tablePath).columns;
 }

@@ -95,6 +95,12 @@ describe("findTableColumns", () => {
     expect(findTableColumns(nested, "users")).toEqual(["id", "name"]);
   });
 
+  it("finds table columns when an exact namespace has the same name", () => {
+    const nested: SQLNamespace = { users: { other: ["x"] }, db: { users: ["id"] } };
+    expect(findTableColumns(nested, "users")).toEqual(["id"]);
+    expect(findTableColumns({ ...nested, second: { users: ["email"] } }, "users")).toBeNull();
+  });
+
   it("resolves via pre-split segments (preserving dotted identifiers)", () => {
     const nested: SQLNamespace = { "my.db": { users: ["id"] } };
     expect(findTableColumns(nested, ["my.db", "users"])).toEqual(["id"]);
