@@ -10,12 +10,13 @@ import {
   createSqlAnalysis,
   type SupportedDialects,
   type SqlKeywordInfo,
+  type SqlAnalysis,
   sqlCompletion,
   sqlExtension,
 } from "../src/index.js";
 import { tableTooltipRenderer } from "./custom-renderers.js";
 import { defaultSqlDoc, schema } from "./data.js";
-import { guessSqlDialect } from "./utils.js";
+import { guessSqlDialect, parseDemoDialect } from "./utils.js";
 
 let editor: EditorView;
 
@@ -89,8 +90,8 @@ const databaseField = StateField.define<SupportedDialects>({
 // Allows us to reconfigure the base sql extension without reloading the editor
 const baseSqlCompartment = new Compartment();
 
-const baseSqlExtension = (dialect: SQLDialect) => {
-  return sql({
+const baseSqlExtension = (dialect: SQLDialect, analysis: SqlAnalysis) => {
+  const languageSupport = sql({
     dialect: dialect,
     // Example schema for autocomplete
     schema: schema,
@@ -116,10 +117,11 @@ const baseSqlExtension = (dialect: SQLDialect) => {
       };
     },
   });
+  return [languageSupport, sqlCompletion({ dialect, schema, ...analysis })];
 };
 
 // Initialize the SQL editor
-function initializeEditor() {
+export function initializeEditor() {
   // Use the same parser
   const parser = new NodeSqlParser({
     getParserOptions: (state: EditorState) => {
@@ -136,7 +138,7 @@ function initializeEditor() {
     EditorView.lineWrapping,
     keymap.of(defaultKeymap),
     databaseField,
-    baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
+    baseSqlCompartment.of(baseSqlExtension(defaultDialect, analysis)),
     sqlExtension({
       ...analysis,
       needsRefresh: (update) => getDatabase(update.startState) !== getDatabase(update.state),
@@ -181,11 +183,6 @@ function initializeEditor() {
         keymap: true, // F12/Mod-b go-to-definition, F2 rename
       },
     }),
-    // Register all schema-aware completion sources at once:
-    // - CTE names and their output columns
-    // - `u.` -> columns of `users` in `SELECT ... FROM users u`
-    // - `SELECT e` -> `email` because `FROM users` is in the statement
-    sqlCompletion({ dialect: defaultDialect, schema, ...analysis }),
     // Custom theme for better SQL editing
     EditorView.theme({
       "&": {
@@ -258,6 +255,7 @@ function initializeEditor() {
     parent: document.querySelector("#sql-editor") ?? undefined,
   });
 
+  setupDatabaseSelect(analysis);
   return editor;
 }
 
@@ -285,27 +283,28 @@ function setupExampleButtons() {
   });
 }
 
-function getDatabase(state: EditorState): SupportedDialects {
+export function getDatabase(state: EditorState): SupportedDialects {
   return state.field(databaseField);
 }
 
-function setupDatabaseSelect() {
+function setupDatabaseSelect(analysis: SqlAnalysis) {
   const select = document.querySelector("#database-select");
   if (select instanceof HTMLSelectElement) {
     select.addEventListener("change", () => {
-      const value = select.value;
-      if (value !== "PostgreSQL" && value !== "DuckDB" && value !== "MySQL" && value !== "Sqlite") return;
-      updateSqlDialect(editor, guessSqlDialect(value));
-      editor.dispatch({
-        effects: [setDatabase.of(value)],
-      });
+      const database = parseDemoDialect(select.value);
+      if (database === undefined) return;
+      updateSqlDialect(editor, database, analysis);
     });
   }
 }
 
-function updateSqlDialect(view: EditorView, dialect: SQLDialect) {
+function updateSqlDialect(view: EditorView, database: SupportedDialects, analysis: SqlAnalysis) {
+  const dialect = guessSqlDialect(database);
   view.dispatch({
-    effects: [baseSqlCompartment.reconfigure(baseSqlExtension(dialect))],
+    effects: [
+      setDatabase.of(database),
+      baseSqlCompartment.reconfigure(baseSqlExtension(dialect, analysis)),
+    ],
   });
 }
 
@@ -313,7 +312,6 @@ function updateSqlDialect(view: EditorView, dialect: SQLDialect) {
 document.addEventListener("DOMContentLoaded", () => {
   initializeEditor();
   setupExampleButtons();
-  setupDatabaseSelect();
 
   console.log("SQL Editor Demo initialized!");
   console.log("Features:");
