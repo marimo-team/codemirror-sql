@@ -17,8 +17,18 @@
     "strict": true,
     "target": "es2022",
     "rootDir": "./src",
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
   },
-  "include": ["./src"],
-  "exclude": ["./demo", "./src/**/*.test.ts", "./src/**/__tests__/**"]
+  "include": [
+    "./src"
+  ],
+  "exclude": [
+    "./demo",
+    "./src/**/*.test.ts",
+    "./src/**/__tests__/**"
+  ]
 }

@@ -7,8 +7,9 @@ import {
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
-  QueryContextAnalyzer,
+  createSqlAnalysis,
   type SupportedDialects,
+  type SqlKeywordInfo,
   sqlCompletion,
   sqlExtension,
 } from "../src/index.js";
@@ -63,7 +64,7 @@ const defaultKeymap = [
 ];
 
 // e.g. lazily load keyword docs
-const getKeywordDocs = async () => {
+const getKeywordDocs = async (): Promise<Record<string, SqlKeywordInfo>> => {
   const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
   const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
   return {
@@ -128,7 +129,7 @@ function initializeEditor() {
     },
   });
   // Shared between the completion sources so each edit is analyzed once
-  const contextAnalyzer = new QueryContextAnalyzer(parser);
+  const analysis = createSqlAnalysis({ parser });
 
   const extensions = [
     basicSetup,
@@ -137,17 +138,17 @@ function initializeEditor() {
     databaseField,
     baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
     sqlExtension({
+      ...analysis,
+      needsRefresh: (update) => getDatabase(update.startState) !== getDatabase(update.state),
       // Shared schema for hover tooltips and schema-aware linting
       schema: schema,
       // Linter extension configuration
       linterConfig: {
         delay: 250, // Delay before running validation
-        parser,
       },
       // Schema-aware linting (unknown tables/columns, ambiguous columns)
       semanticLinterConfig: {
         delay: 250,
-        parser,
       },
 
       // Gutter extension configuration
@@ -155,7 +156,6 @@ function initializeEditor() {
         backgroundColor: "#3b82f6", // Blue for current statement
         errorBackgroundColor: "#ef4444", // Red for invalid statements
         hideWhenNotFocused: true, // Hide gutter when editor loses focus
-        parser,
       },
       // Hover extension configuration
       enableHover: true, // Enable hover tooltips
@@ -174,20 +174,18 @@ function initializeEditor() {
           table: tableTooltipRenderer,
         },
         theme: defaultSqlHoverTheme("light"),
-        parser,
       },
       // Reference highlighting and go-to-definition for CTEs/aliases
       enableNavigation: true,
       navigationConfig: {
         keymap: true, // F12/Mod-b go-to-definition, F2 rename
-        parser,
       },
     }),
     // Register all schema-aware completion sources at once:
     // - CTE names and their output columns
     // - `u.` -> columns of `users` in `SELECT ... FROM users u`
     // - `SELECT e` -> `email` because `FROM users` is in the statement
-    sqlCompletion({ dialect: defaultDialect, schema, parser, contextAnalyzer }),
+    sqlCompletion({ dialect: defaultDialect, schema, ...analysis }),
     // Custom theme for better SQL editing
     EditorView.theme({
       "&": {
@@ -293,9 +291,10 @@ function getDatabase(state: EditorState): SupportedDialects {
 
 function setupDatabaseSelect() {
   const select = document.querySelector("#database-select");
-  if (select) {
-    select.addEventListener("change", (e) => {
-      const value = (e.target as HTMLSelectElement).value as SupportedDialects;
+  if (select instanceof HTMLSelectElement) {
+    select.addEventListener("change", () => {
+      const value = select.value;
+      if (value !== "PostgreSQL" && value !== "DuckDB" && value !== "MySQL" && value !== "Sqlite") return;
       updateSqlDialect(editor, guessSqlDialect(value));
       editor.dispatch({
         effects: [setDatabase.of(value)],

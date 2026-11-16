@@ -1,3 +1,4 @@
+import { columnsOf } from "../src/sql/completion-utils.js";
 import type { NamespaceTooltipData } from "../src/sql/hover.js";
 
 interface ColumnMetadata {
@@ -35,7 +36,9 @@ export type Schema = "users" | "posts" | "orders" | "customers" | "categories" |
 export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
   // Show table name, columns, description, primary key, foreign key, index, unique, check, default, comment
   const table = data.item.path.join(".");
-  const columns = data.item.namespace?.[table] ?? [];
+  const columns = (columnsOf(data.item.namespace) ?? []).map(
+    (column) => typeof column === "string" ? column : column.label,
+  );
 
   // Enhanced table metadata (simulated for demo purposes)
   const tableMetadata = getTableMetadata(table);
@@ -144,9 +147,7 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
   return tooltip;
 };
 
-// Helper function to get enhanced table metadata
-function getTableMetadata(tableName: string): TableMetadata {
-  const metadata: Record<Schema, TableMetadata> = {
+const tableMetadata: Record<Schema, TableMetadata> = {
     users: {
       description: "User accounts and profile information",
       rowCount: "1,234",
@@ -310,10 +311,13 @@ function getTableMetadata(tableName: string): TableMetadata {
       ],
       indexes: [{ name: "idx_users_posts_user", columns: ["user_id"], unique: false }],
     },
-  };
+};
 
+const tableMetadataByName = new Map(Object.entries(tableMetadata));
+
+function getTableMetadata(tableName: string): TableMetadata {
   return (
-    metadata[tableName] || {
+    tableMetadataByName.get(tableName) ?? {
       description: "Table information",
       rowCount: "Unknown",
       columns: {},
