@@ -28,6 +28,16 @@ function texts(sql: string, result: SqlReferenceResult): string[] {
   return result.references.map((range) => sql.slice(range.from, range.to));
 }
 
+it("excludes literal and comment occurrences after nested arrays from CTE references", async () => {
+  const sql = "WITH c AS (SELECT ARRAY[[1,2],[3,4]] AS m FROM t) SELECT m, 'copied from c' AS note FROM c -- from c";
+  const result = await resolveAt(sql, "c AS");
+  expect(result?.kind).toBe("cte");
+  expect(result?.references).toEqual([
+    { from: sql.indexOf("c AS"), to: sql.indexOf("c AS") + 1 },
+    { from: sql.indexOf("FROM c") + 5, to: sql.indexOf("FROM c") + 6 },
+  ]);
+});
+
 it("distinguishes CAST type names from select-alias declarations", async () => {
   const sql = "SELECT CAST(created_at AS DATE) AS date FROM events ORDER BY date";
   const result = await resolveAt(sql, "date", 1);

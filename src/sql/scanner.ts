@@ -28,13 +28,8 @@ function visitProtectedTokens(
       while (pos < sql.length && sql[pos] !== "\n" && sql[pos] !== "\r") pos++;
     } else if (char === "/" && sql[pos + 1] === "*") {
       kind = "comment";
-      pos += 2;
-      let depth = 1;
-      while (pos < sql.length && depth > 0) {
-        if (sql[pos] === "/" && sql[pos + 1] === "*") { depth++; pos += 2; }
-        else if (sql[pos] === "*" && sql[pos + 1] === "/") { depth--; pos += 2; }
-        else pos++;
-      }
+      const end = sql.indexOf("*/", pos + 2);
+      pos = end < 0 ? sql.length : end + 2;
     } else if (char === "'" || char === '"' || char === "`" || (char === "[" && options.bracketIdentifiers !== false)) {
       kind = char === "'" ? "literal" : "identifier";
       const close = char === "[" ? "]" : char;
@@ -46,7 +41,7 @@ function visitProtectedTokens(
         }
         if (sql[pos] === close) {
           pos++;
-          if (sql[pos] !== close) break;
+          if (char === "[" || sql[pos] !== close) break;
         }
         pos++;
       }

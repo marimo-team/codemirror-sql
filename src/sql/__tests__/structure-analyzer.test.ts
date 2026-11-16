@@ -1,7 +1,19 @@
 import { EditorState } from "@codemirror/state";
 import { beforeEach, describe, expect, it } from "vitest";
-import { NodeSqlParser } from "../parser.js";
+import { NodeSqlParser, type SupportedDialects } from "../parser.js";
 import { SqlStructureAnalyzer } from "../structure-analyzer.js";
+
+it.each<SupportedDialects>(["MySQL", "BigQuery", "Sqlite"])(
+  "keeps statements after comments containing an opening delimiter in %s", async (database) => {
+    const doc = "/* source: gs://bucket/logs/* */\nSELECT * FRO t;\nSELECT 2;";
+    const analyzer = new SqlStructureAnalyzer(new NodeSqlParser({ getParserOptions: () => ({ database }) }));
+    const statements = await analyzer.analyzeDocument(EditorState.create({ doc }));
+    expect(statements).toHaveLength(2);
+    expect(statements[0]?.isValid).toBe(false);
+    expect(statements[0]?.errors).not.toHaveLength(0);
+    expect(statements[1]?.isValid).toBe(true);
+  },
+);
 
 describe("SqlStructureAnalyzer", () => {
   let analyzer: SqlStructureAnalyzer;
@@ -248,12 +260,13 @@ WHERE u.active = true
         expect(statements[0]?.content).toBe("SELECT * FROM users  WHERE id = 1");
       });
 
-      it("should handle nested-like comment patterns", async () => {
+      it("does not nest block comments", async () => {
         state = createState("SELECT * FROM users /* comment /* nested */ text */ WHERE id = 1;");
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0]?.content).toBe("SELECT * FROM users  WHERE id = 1");
+        expect(statements[0]?.content).toBe("SELECT * FROM users  text */ WHERE id = 1");
+        expect(statements[0]?.isValid).toBe(false);
       });
     });
 

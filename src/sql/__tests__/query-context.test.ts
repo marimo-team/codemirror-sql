@@ -16,6 +16,12 @@ async function analyze(sql: string): Promise<QueryContext> {
   return analyzeQueryContext(sql, parser, { state: EditorState.create({ doc: sql }) });
 }
 
+it("ignores tables mentioned inside literals after nested subscripts during fallback", async () => {
+  const sql = "SELECT m[k[1]], o. FROM orders o WHERE note = 'from users o'";
+  const context = await analyze(sql);
+  expect(context.tables).toEqual([{ name: "orders", path: ["orders"], alias: "o" }]);
+});
+
 async function analyzeWith(customParser: SqlParser, sql: string): Promise<QueryContext> {
   return analyzeQueryContext(sql, customParser, { state: EditorState.create({ doc: sql }) });
 }

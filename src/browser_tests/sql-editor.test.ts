@@ -124,11 +124,12 @@ test("completes a column using the current editor view's schema", async () => {
 });
 
 test("renames an alias through F2 and restores the statement with undo", async () => {
-  const doc = "SELECT u.id FROM users u WHERE u.active";
+  const doc = "SELECT u.id, ARRAY[[1,2],[3,4]], 'u.id' AS note FROM users u WHERE u.active -- u.id";
   const editor = new EditorView({
     doc,
     selection: { anchor: doc.indexOf("u.id") },
     extensions: [basicSetup, sqlExtension({
+      parser: new NodeSqlParser({ getParserOptions: () => ({ database: "PostgreSQL" }) }),
       enableLinting: false,
       enableSemanticLinting: false,
       enableGutterMarkers: false,
@@ -140,7 +141,8 @@ test("renames an alias through F2 and restores the statement with undo", async (
   onTestFinished(() => editor.destroy());
   editor.focus();
   await userEvent.keyboard("{F2}");
-  await expect.poll(() => editor.state.doc.toString()).toBe("SELECT account.id FROM users account WHERE account.active");
+  await expect.poll(() => editor.state.doc.toString())
+    .toBe("SELECT account.id, ARRAY[[1,2],[3,4]], 'u.id' AS note FROM users account WHERE account.active -- u.id");
   const modifier = /Mac/.test(navigator.platform) ? "Meta" : "Control";
   await userEvent.keyboard(`{${modifier}>}z{/${modifier}}`);
   await expect.poll(() => editor.state.doc.toString()).toBe(doc);

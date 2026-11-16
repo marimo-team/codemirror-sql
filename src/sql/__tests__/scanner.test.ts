@@ -8,7 +8,7 @@ it.each([
   "SELECT 'it''s; fine'", 'SELECT "a"";b"',
   "SELECT [[1], [2]]", "SELECT ARRAY[ARRAY[1], ARRAY[2]]", "SELECT [']', ';']",
   "SELECT ['--', '/*'] /* comment */", "SELECT values[1][2] FROM users",
-  "SELECT $$a; b$$", "SELECT $body$a; b$body$", "SELECT 1 /* outer /* ; */ ; */",
+  "SELECT $$a; b$$", "SELECT $body$a; b$body$", "SELECT 1 /* source: gs://logs/* */",
   "SELECT 1 -- ;\n",
 ])("keeps semicolons inside tokens in one statement: %s", async (sql) => {
   const state = EditorState.create({ doc: `${sql}; SELECT 2;` });
@@ -56,10 +56,27 @@ it.each([" ", "\t", "\n", "\r", "\u00a0", "\u2003"])(
   },
 );
 
-it.each(["[a; b]", "[a]];b]"])("supports bracket-quoted identifiers in identifier mode: %s", (sql) => {
+it("supports bracket-quoted identifiers in identifier mode", () => {
+  const sql = "[a; b]";
   expect(scanSql(sql, { bracketIdentifiers: true })).toEqual([
     { kind: "identifier", from: 0, to: sql.length, text: sql },
   ]);
+});
+
+it.each(["ARRAY[[1,2],[3,4]]", "[[1,2],[3,4]]", "m[k[1]]"])(
+  "continues masking literals and comments after nested brackets: %s", (expression) => {
+    const sql = `SELECT ${expression}, 'from users u' FROM t -- join x y`;
+    const masked = maskLiteralsAndComments(sql);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked).not.toMatch(/from users u|join x y/);
+    expect(masked.indexOf("FROM t")).toBe(sql.indexOf("FROM t"));
+  },
+);
+
+it("ends block comments at the first closing delimiter", () => {
+  const sql = "/* source: gs://bucket/logs/* */ SELECT 1";
+  expect(stripSqlComments(sql)).toBe(" SELECT 1");
+  expect(maskLiteralsAndComments(sql).trim()).toBe("SELECT 1");
 });
 
 it.each(["'unterminated", '"unterminated', "[unterminated", "/* unterminated", "$tag$unterminated"])(
