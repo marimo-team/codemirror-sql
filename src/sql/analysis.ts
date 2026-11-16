@@ -3,6 +3,7 @@ import { NodeSqlParser } from "./parser.js";
 import { QueryContextAnalyzer } from "./query-context.js";
 import { SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SqlParseResult, SqlParser, SqlParserLike } from "./types.js";
+import { SqlStateCache } from "./state-cache.js";
 
 export interface SqlAnalysisConfig {
   parser?: SqlParserLike;
@@ -16,18 +17,19 @@ export interface SqlAnalysis {
   contextAnalyzer: QueryContextAnalyzer;
 }
 
-/** One immutable editor state owns its pending and completed parse results. */
 class CachedSqlParser implements SqlParser {
-  private cache = new WeakMap<EditorState, Map<string, Promise<SqlParseResult>>>();
+  private cache: SqlStateCache<Map<string, Promise<SqlParseResult>>>;
 
-  constructor(private parser: SqlParserLike) {}
+  constructor(private parser: SqlParserLike) {
+    this.cache = new SqlStateCache(parser);
+  }
+
+  getCacheKey(state: EditorState): unknown {
+    return this.parser.getCacheKey?.(state);
+  }
 
   parse(sql: string, opts: { state: EditorState }): Promise<SqlParseResult> {
-    let cache = this.cache.get(opts.state);
-    if (!cache) {
-      cache = new Map();
-      this.cache.set(opts.state, cache);
-    }
+    const cache = this.cache.get(opts.state, () => new Map());
     const existing = cache.get(sql);
     if (existing) return existing;
     const pending = Promise.resolve().then(() => this.parser.parse(sql, opts));

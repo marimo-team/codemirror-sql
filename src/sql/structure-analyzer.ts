@@ -1,6 +1,7 @@
 import { scanSql, stripSqlComments } from "./scanner.js";
 import type { EditorState } from "@codemirror/state";
 import type { SqlParseError, SqlParserLike } from "./types.js";
+import { SqlStateCache } from "./state-cache.js";
 
 export interface SqlStatement {
   /** Start position of the statement in the document */
@@ -27,19 +28,20 @@ export interface SqlStatement {
  */
 export class SqlStructureAnalyzer {
   private parser: SqlParserLike;
-  private cache = new WeakMap<EditorState, Promise<SqlStatement[]>>();
+  private cache: SqlStateCache<{ pending?: Promise<SqlStatement[]> }>;
 
   constructor(parser: SqlParserLike) {
     this.parser = parser;
+    this.cache = new SqlStateCache(parser);
   }
 
   async analyzeDocument(state: EditorState): Promise<SqlStatement[]> {
-    const cache = this.cache;
-    let statements = cache.get(state);
+    const cache = this.cache.get(state, () => ({}));
+    let statements = cache.pending;
     if (!statements) {
       statements = this.extractStatements(state.doc.toString(), state);
-      cache.set(state, statements);
-      void statements.catch(() => cache.delete(state));
+      cache.pending = statements;
+      void statements.catch(() => { cache.pending = undefined; });
     }
     return statements;
   }
@@ -146,6 +148,6 @@ export class SqlStructureAnalyzer {
   }
 
   clearCache(): void {
-    this.cache = new WeakMap();
+    this.cache.clear();
   }
 }

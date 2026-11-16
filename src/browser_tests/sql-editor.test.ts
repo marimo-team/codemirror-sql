@@ -182,3 +182,34 @@ test("updates syntax diagnostics and gutter validity when only the dialect chang
   await expect.poll(markerColor).toBe("rgb(59, 130, 246)");
   expect(editor.state.doc.toString()).toBe(doc);
 });
+
+test("moving the cursor updates reference highlights without reparsing the document", async () => {
+  const parser = new NodeSqlParser({ getParserOptions: () => ({ database: "PostgreSQL" }) });
+  const parse = vi.spyOn(parser, "parse");
+  const doc = Array.from({ length: 10 }, (_, i) => `SELECT u.id FROM users u WHERE u.id = ${i};`).join("\n");
+  const editor = new EditorView({
+    doc,
+    selection: { anchor: doc.indexOf("u.id") },
+    extensions: [basicSetup, sql({ dialect: PostgreSQL }), sqlExtension({
+      parser,
+      schema,
+      linterConfig: { delay: 0 },
+      semanticLinterConfig: { delay: 0 },
+      navigationConfig: { highlightDelay: 0 },
+    })],
+    parent: document.body,
+  });
+  onTestFinished(() => editor.destroy());
+  editor.focus();
+  const highlights = () => editor.dom.querySelectorAll(".cm-sqlReference").length;
+  await expect.poll(highlights).toBe(3);
+  expect(parse).toHaveBeenCalledTimes(10);
+
+  await userEvent.keyboard("{ArrowRight}{ArrowRight}");
+  await expect.poll(highlights).toBe(0);
+  expect(parse).toHaveBeenCalledTimes(10);
+
+  await userEvent.keyboard("{ArrowLeft}");
+  await expect.poll(highlights).toBe(3);
+  expect(parse).toHaveBeenCalledTimes(10);
+});

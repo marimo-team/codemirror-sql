@@ -107,9 +107,12 @@ const extensions = [
 ```
 
 Import `createSqlAnalysis`, `NodeSqlParser`, `sqlExtension`, and `sqlCompletion`
-from `@marimo-team/codemirror-sql`. Parsing is shared for each immutable editor
-state, including concurrent requests. A dialect change creates a new state and
-invalidates cached analysis even when the document text stays the same.
+from `@marimo-team/codemirror-sql`. Analysis shares concurrent requests. The built-in
+parser reuses results across cursor-only states with the same document and parser
+options. Changing the dialect or other parser options invalidates that analysis
+even when the document text stays the same. Custom parsers remain state-scoped
+unless they provide `getCacheKey(state)`, which must identify every configuration
+value that affects parsing; subclasses of `NodeSqlParser` follow the same rule.
 `needsRefresh` schedules linting and gutter updates for these configuration changes. Per-feature
 parser overrides receive independent default analyzers.
 

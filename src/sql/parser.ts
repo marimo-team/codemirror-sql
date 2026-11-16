@@ -58,6 +58,16 @@ export class NodeSqlParser implements SqlParser {
     this.opts = opts;
   }
 
+  getCacheKey(state: EditorState): unknown {
+    // Subclasses may depend on state beyond the built-in parser options.
+    if (this.constructor !== NodeSqlParser) return undefined;
+    try {
+      return JSON.stringify(this.opts.getParserOptions?.(state) ?? null);
+    } catch {
+      return undefined;
+    }
+  }
+
   private getParser = lazy(async () => {
     const module = await import("node-sql-parser");
     // Support for ESM and CJS

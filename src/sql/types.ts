@@ -28,6 +28,11 @@ export type SqlParserLike = Pick<SqlParser, "parse"> & Partial<Omit<SqlParser, "
 
 export interface SqlParser {
   /**
+   * Identifies parser configuration for reuse across states with the same document.
+   * Return undefined (the default) to cache only within the exact editor state.
+   */
+  getCacheKey?(state: EditorState): unknown;
+  /**
    * Parse a SQL statement and return the AST
    * @param sql - The SQL statement to parse
    * @param opts - The state of the editor

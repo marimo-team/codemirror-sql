@@ -5,6 +5,7 @@ import type { EditorState } from "@codemirror/state";
 import { debug } from "../debug.js";
 import { NodeSqlParser } from "./parser.js";
 import type { SqlParserLike } from "./types.js";
+import { SqlStateCache } from "./state-cache.js";
 
 /**
  * A table-like source referenced by a statement (FROM/JOIN entries and
@@ -482,24 +483,21 @@ export async function analyzeQueryContext(
 }
 
 /**
- * Caching wrapper around {@link analyzeQueryContext}, keyed on state and SQL.
+ * Caching wrapper around {@link analyzeQueryContext}, keyed on parser configuration and SQL.
  * Share one instance between hover/completion sources to avoid re-parsing the
  * same statement.
  */
 export class QueryContextAnalyzer {
   private parser: SqlParserLike;
-  private cache = new WeakMap<EditorState, Map<string, Promise<QueryContext>>>();
+  private cache: SqlStateCache<Map<string, Promise<QueryContext>>>;
 
   constructor(parser: SqlParserLike = new NodeSqlParser()) {
     this.parser = parser;
+    this.cache = new SqlStateCache(parser);
   }
 
   async getContext(sql: string, opts: { state: EditorState }): Promise<QueryContext> {
-    let stateCache = this.cache.get(opts.state);
-    if (!stateCache) {
-      stateCache = new Map();
-      this.cache.set(opts.state, stateCache);
-    }
+    const stateCache = this.cache.get(opts.state, () => new Map());
     let context = stateCache.get(sql);
     if (!context) {
       context = analyzeQueryContext(sql, this.parser, opts);
@@ -509,6 +507,6 @@ export class QueryContextAnalyzer {
   }
 
   clearCache(): void {
-    this.cache = new WeakMap();
+    this.cache.clear();
   }
 }
