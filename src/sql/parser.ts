@@ -275,7 +275,7 @@ function replaceBracketsWithQuotes(sql: string): {
 } {
   const offsetRecord: Record<number, number> = {};
 
-  const protectedTokens = scanSql(sql, { backslashEscapes: true }).filter(
+  const protectedTokens = scanSql(sql, { backslashEscapes: true, bracketIdentifiers: false }).filter(
     (token) => token.kind === "comment" || token.kind === "literal" || token.kind === "identifier",
   );
   let replacedSql = "";

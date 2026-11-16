@@ -1,6 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
-import { exportedForTesting, NodeSqlParser } from "../parser.js";
+import { exportedForTesting, NodeSqlParser, type SupportedDialects } from "../parser.js";
 
 describe("SqlParser", () => {
   const parser = new NodeSqlParser();
@@ -366,6 +366,19 @@ describe("SqlParser", () => {
 
 const { removeCommentsFromStart, replaceBracketsWithQuotes } = exportedForTesting;
 
+it.each<SupportedDialects>(["PostgreSQL", "DuckDB", "BigQuery"])(
+  "quotes array and subscript placeholders when ignoreBrackets is enabled for %s", async (database) => {
+    const parser = new NodeSqlParser({ getParserOptions: () => ({ database, ignoreBrackets: true }) });
+    const queries = ["SELECT ARRAY[{value}]", "SELECT ARRAY[1, {value}]", "SELECT arr[{value}] FROM users"];
+    if (database === "BigQuery") queries.push("SELECT [{value}]");
+    for (const sql of queries) {
+      const result = await parser.parse(sql, { state: EditorState.create({ doc: sql }) });
+      expect(result.errors, sql).toEqual([]);
+      expect(result.success, sql).toBe(true);
+    }
+  },
+);
+
 describe("removeComments", () => {
   it("should remove comments from the start of the query", () => {
     const sql = "/* comment */ SELECT * FROM users";
@@ -404,6 +417,13 @@ describe("removeComments", () => {
 });
 
 describe("replaceBracketsWithQuotes", () => {
+  it("quotes array elements while preserving quoted text and comments", () => {
+    const sql = "SELECT ARRAY[{first}, '{literal}', \"{identifier}\", /* {comment} */ {last}]";
+    expect(replaceBracketsWithQuotes(sql)).toEqual({
+      sql: "SELECT ARRAY['{first}', '{literal}', \"{identifier}\", /* {comment} */ '{last}']",
+      offsetRecord: { [sql.indexOf("{first}")]: 2, [sql.indexOf("{last}")]: 2 },
+    });
+  });
   it("should replace brackets with quotes", () => {
     const sql = "SELECT {id} FROM users WHERE id = {id}";
     const result = replaceBracketsWithQuotes(sql);
@@ -529,6 +549,13 @@ describe("error positions with ignoreBrackets", () => {
     expect(result.success).toBe(false);
     expect(result.errors[0]?.line).toBe(2);
     expect(result.errors[0]?.column).toBe(22);
+  });
+
+  it("maps error columns back through array placeholder replacements", async () => {
+    const sql = "SELECT ARRAY[{value}] FRO users";
+    const result = await bracketParser.parse(sql, { state });
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.column).toBe(sql.indexOf("users") + 1);
   });
 
   it("never reports a column below 1", async () => {
