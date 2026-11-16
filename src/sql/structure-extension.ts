@@ -53,7 +53,27 @@ const sqlGutterStateField = StateField.define<SqlGutterState>({
         return effect.value;
       }
     }
-    return tr.docChanged ? { ...value, allStatements: [], currentStatement: null } : value;
+    if (!tr.docChanged) return value;
+    const allStatements = value.allStatements.flatMap((statement) => {
+      const from = tr.changes.mapPos(statement.from, 1);
+      const to = tr.changes.mapPos(statement.to, -1);
+      if (to <= from) return [];
+      return [{
+        ...statement,
+        from,
+        to,
+        lineFrom: tr.newDoc.lineAt(from).number,
+        lineTo: tr.newDoc.lineAt(to).number,
+      }];
+    });
+    const position = tr.newSelection.main.head;
+    return {
+      ...value,
+      allStatements,
+      currentStatement: allStatements.find((statement) =>
+        position >= statement.from && position <= statement.to,
+      ) ?? null,
+    };
   },
 });
 

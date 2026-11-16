@@ -232,6 +232,32 @@ it("does not dispatch a pending gutter result after destruction", async () => {
   expect(dispatch).not.toHaveBeenCalled();
 });
 
+it("keeps mapped gutter markers visible while asynchronous analysis is pending", async () => {
+  let release: (() => void) | undefined;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let delayed = false;
+  const analysis = createSqlAnalysis({ parser: {
+    parse: async () => {
+      if (delayed) await pending;
+      return { success: !delayed, errors: [] };
+    },
+  } });
+  const view = createTestView({ doc: "SELECT 1;\nSELECT 2;", extensions: [sqlStructureGutter(analysis)] });
+  const markers = () => [...view.dom.querySelectorAll<HTMLElement>(".cm-sql-gutter-marker")];
+  await vi.waitFor(() => expect(markers()).toHaveLength(2));
+
+  delayed = true;
+  view.dispatch({ changes: { from: 0, insert: "\n" } });
+  expect(markers()).toHaveLength(2);
+  view.dispatch({ changes: { from: 0, to: view.state.doc.line(3).from } });
+  expect(markers()).toHaveLength(1);
+
+  required(release)();
+  await vi.waitFor(() => expect(markers().map((marker) => marker.style.background)).toEqual(["rgb(239, 68, 68)"]));
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length } });
+  expect(markers()).toHaveLength(0);
+});
+
 it("reuses gutter analysis on selection and focus changes while refreshing parser configuration", async () => {
   let release: (() => void) | undefined;
   const ready = new Promise<void>((resolve) => { release = resolve; });
