@@ -98,6 +98,8 @@ const extensions = [
 
 For a custom parser, use `createSqlAnalysis({ parser })`. Set `needsRefresh` on
 `sqlExtension` when parser configuration can change without editing SQL.
+Custom parsers can implement `getCacheKey(state)` to reuse analysis across cursor moves;
+see [`SqlParser`](src/sql/types.ts).
 
 ### Schema-aware semantic linting
 
