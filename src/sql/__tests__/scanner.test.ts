@@ -35,6 +35,27 @@ it("does not concatenate identifiers when removing comments", () => {
   expect(stripSqlComments("a/* x */".repeat(1000))).toBe(Array(1000).fill("a").join(" "));
 });
 
+it("distinguishes dollar signs inside words from adjacent dollar-quoted literals", () => {
+  expect(scanSql("name$tag$ $$one$$$$two$$").map(({ kind, text }) => ({ kind, text }))).toEqual([
+    { kind: "word", text: "name$tag$" },
+    { kind: "literal", text: "$$one$$" },
+    { kind: "literal", text: "$$two$$" },
+  ]);
+});
+
+it("scans long sequences of dollar-quoted literals separated by whitespace", () => {
+  const tokens = scanSql("$$$$ ".repeat(128000));
+  expect(tokens).toHaveLength(128000);
+  expect(tokens.every((token, i) => token.kind === "literal" && token.from === i * 5 && token.to === i * 5 + 4)).toBe(true);
+});
+
+it.each([" ", "\t", "\n", "\r", "\u00a0", "\u2003"])(
+  "preserves existing whitespace around stripped comments: %j", (space) => {
+    expect(stripSqlComments(`a/*comment*/${space}b`)).toBe(`a${space}b`);
+    expect(stripSqlComments(`a${space}/*comment*/b`)).toBe(`a${space}b`);
+  },
+);
+
 it.each(["[a; b]", "[a]];b]"])("supports bracket-quoted identifiers in identifier mode: %s", (sql) => {
   expect(scanSql(sql, { bracketIdentifiers: true })).toEqual([
     { kind: "identifier", from: 0, to: sql.length, text: sql },
