@@ -9,20 +9,17 @@ export type SemanticType = "database" | "schema" | "table" | "column" | "namespa
 /**
  * Represents a resolved namespace item with its path and metadata
  */
-export interface ResolvedNamespaceItem {
-  /** The completion object if this is a terminal node */
-  completion?: Completion;
-  /** The string value if this is a string terminal */
-  value?: string;
-  /** The full path to this item */
+interface NamespaceItemBase {
   path: string[];
-  /** The basic type of this item */
-  type: "completion" | "string" | "namespace";
-  /** The semantic SQL type of this item */
   semanticType: SemanticType;
-  /** The original namespace node */
   namespace?: SQLNamespace;
 }
+
+export type ResolvedNamespaceItem = NamespaceItemBase & (
+  | { type: "completion"; completion: Completion; value?: never }
+  | { type: "string"; value: string; completion?: never }
+  | { type: "namespace"; completion?: never; value?: never }
+);
 
 /**
  * Configuration for namespace search operations
@@ -67,7 +64,7 @@ export function isSelfChildrenNamespace(
     typeof self === "object" &&
     self !== null &&
     !Array.isArray(self) &&
-    typeof (self as { label?: unknown }).label === "string"
+    "label" in self && typeof self.label === "string"
   );
 }
 
@@ -131,31 +128,8 @@ function determineSemanticType(
     if (isArrayNamespace(namespace)) {
       // This completion has column children, so it's a table
       return "table";
-    } else {
-      // This completion has namespace children
-      // Check if the children contain tables (arrays) to determine if this is a database or schema
-      if (isObjectNamespace(namespace)) {
-        const hasTableChildren = Object.values(namespace).some(
-          (child) =>
-            isArrayNamespace(child) ||
-            (isSelfChildrenNamespace(child) && isArrayNamespace(child.children)),
-        );
-
-        if (hasTableChildren) {
-          // Contains tables directly, could be either database or schema depending on depth
-          // For self-children completions, depth 1 means it's actually a root-level database
-          return depth <= 1 ? "database" : "schema";
-        } else {
-          // Contains other namespaces, so this is a database (unless deeply nested)
-          // For self-children completions, depth 1 means it's actually a root-level database
-          return depth <= 1 ? "database" : "schema";
-        }
-      } else {
-        // For other types of children
-        // For self-children completions, depth 1 means it's actually a root-level database
-        return depth <= 1 ? "database" : "schema";
-      }
     }
+    return depth <= 1 ? "database" : "schema";
   }
 
   // Fallback based on depth

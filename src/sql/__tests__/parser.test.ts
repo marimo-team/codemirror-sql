@@ -38,8 +38,8 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].severity).toBe("error");
-      expect(result.errors[0].message).toBeTruthy();
+      expect(result.errors[0]?.severity).toBe("error");
+      expect(result.errors[0]?.message).toBeTruthy();
     });
 
     it("should return errors for syntax errors", async () => {
@@ -96,32 +96,33 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
-      const message = result.errors[0].message;
+      const message = result.errors[0]?.message;
       // cleanErrorMessage rewrites the "but ... found" tail
       expect(message).toContain("found unexpected token");
       expect(message).not.toContain("but");
       // and strips any leading "Error: " prefix
-      expect(message.startsWith("Error: ")).toBe(false);
+      expect(message?.startsWith("Error: ")).toBe(false);
     });
 
     it("falls back to line/column 1 for errors without location info (unsupported dialect)", async () => {
       // An unsupported dialect throws "X is not supported currently" with no
       // location or hash, forcing the message-regex fallback in extractErrorInfo.
       const oracleParser = new NodeSqlParser({
-        getParserOptions: () => ({
-          // Oracle is not supported by node-sql-parser
-          database: "Oracle" as unknown as "PostgreSQL",
-        }),
+        getParserOptions: () => {
+          const options = { database: "PostgreSQL" } satisfies import("../parser.js").ParserOption;
+          Reflect.set(options, "database", "Oracle");
+          return options;
+        },
       });
 
       const result = await oracleParser.parse("SELECT 1", { state });
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].message).toContain("not supported");
+      expect(result.errors[0]?.message).toContain("not supported");
       // No "line N"/"column N" in the message, so both default to 1
-      expect(result.errors[0].line).toBe(1);
-      expect(result.errors[0].column).toBe(1);
+      expect(result.errors[0]?.line).toBe(1);
+      expect(result.errors[0]?.column).toBe(1);
     });
 
     it("clamps a reported column that exceeds the sql length", async () => {
@@ -132,7 +133,7 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].column).toBe(sql.length);
+      expect(result.errors[0]?.column).toBe(sql.length);
     });
   });
 
@@ -297,7 +298,7 @@ describe("SqlParser", () => {
 
       // The offset should be at the original position of the error
       const expectedColumn = sql.length;
-      expect(error.column).toBe(expectedColumn);
+      expect(error?.column).toBe(expectedColumn);
     });
 
     it("maps the error column back through the CREATE OR REPLACE replacement (catch path)", async () => {
@@ -317,10 +318,10 @@ describe("SqlParser", () => {
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].line).toBe(1);
+      expect(result.errors[0]?.line).toBe(1);
       // Column points at "badclause" in the original (pre-replacement) SQL
-      expect(result.errors[0].column).toBe(sql.indexOf("badclause") + 1);
-      expect(result.errors[0].column).toBeLessThan(sql.length);
+      expect(result.errors[0]?.column).toBe(sql.indexOf("badclause") + 1);
+      expect(result.errors[0]?.column).toBeLessThan(sql.length);
     });
 
     it("should be successful with macro keyword", async () => {
@@ -445,10 +446,9 @@ describe("replaceBracketsWithQuotes", () => {
     expect(result.offsetRecord).toEqual({});
   });
 
-  it.fails("should handle escaped quotes", () => {
-    const sql = "SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'";
-    const result = replaceBracketsWithQuotes(sql);
-    expect(result.sql).toBe("SELECT \\'{id}\\' FROM users WHERE id = \\'{id}\\'");
+  it("preserves doubled quotes inside string literals", () => {
+    const sql = "SELECT 'it''s {id}' FROM users";
+    expect(replaceBracketsWithQuotes(sql).sql).toBe(sql);
   });
 
   it("should handle brackets at the beginning of string", () => {
@@ -518,8 +518,8 @@ describe("error positions with ignoreBrackets", () => {
     const result = await bracketParser.parse("SELECT {id} FRO users", { state });
 
     expect(result.success).toBe(false);
-    expect(result.errors[0].line).toBe(1);
-    expect(result.errors[0].column).toBe(17);
+    expect(result.errors[0]?.line).toBe(1);
+    expect(result.errors[0]?.column).toBe(17);
   });
 
   it("does not shift error columns on lines after a replaced bracket", async () => {
@@ -527,14 +527,14 @@ describe("error positions with ignoreBrackets", () => {
     const result = await bracketParser.parse("SELECT {id}\nFROM users WHERE xyz abc", { state });
 
     expect(result.success).toBe(false);
-    expect(result.errors[0].line).toBe(2);
-    expect(result.errors[0].column).toBe(22);
+    expect(result.errors[0]?.line).toBe(2);
+    expect(result.errors[0]?.column).toBe(22);
   });
 
   it("never reports a column below 1", async () => {
     const result = await bracketParser.parse("{x}\nFROM WHERE", { state });
 
     expect(result.success).toBe(false);
-    expect(result.errors[0].column).toBeGreaterThanOrEqual(1);
+    expect(result.errors[0]?.column).toBeGreaterThanOrEqual(1);
   });
 });

@@ -1,4 +1,4 @@
-import type { CompletionContext } from "@codemirror/autocomplete";
+import { CompletionContext } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { cteCompletionSource } from "../cte-completion-source.js";
@@ -15,41 +15,7 @@ async function getCompletionResult(context: CompletionContext) {
 // Helper function to create a mock completion context
 function createMockContext(doc: string, pos: number, explicit = false): CompletionContext {
   const state = EditorState.create({ doc });
-
-  return {
-    state,
-    pos,
-    explicit,
-    matchBefore: (pattern: RegExp) => {
-      const before = doc.slice(0, pos);
-
-      // For word patterns, find the word at the end
-      if (pattern.source === "\\w*" || pattern.source === "[\\w$]*") {
-        const wordMatch = before.match(/([\w$]*)$/);
-        if (!wordMatch) return null;
-
-        const text = wordMatch[1] || "";
-        const from = pos - text.length;
-        return {
-          from,
-          to: pos,
-          text,
-        };
-      }
-
-      // For other patterns, use the original logic
-      const match = before.match(pattern);
-      if (!match) return null;
-
-      const from = pos - match[0].length;
-      return {
-        from,
-        to: pos,
-        text: match[0],
-      };
-    },
-    aborted: false,
-  } as CompletionContext;
+  return new CompletionContext(state, pos, explicit);
 }
 
 describe("cteCompletionSource", () => {
@@ -65,9 +31,9 @@ describe("cteCompletionSource", () => {
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
-      expect(result?.options[0].label).toBe("user_stats");
-      expect(result?.options[0].type).toBe("variable");
-      expect(result?.options[0].info).toBe("Common Table Expression: user_stats");
+      expect(result?.options[0]?.label).toBe("user_stats");
+      expect(result?.options[0]?.type).toBe("variable");
+      expect(result?.options[0]?.info).toBe("Common Table Expression: user_stats");
     });
 
     it("should detect multiple CTEs", async () => {
@@ -101,7 +67,7 @@ describe("cteCompletionSource", () => {
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
-      expect(result?.options[0].label).toBe("category_tree");
+      expect(result?.options[0]?.label).toBe("category_tree");
     });
   });
 
@@ -116,7 +82,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
-      expect(result?.options[0].label).toBe("user_activity_stats");
+      expect(result?.options[0]?.label).toBe("user_activity_stats");
     });
 
     it("should handle CTEs with numbers", async () => {
@@ -129,7 +95,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
-      expect(result?.options[0].label).toBe("stats2024");
+      expect(result?.options[0]?.label).toBe("stats2024");
     });
 
     it("should handle case-insensitive WITH keyword", async () => {
@@ -142,7 +108,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
-      expect(result?.options[0].label).toBe("user_data");
+      expect(result?.options[0]?.label).toBe("user_data");
     });
   });
 
@@ -179,7 +145,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result).toBeTruthy();
-      expect(result?.options[0].label).toBe("filtered_users");
+      expect(result?.options[0]?.label).toBe("filtered_users");
     });
 
     it("scopes CTEs to the statement containing the cursor", async () => {
@@ -259,7 +225,7 @@ describe("cteCompletionSource", () => {
 
       expect(result).toBeTruthy();
       expect(result?.options).toHaveLength(1);
-      expect(result?.options[0].label).toBe("user_stats");
+      expect(result?.options[0]?.label).toBe("user_stats");
     });
   });
 
@@ -273,7 +239,7 @@ describe("cteCompletionSource", () => {
 
       expect(result).toBeTruthy();
       expect(result?.from).toBe(sql.lastIndexOf("user_st"));
-      expect(result?.options[0].label).toBe("user_stats");
+      expect(result?.options[0]?.label).toBe("user_stats");
     });
 
     it("should provide correct completion metadata", async () => {
@@ -349,7 +315,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result?.options.map((opt) => opt.label)).toEqual(["My Stats"]);
-      expect(result?.options[0].apply).toBe('"My Stats"');
+      expect(result?.options[0]?.apply).toBe('"My Stats"');
     });
 
     it("does not add an apply override for bare names", async () => {
@@ -358,7 +324,7 @@ describe("cteCompletionSource", () => {
       const context = createMockContext(sql, sql.length, true);
       const result = await getCompletionResult(context);
 
-      expect(result?.options[0].apply).toBeUndefined();
+      expect(result?.options[0]?.apply).toBeUndefined();
     });
 
     it("completes names containing $ as one token", async () => {
@@ -368,7 +334,7 @@ describe("cteCompletionSource", () => {
       const result = await getCompletionResult(context);
 
       expect(result?.from).toBe(sql.lastIndexOf("t$"));
-      expect(result?.options[0].label).toBe("t$1");
+      expect(result?.options[0]?.label).toBe("t$1");
     });
 
     it("quotes non-bare column labels on apply", async () => {
@@ -395,8 +361,8 @@ describe("cteCompletionSource", () => {
       expect(result).toBeTruthy();
       expect(result?.from).toBe(pos);
       expect(result?.options.map((opt) => opt.label)).toEqual(["a", "b"]);
-      expect(result?.options[0].type).toBe("property");
-      expect(result?.options[0].detail).toBe("column of t");
+      expect(result?.options[0]?.type).toBe("property");
+      expect(result?.options[0]?.detail).toBe("column of t");
     });
 
     it("completes columns after <cte>. inferred from the select list", async () => {

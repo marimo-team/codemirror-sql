@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as dialects from "../dialects";
@@ -17,6 +17,7 @@ describe("index.ts exports", () => {
         "aliasColumnCompletionSource",
         "analyzeQueryContext",
         "createCteCompletionSource",
+        "createSqlAnalysis",
         "cteCompletionSource",
         "defaultSqlHoverTheme",
         "findReferences",
@@ -47,8 +48,8 @@ describe("keywords", async () => {
     const keywordFiles = files.filter((file) => file.endsWith("-keywords.json"));
 
     for (const file of keywordFiles) {
-      const keywords = await import(`../data/${file}`);
-      expect(typeof keywords.keywords).toBe("object");
+      const keywords: unknown = JSON.parse(await readFile(join(dataDir, file), "utf8"));
+      expect(keywords).toHaveProperty("keywords");
     }
   });
 });

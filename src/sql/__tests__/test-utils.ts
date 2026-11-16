@@ -5,6 +5,8 @@ import {
 } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { EditorState, type Extension } from "@codemirror/state";
+import { EditorView, type EditorViewConfig } from "@codemirror/view";
+import { onTestFinished } from "vitest";
 import { sqlSchemaFacet } from "../schema-facet.js";
 
 /**
@@ -27,6 +29,17 @@ export const NESTED_SCHEMA: SQLNamespace = {
     users: ["id", "username"],
   },
 };
+
+export function createTestView(config: EditorViewConfig = {}): EditorView {
+  const view = new EditorView(config);
+  onTestFinished(() => view.destroy());
+  return view;
+}
+
+export function required<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error("Expected a value");
+  return value;
+}
 
 /** Creates an `EditorState`, optionally installing a schema facet. */
 export function createState(doc: string, extensions: Extension[] = []): EditorState {
@@ -80,6 +93,6 @@ export function completeWith(
       explicit: opts.explicit,
       extensions: opts.facetSchema !== undefined ? [sqlSchemaFacet.of(opts.facetSchema)] : [],
     });
-    return (await source(context)) as CompletionResult | null;
+    return await source(context);
   };
 }

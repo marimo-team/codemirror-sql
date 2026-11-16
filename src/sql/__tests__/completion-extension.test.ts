@@ -1,13 +1,13 @@
 import type { CompletionSource } from "@codemirror/autocomplete";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
-import { EditorState } from "@codemirror/state";
+import { type Extension, EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { sqlCompletion } from "../completion-extension.js";
 
 const schema = { users: ["id", "name", "email"] };
 
 /** Collect the `autocomplete` completion sources registered on the language. */
-function autocompleteSources(...extensions: Parameters<typeof EditorState.create>[0]["extensions"][]) {
+function autocompleteSources(...extensions: Extension[]) {
   const state = EditorState.create({
     doc: "SELECT ",
     extensions: [sql({ dialect: PostgreSQL, schema }), ...extensions],

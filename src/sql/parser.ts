@@ -1,5 +1,7 @@
+import { scanSql } from "./scanner.js";
+import { record } from "./ast.js";
 import type { EditorState } from "@codemirror/state";
-import type { AST, Option, Parser } from "node-sql-parser";
+import type { AST, Option } from "node-sql-parser";
 import { debug } from "../debug.js";
 import { lazy } from "../utils.js";
 import type { SqlParseError, SqlParseResult, SqlParser } from "./types.js";
@@ -24,9 +26,7 @@ export interface NodeSqlParserOptions {
   getParserOptions?: (state: EditorState) => ParserOption;
 }
 
-export interface NodeSqlParserResult extends SqlParseResult {
-  ast?: AST | AST[];
-}
+export type NodeSqlParserResult = SqlParseResult<AST | AST[]>;
 
 /**
  * A SQL parser wrapper around node-sql-parser with enhanced error handling
@@ -48,10 +48,6 @@ export interface NodeSqlParserResult extends SqlParseResult {
  */
 export class NodeSqlParser implements SqlParser {
   private opts: NodeSqlParserOptions;
-  private parser: Parser | null = null;
-
-  // Record the column number to the offset amount
-  private offsetRecord: Record<number, number> = {};
 
   constructor(opts: NodeSqlParserOptions = {}) {
     this.opts = opts;
@@ -61,29 +57,24 @@ export class NodeSqlParser implements SqlParser {
    * Lazy import of the node-sql-parser package and create a new Parser instance.
    */
   private getParser = lazy(async () => {
-    if (this.parser) {
-      return this.parser;
-    }
     const module = await import("node-sql-parser");
     // Support for ESM and CJS
     const { Parser } = module.default || module;
-    this.parser = new Parser();
-    return this.parser;
+    return new Parser();
   });
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
-    // Reset the offset map on each parse
-    this.offsetRecord = {};
-
     const parserOptions = this.opts.getParserOptions?.(opts.state);
-    const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
+    const { sql: sanitizedSql, offsetRecord } = parserOptions?.ignoreBrackets
+      ? replaceBracketsWithQuotes(sql)
+      : { sql, offsetRecord: {} };
 
     try {
       const parser = await this.getParser();
 
       // Check if this is DuckDB dialect and apply custom processing
       if (parserOptions?.database === "DuckDB") {
-        return this.parseWithDuckDBSupport(sanitizedSql, parserOptions);
+        return this.parseWithDuckDBSupport(sanitizedSql, parserOptions, offsetRecord);
       }
 
       const ast = parser.astify(sanitizedSql, parserOptions);
@@ -94,7 +85,7 @@ export class NodeSqlParser implements SqlParser {
         ast,
       };
     } catch (error: unknown) {
-      const parseError = this.extractErrorInfo(error, sanitizedSql);
+      const parseError = this.extractErrorInfo(error, sanitizedSql, offsetRecord);
       return {
         success: false,
         errors: [parseError],
@@ -103,12 +94,7 @@ export class NodeSqlParser implements SqlParser {
   }
 
   async sanitizeSql(sql: string, parserOptions?: ParserOption): Promise<string> {
-    if (parserOptions?.ignoreBrackets) {
-      const { sql: replacedSql, offsetRecord } = replaceBracketsWithQuotes(sql);
-      this.offsetRecord = offsetRecord;
-      return replacedSql;
-    }
-    return sql;
+    return parserOptions?.ignoreBrackets ? replaceBracketsWithQuotes(sql).sql : sql;
   }
 
   /**
@@ -118,6 +104,7 @@ export class NodeSqlParser implements SqlParser {
   private async parseWithDuckDBSupport(
     sql: string,
     parserOptions: Option,
+    offsetRecord: Record<number, number>,
   ): Promise<NodeSqlParserResult> {
     const parser = await this.getParser();
 
@@ -134,7 +121,8 @@ export class NodeSqlParser implements SqlParser {
     // Postgres does not support `CREATE OR REPLACE` for tables
     if (sqlToCheck.includes("create or replace table")) {
       const offset = "create or replace table".length - "create table".length;
-      this.offsetRecord[sql.indexOf("create or replace table")] = -offset;
+      const index = /create or replace table/i.exec(sql)?.index ?? 0;
+      offsetRecord[index] = -offset;
       modifiedSql = sql.replace(/create or replace table/i, "create table");
     }
 
@@ -145,7 +133,7 @@ export class NodeSqlParser implements SqlParser {
       return { success: true, errors: [], ast };
     } catch (error) {
       // Use the original sql since we manually apply the offset
-      const parseError = this.extractErrorInfo(error, sql);
+      const parseError = this.extractErrorInfo(error, sql, offsetRecord);
       return { success: false, errors: [parseError] };
     }
   }
@@ -156,31 +144,24 @@ export class NodeSqlParser implements SqlParser {
    * @param offset - The offset to add to the column position. Default is 0.
    * @returns The parsed error information
    */
-  private extractErrorInfo(error: unknown, sql: string): SqlParseError {
+  private extractErrorInfo(error: unknown, sql: string, offsetRecord: Record<number, number>): SqlParseError {
     let line = 1;
     let column = 1;
-    const message = (error as Error)?.message || "SQL parsing error";
-
-    const errorObj = error as {
-      location?: { start?: { line: number; column: number } };
-      hash?: { line: number; loc?: { first_column: number } };
-    };
-    if (errorObj?.location) {
-      line = errorObj.location.start?.line || 1;
-      column = errorObj.location.start?.column || 1;
-    } else if (errorObj?.hash) {
-      line = errorObj.hash.line || 1;
-      column = errorObj.hash.loc?.first_column || 1;
+    const errorObj = record(error);
+    const message = typeof errorObj?.message === "string" ? errorObj.message : "SQL parsing error";
+    const start = record(record(errorObj?.location)?.start);
+    const hash = record(errorObj?.hash);
+    const numberOrOne = (value: unknown): number =>
+      typeof value === "number" && Number.isFinite(value) ? Math.max(1, value) : 1;
+    if (start) {
+      line = numberOrOne(start.line);
+      column = numberOrOne(start.column);
+    } else if (hash) {
+      line = numberOrOne(hash.line);
+      column = numberOrOne(record(hash.loc)?.first_column);
     } else {
-      const lineMatch = message.match(/line (\d+)/i);
-      const columnMatch = message.match(/column (\d+)/i);
-
-      if (lineMatch?.[1]) {
-        line = parseInt(lineMatch[1], 10);
-      }
-      if (columnMatch?.[1]) {
-        column = parseInt(columnMatch[1], 10);
-      }
+      line = Number(message.match(/line (\d+)/i)?.[1] ?? 1);
+      column = Number(message.match(/column (\d+)/i)?.[1] ?? 1);
     }
 
     /**
@@ -197,7 +178,7 @@ export class NodeSqlParser implements SqlParser {
      * on the error's own line (and before the error column) shift it.
      * Replacements never add or remove newlines, so line numbers match.
      */
-    const replacements = Object.entries(this.offsetRecord)
+    const replacements = Object.entries(offsetRecord)
       .map(([position, offset]) => ({ position: parseInt(position, 10), offset }))
       .sort((a, b) => a.position - b.position);
     let shift = 0;
@@ -289,31 +270,12 @@ export class NodeSqlParser implements SqlParser {
 type CommentType = "--" | "/*";
 
 function removeCommentsFromStart(sql: string, commentTypes: CommentType[] = ["/*", "--"]): string {
-  const regexPatterns: string[] = [];
-
-  // Multi-line comments
-  if (commentTypes.includes("/*")) {
-    regexPatterns.push("/\\*[\\s\\S]*?\\*/");
+  let end = 0;
+  for (const token of scanSql(sql)) {
+    if (token.kind !== "comment" || !commentTypes.some((type) => token.text.startsWith(type))) break;
+    end = token.to;
   }
-  // Single-line comments
-  if (commentTypes.includes("--")) {
-    regexPatterns.push("--[^\\n]*");
-  }
-
-  if (regexPatterns.length === 0) return sql;
-
-  const commentRegex = new RegExp(`^\\s*(${regexPatterns.join("|")})\\s*`, "");
-
-  // Keep removing comments from the start until no more are found
-  let result = sql;
-  let prevResult = "";
-
-  while (result !== prevResult) {
-    prevResult = result;
-    result = result.replace(commentRegex, "");
-  }
-
-  return result;
+  return end > 0 ? sql.slice(end).trimStart() : sql;
 }
 
 const QUOTE_LENGTH = "''".length;
@@ -338,25 +300,36 @@ function replaceBracketsWithQuotes(sql: string): {
 } {
   const offsetRecord: Record<number, number> = {};
 
-  // Quote bodies use the unrolled-loop form (`[^"\\]*(?:\\.[^"\\]*)*`) instead
-  // of `(?:[^"\\]|\\.)*` to avoid polynomial backtracking on unclosed strings
-  const replacedSql = sql.replace(
-    /("[^"\\]*(?:\\.[^"\\]*)*")|('[^'\\]*(?:\\.[^'\\]*)*')|(\{[^}]*\})/g,
-    (match, doubleQuoted, singleQuoted, bracket, offset) => {
-      // If it's a quoted string, return it as-is
-      if (doubleQuoted || singleQuoted) {
-        return match;
-      }
-
-      // If it's a bracket, quote it and record the offset
-      if (bracket) {
-        offsetRecord[offset] = QUOTE_LENGTH;
-        return `'${bracket}'`;
-      }
-
-      return match;
-    },
+  const protectedTokens = scanSql(sql, { backslashEscapes: true }).filter(
+    (token) => token.kind === "comment" || token.kind === "literal" || token.kind === "identifier",
   );
+  let replacedSql = "";
+  let from = 0;
+  let tokenIndex = 0;
+  while (from < sql.length) {
+    const token = protectedTokens[tokenIndex];
+    if (token && from >= token.to) {
+      tokenIndex++;
+      continue;
+    }
+    if (token && from === token.from) {
+      replacedSql += token.text;
+      from = token.to;
+      continue;
+    }
+    const end = sql[from] === "{" ? sql.indexOf("}", from + 1) : -1;
+    if (end >= 0) {
+      offsetRecord[from] = QUOTE_LENGTH;
+      replacedSql += `'${sql.slice(from, end + 1)}'`;
+      from = end + 1;
+    } else if (sql[from] === "{") {
+      replacedSql += sql.slice(from);
+      break;
+    } else {
+      replacedSql += sql[from];
+      from++;
+    }
+  }
 
   return { sql: replacedSql, offsetRecord };
 }

@@ -1,3 +1,4 @@
+import { createSqlAnalysis } from "./analysis.js";
 import type { SQLDialect, SQLNamespace } from "@codemirror/lang-sql";
 import type { Extension } from "@codemirror/state";
 import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
@@ -9,11 +10,10 @@ import {
   resolveNamespaceItem,
   traverseNamespacePath,
 } from "./namespace-utils.js";
-import { NodeSqlParser } from "./parser.js";
-import { QueryContextAnalyzer } from "./query-context.js";
+import type { QueryContextAnalyzer } from "./query-context.js";
 import { resolveSqlSchema } from "./schema-facet.js";
-import { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParser } from "./types.js";
+import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlParserLike } from "./types.js";
 
 /**
  * Creates a filtered namespace that only includes tables referenced in the query
@@ -102,14 +102,9 @@ export interface NamespaceTooltipData {
 /**
  * Internal data structure for passing parsed tooltip information to create function
  */
-interface TooltipCreateData {
-  word: string;
-  view: EditorView;
-  pos: number;
-  tooltipType: "keyword" | "namespace";
-  keywordData?: KeywordTooltipData;
-  namespaceData?: NamespaceTooltipData;
-}
+type TooltipCreateData =
+  | { tooltipType: "keyword"; keywordData: KeywordTooltipData }
+  | { tooltipType: "namespace"; namespaceData: NamespaceTooltipData };
 
 /**
  * Configuration for SQL hover tooltips
@@ -120,7 +115,7 @@ export interface SqlHoverConfig {
    * Falls back to the shared `sqlSchemaFacet` when not provided.
    */
   schema?: SQLNamespace | ((view: EditorView) => SQLNamespace);
-  /** SQL dialect for keyword information */
+  /** @deprecated Keyword documentation is supplied through `keywords`. */
   dialect?: SQLDialect | ((view: EditorView) => SQLDialect);
   /** Custom keyword information */
   keywords?:
@@ -137,12 +132,13 @@ export interface SqlHoverConfig {
   /** Enable fuzzy search for namespace items (default: false) */
   enableFuzzySearch?: boolean;
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Query-context analyzer to reuse (e.g. shared with
    * `aliasColumnCompletionSource`), so each statement is only analyzed once.
    */
   contextAnalyzer?: QueryContextAnalyzer;
+  structureAnalyzer?: SqlStructureAnalyzer;
   /** Custom tooltip render function - highest priority, returns HTMLElement or null for fallback */
   tooltipRender?: (word: string, view: EditorView, pos: number) => HTMLElement | null;
   /** Custom tooltip renderers returning trusted HTML. Escape untrusted values. */
@@ -173,13 +169,11 @@ function createHoverSource(
     enableTables = true,
     enableColumns = true,
     enableFuzzySearch = true,
-    parser = new NodeSqlParser(),
     tooltipRender,
     tooltipRenderers = {},
   } = config;
 
-  const structureAnalyzer = new SqlStructureAnalyzer(parser);
-  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
+  const { structureAnalyzer, contextAnalyzer } = createSqlAnalysis(config);
 
   let keywordsPromise: Promise<Record<string, SqlKeywordInfo>> | null = null;
 
@@ -237,9 +231,6 @@ function createHoverSource(
       debug("keywordResult", word, keywordInfo);
       const keywordData: KeywordTooltipData = { keyword: word, info: keywordInfo };
       createData = {
-        word,
-        view,
-        pos,
         tooltipType: "keyword",
         keywordData,
       };
@@ -318,9 +309,6 @@ function createHoverSource(
         };
 
         createData = {
-          word,
-          view,
-          pos,
           tooltipType: "namespace",
           namespaceData,
         };
@@ -353,11 +341,11 @@ function createHoverSource(
         // Priority 2: Custom renderers and default renderers
         let tooltipContent: string | null = null;
 
-        if (tooltipData.tooltipType === "keyword" && tooltipData.keywordData) {
+        if (tooltipData.tooltipType === "keyword") {
           tooltipContent = tooltipRenderers.keyword
             ? tooltipRenderers.keyword(tooltipData.keywordData)
             : createKeywordTooltip(tooltipData.keywordData);
-        } else if (tooltipData.tooltipType === "namespace" && tooltipData.namespaceData) {
+        } else if (tooltipData.tooltipType === "namespace") {
           const namespaceData = tooltipData.namespaceData;
           const { semanticType } = namespaceData.item;
 

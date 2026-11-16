@@ -17,14 +17,12 @@ export interface SqlParseError {
  * Result of parsing a SQL statement
  */
 
-export interface SqlParseResult {
-  /** Whether parsing was successful */
-  success: boolean;
-  /** Array of parsing errors, if any */
-  errors: SqlParseError[];
-  /** The parsed AST if successful */
-  ast?: unknown;
-}
+export type SqlParseResult<T = unknown> =
+  | { success: true; errors: []; ast?: T }
+  | { success: false; errors: SqlParseError[]; ast?: never };
+
+/** Analysis consumers only require parsing; validation can be customized. */
+export type SqlParserLike = Pick<SqlParser, "parse"> & Partial<Pick<SqlParser, "validateSql">>;
 
 export interface SqlParser {
   /**

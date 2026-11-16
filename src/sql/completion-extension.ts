@@ -1,12 +1,13 @@
+import { createSqlAnalysis } from "./analysis.js";
+import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SQLDialect } from "@codemirror/lang-sql";
 import type { Extension } from "@codemirror/state";
 import { aliasColumnCompletionSource } from "./alias-completion-source.js";
 import { unqualifiedColumnCompletionSource } from "./column-completion-source.js";
 import { createCteCompletionSource } from "./cte-completion-source.js";
-import { NodeSqlParser } from "./parser.js";
-import { QueryContextAnalyzer } from "./query-context.js";
+import type { QueryContextAnalyzer } from "./query-context.js";
 import type { SqlSchemaSource } from "./schema-facet.js";
-import type { SqlParser } from "./types.js";
+import type { SqlParserLike } from "./types.js";
 
 /**
  * Configuration for {@link sqlCompletion}, the convenience helper that
@@ -30,12 +31,13 @@ export interface SqlCompletionConfig {
    * `NodeSqlParser`. Pass the same instance used by the linter/hover so
    * dialect-specific setups only configure the parser once.
    */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Query-context analyzer shared by all completion sources, so each edit is
    * analyzed once. Defaults to one built from `parser`.
    */
   contextAnalyzer?: QueryContextAnalyzer;
+  structureAnalyzer?: SqlStructureAnalyzer;
 
   /** Whether to enable CTE name/column completion (default: true) */
   enableCteCompletion?: boolean;
@@ -74,19 +76,18 @@ export function sqlCompletion(config: SqlCompletionConfig): Extension[] {
   const {
     dialect,
     schema,
-    parser = new NodeSqlParser(),
     enableCteCompletion = true,
     enableAliasCompletion = true,
     enableColumnCompletion = true,
   } = config;
-  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
+  const analysis = createSqlAnalysis(config);
 
   const extensions: Extension[] = [];
 
   if (enableCteCompletion) {
     extensions.push(
       dialect.language.data.of({
-        autocomplete: createCteCompletionSource({ parser, contextAnalyzer }),
+        autocomplete: createCteCompletionSource(analysis),
       }),
     );
   }
@@ -94,7 +95,7 @@ export function sqlCompletion(config: SqlCompletionConfig): Extension[] {
   if (enableAliasCompletion) {
     extensions.push(
       dialect.language.data.of({
-        autocomplete: aliasColumnCompletionSource({ schema, parser, contextAnalyzer }),
+        autocomplete: aliasColumnCompletionSource({ schema, ...analysis }),
       }),
     );
   }
@@ -102,7 +103,7 @@ export function sqlCompletion(config: SqlCompletionConfig): Extension[] {
   if (enableColumnCompletion) {
     extensions.push(
       dialect.language.data.of({
-        autocomplete: unqualifiedColumnCompletionSource({ schema, parser, contextAnalyzer }),
+        autocomplete: unqualifiedColumnCompletionSource({ schema, ...analysis }),
       }),
     );
   }

@@ -1,3 +1,4 @@
+import { required } from "./test-utils.js";
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { describe, expect, it } from "vitest";
@@ -30,7 +31,7 @@ const mockNamespaces = {
       electronics: ["laptop", "phone", "tablet"],
       books: ["fiction", "non_fiction", "technical"],
     },
-  } as SQLNamespace,
+  } satisfies SQLNamespace,
 
   // Self-children namespace: { self: Completion; children: SQLNamespace }
   selfChildren: {
@@ -44,7 +45,7 @@ const mockNamespaces = {
         secrets: ["api_key", "password_hash"],
       },
     },
-  } as SQLNamespace,
+  } satisfies SQLNamespace,
 
   // Array namespace: readonly (Completion | string)[]
   arrayNamespace: [
@@ -53,7 +54,7 @@ const mockNamespaces = {
     "email",
     createCompletion("created_at", "Timestamp column"),
     createCompletion("updated_at", "Timestamp column"),
-  ] as SQLNamespace,
+  ] satisfies SQLNamespace,
 
   // Complex nested structure combining all types
   complexNested: {
@@ -95,7 +96,7 @@ const mockNamespaces = {
         },
       },
     },
-  } as SQLNamespace,
+  } satisfies SQLNamespace,
 };
 
 describe("namespace-utils type guards", () => {
@@ -233,7 +234,7 @@ describe("findNamespaceCompletions", () => {
     it("should find completions for simple prefixes", () => {
       const results = findNamespaceCompletions(mockNamespaces.simpleObject, "u");
       expect(results).toHaveLength(1);
-      expect(results[0].path).toEqual(["users"]);
+      expect(results[0]?.path).toEqual(["users"]);
     });
 
     it("should find multiple completions for common prefixes", () => {
@@ -251,13 +252,13 @@ describe("findNamespaceCompletions", () => {
     it("should find completions for dotted prefixes", () => {
       const results = findNamespaceCompletions(mockNamespaces.simpleObject, "products.e");
       expect(results).toHaveLength(1);
-      expect(results[0].path).toEqual(["products", "electronics"]);
+      expect(results[0]?.path).toEqual(["products", "electronics"]);
     });
 
     it("should handle completions in self-children namespaces", () => {
       const results = findNamespaceCompletions(mockNamespaces.selfChildren, "public.u");
       expect(results).toHaveLength(1);
-      expect(results[0].path).toEqual(["public", "users"]);
+      expect(results[0]?.path).toEqual(["public", "users"]);
     });
 
     it("should find completions in complex nested structures", () => {
@@ -303,8 +304,8 @@ describe("findNamespaceCompletions", () => {
     it("should find completion objects in arrays", () => {
       const results = findNamespaceCompletions(mockNamespaces.arrayNamespace, "created");
       expect(results).toHaveLength(1);
-      expect(results[0].type).toBe("completion");
-      expect(results[0].completion?.label).toBe("created_at");
+      expect(results[0]?.type).toBe("completion");
+      expect(results[0]?.completion?.label).toBe("created_at");
     });
   });
 
@@ -355,7 +356,7 @@ describe("findNamespaceItemByEndMatch", () => {
 
     // Check that results are sorted by path length
     for (let i = 1; i < results.length; i++) {
-      expect(results[i].path.length).toBeGreaterThanOrEqual(results[i - 1].path.length);
+      expect(required(results[i]).path.length).toBeGreaterThanOrEqual(required(results[i - 1]).path.length);
     }
   });
 
@@ -410,7 +411,7 @@ describe("resolveNamespaceItem", () => {
         accounts: {
           admin_users: ["admin_id", "permissions"],
         },
-      } as SQLNamespace;
+      } satisfies SQLNamespace;
 
       const result = resolveNamespaceItem(testNamespace, "users");
       expect(result).toBeTruthy();
@@ -576,10 +577,10 @@ describe("resolveNamespaceItem", () => {
 
 describe("edge cases and error handling", () => {
   it("should handle null/undefined namespaces gracefully", () => {
-    expect(() => traverseNamespacePath({} as SQLNamespace, "test")).not.toThrow();
-    expect(() => findNamespaceCompletions({} as SQLNamespace, "test")).not.toThrow();
-    expect(() => findNamespaceItemByEndMatch({} as SQLNamespace, "test")).not.toThrow();
-    expect(() => resolveNamespaceItem({} as SQLNamespace, "test")).not.toThrow();
+    expect(() => traverseNamespacePath({} satisfies SQLNamespace, "test")).not.toThrow();
+    expect(() => findNamespaceCompletions({} satisfies SQLNamespace, "test")).not.toThrow();
+    expect(() => findNamespaceItemByEndMatch({} satisfies SQLNamespace, "test")).not.toThrow();
+    expect(() => resolveNamespaceItem({} satisfies SQLNamespace, "test")).not.toThrow();
   });
 
   it("should handle malformed paths", () => {
@@ -631,9 +632,9 @@ describe("edge cases and error handling", () => {
 describe("performance and memory", () => {
   it("should handle large namespaces efficiently", () => {
     // Create a large namespace
-    const largeNamespace: SQLNamespace = {};
+    const largeNamespace: Record<string, string[]> = {};
     for (let i = 0; i < 1000; i++) {
-      (largeNamespace as Record<string, string[]>)[`table_${i}`] = [
+      largeNamespace[`table_${i}`] = [
         `col1_${i}`,
         `col2_${i}`,
         `col3_${i}`,

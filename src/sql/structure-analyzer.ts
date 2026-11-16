@@ -1,5 +1,6 @@
+import { scanSql, stripSqlComments } from "./scanner.js";
 import type { EditorState } from "@codemirror/state";
-import type { SqlParseError, SqlParser } from "./types.js";
+import type { SqlParseError, SqlParserLike } from "./types.js";
 
 /**
  * Represents a SQL statement with position information
@@ -28,11 +29,10 @@ export interface SqlStatement {
  * for use with gutter markers and other SQL-aware features.
  */
 export class SqlStructureAnalyzer {
-  private parser: SqlParser;
-  private cache = new Map<string, SqlStatement[]>();
-  private readonly MAX_CACHE_SIZE = 10;
+  private parser: SqlParserLike;
+  private cache = new WeakMap<EditorState, Promise<SqlStatement[]>>();
 
-  constructor(parser: SqlParser) {
+  constructor(parser: SqlParserLike) {
     this.parser = parser;
   }
 
@@ -40,25 +40,13 @@ export class SqlStructureAnalyzer {
    * Analyzes the document and extracts all SQL statements
    */
   async analyzeDocument(state: EditorState): Promise<SqlStatement[]> {
-    const content = state.doc.toString();
-
-    // Check cache
-    const cached = this.cache.get(content);
-    if (cached) {
-      return cached;
+    const cache = this.cache;
+    let statements = cache.get(state);
+    if (!statements) {
+      statements = this.extractStatements(state.doc.toString(), state);
+      cache.set(state, statements);
+      void statements.catch(() => cache.delete(state));
     }
-
-    const statements = await this.extractStatements(content, state);
-    this.cache.set(content, statements);
-
-    // Keep cache size reasonable
-    if (this.cache.size > this.MAX_CACHE_SIZE) {
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey !== undefined) {
-        this.cache.delete(firstKey);
-      }
-    }
-
     return statements;
   }
 
@@ -141,88 +129,15 @@ export class SqlStructureAnalyzer {
   }
 
   private splitByStatementSeparators(content: string): string[] {
-    // More sophisticated splitting that handles semicolons in strings and comments
     const parts: string[] = [];
-    let current = "";
-    let inString = false;
-    let stringChar = "";
-    let inSingleLineComment = false;
-    let inMultiLineComment = false;
-    let i = 0;
-
-    while (i < content.length) {
-      const char = content[i];
-      const nextChar = content[i + 1];
-
-      // Handle single-line comments (-- comment)
-      if (!inString && !inMultiLineComment && char === "-" && nextChar === "-") {
-        inSingleLineComment = true;
-        current += char + nextChar;
-        i += 2;
-        continue;
+    let from = 0;
+    for (const token of scanSql(content)) {
+      if (token.kind === "symbol" && token.text === ";") {
+        parts.push(content.slice(from, token.to));
+        from = token.to;
       }
-
-      // Handle multi-line comments (/* comment */)
-      if (!inString && !inSingleLineComment && char === "/" && nextChar === "*") {
-        inMultiLineComment = true;
-        current += char + nextChar;
-        i += 2;
-        continue;
-      }
-
-      // End multi-line comment
-      if (inMultiLineComment && char === "*" && nextChar === "/") {
-        inMultiLineComment = false;
-        current += char + nextChar;
-        i += 2;
-        continue;
-      }
-
-      // End single-line comment on newline
-      if (inSingleLineComment && (char === "\n" || char === "\r")) {
-        inSingleLineComment = false;
-        current += char;
-        i++;
-        continue;
-      }
-
-      // Include characters inside comments (for proper position tracking)
-      if (inSingleLineComment || inMultiLineComment) {
-        current += char;
-        i++;
-        continue;
-      }
-
-      // Handle string literals
-      if (!inString && (char === "'" || char === '"' || char === "`")) {
-        inString = true;
-        stringChar = char;
-        current += char;
-      } else if (inString && char === stringChar) {
-        // Check for escaped quotes
-        if (nextChar === stringChar) {
-          current += char + nextChar;
-          i += 2;
-          continue;
-        }
-        inString = false;
-        stringChar = "";
-        current += char;
-      } else if (!inString && char === ";") {
-        current += char;
-        parts.push(current);
-        current = "";
-      } else {
-        current += char;
-      }
-
-      i++;
     }
-
-    if (current.trim()) {
-      parts.push(current);
-    }
-
+    if (from < content.length) parts.push(content.slice(from));
     return parts;
   }
 
@@ -242,81 +157,13 @@ export class SqlStructureAnalyzer {
   }
 
   private stripComments(sql: string): string {
-    let result = "";
-    let inString = false;
-    let stringChar = "";
-    let inSingleLineComment = false;
-    let inMultiLineComment = false;
-    let i = 0;
-
-    while (i < sql.length) {
-      const char = sql[i];
-      const nextChar = sql[i + 1];
-
-      // Handle single-line comments (-- comment)
-      if (!inString && !inMultiLineComment && char === "-" && nextChar === "-") {
-        inSingleLineComment = true;
-        i += 2;
-        continue;
-      }
-
-      // Handle multi-line comments (/* comment */)
-      if (!inString && !inSingleLineComment && char === "/" && nextChar === "*") {
-        inMultiLineComment = true;
-        i += 2;
-        continue;
-      }
-
-      // End multi-line comment
-      if (inMultiLineComment && char === "*" && nextChar === "/") {
-        inMultiLineComment = false;
-        i += 2;
-        continue;
-      }
-
-      // End single-line comment on newline
-      if (inSingleLineComment && (char === "\n" || char === "\r")) {
-        inSingleLineComment = false;
-        result += char;
-        i++;
-        continue;
-      }
-
-      // Skip characters inside comments
-      if (inSingleLineComment || inMultiLineComment) {
-        i++;
-        continue;
-      }
-
-      // Handle string literals
-      if (!inString && (char === "'" || char === '"' || char === "`")) {
-        inString = true;
-        stringChar = char;
-        result += char;
-      } else if (inString && char === stringChar) {
-        // Check for escaped quotes
-        if (nextChar === stringChar) {
-          result += char + nextChar;
-          i += 2;
-          continue;
-        }
-        inString = false;
-        stringChar = "";
-        result += char;
-      } else {
-        result += char;
-      }
-
-      i++;
-    }
-
-    return result;
+    return stripSqlComments(sql);
   }
 
   /**
    * Clears the internal cache
    */
   clearCache(): void {
-    this.cache.clear();
+    this.cache = new WeakMap();
   }
 }

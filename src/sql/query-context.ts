@@ -1,7 +1,10 @@
+import { type AstNode, isRecord, nodes as asArray, nameValue, columnName, values, record } from "./ast.js";
+import { maskLiteralsAndComments } from "./scanner.js";
+export { maskLiteralsAndComments } from "./scanner.js";
 import type { EditorState } from "@codemirror/state";
 import { debug } from "../debug.js";
 import { NodeSqlParser } from "./parser.js";
-import type { SqlParser } from "./types.js";
+import type { SqlParserLike } from "./types.js";
 
 /**
  * A table-like source referenced by a statement (FROM/JOIN entries and
@@ -46,19 +49,6 @@ function emptyContext(): QueryContext {
   return { tables: [], ctes: [], aliases: new Map(), selectAliases: [] };
 }
 
-/** Loosely-typed node-sql-parser AST node */
-interface AstNode {
-  [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is AstNode {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asArray(value: unknown): AstNode[] {
-  return Array.isArray(value) ? (value as AstNode[]) : [];
-}
-
 /**
  * Strips one layer of identifier quoting: "x", 'x', `x`, [x]
  */
@@ -77,47 +67,21 @@ export function stripIdentifierQuotes(identifier: string): string {
   return identifier;
 }
 
-/** Extracts a name that may be a plain string or a `{value}` wrapper node */
-function nameValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (isRecord(value) && typeof value.value === "string") {
-    return value.value;
-  }
-  return null;
-}
-
-/** Extracts the column name from a column_ref-like node */
 function columnRefName(expr: unknown): string | null {
-  if (!isRecord(expr) || expr.type !== "column_ref") {
-    return null;
-  }
-  const column = expr.column;
-  if (typeof column === "string") {
-    return column;
-  }
-  if (isRecord(column)) {
-    const inner = column.expr;
-    const value = isRecord(inner) ? inner.value : column.value;
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-  return null;
+  return isRecord(expr) && expr.type === "column_ref" ? columnName(expr) : null;
 }
 
 /** Output columns of a CTE: the declared list, else its SELECT list */
 function cteColumns(cte: AstNode): string[] {
-  const declared = asArray(cte.columns)
-    .map((col) => nameValue(col) ?? columnRefName(col) ?? nameValue((col as AstNode).column))
+  const declared = values(cte.columns)
+    .map((col) => nameValue(col) ?? columnRefName(col) ?? nameValue(record(col)?.column))
     .filter((name): name is string => typeof name === "string");
   if (declared.length > 0) {
     return declared;
   }
 
   const stmt = cte.stmt;
-  const body = isRecord(stmt) ? ((stmt.ast ?? stmt) as AstNode) : null;
+  const body = isRecord(stmt) ? (stmt.ast ?? stmt) : null;
   if (!isRecord(body) || body.type !== "select") {
     return [];
   }
@@ -298,80 +262,6 @@ const TABLE_REF_PATTERN = new RegExp(
 );
 
 /**
- * Blanks out single-quoted string literals and comments (preserving offsets)
- * so the regex fallback doesn't read `FROM`/`JOIN` inside them as table
- * references. Double-quoted/backtick/bracket identifiers are left intact.
- */
-export function maskLiteralsAndComments(sql: string): string {
-  const chars = sql.split("");
-  let i = 0;
-  while (i < sql.length) {
-    const char = sql[i];
-    const next = sql[i + 1];
-
-    if (char === "-" && next === "-") {
-      while (i < sql.length && sql[i] !== "\n") {
-        chars[i] = " ";
-        i++;
-      }
-      continue;
-    }
-
-    if (char === "/" && next === "*") {
-      chars[i] = " ";
-      chars[i + 1] = " ";
-      i += 2;
-      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
-        chars[i] = " ";
-        i++;
-      }
-      if (i < sql.length) {
-        chars[i] = " ";
-        chars[i + 1] = " ";
-        i += 2;
-      }
-      continue;
-    }
-
-    // Quoted identifiers pass through untouched (a ' inside them must not
-    // start a string literal)
-    if (char === '"' || char === "`" || char === "[") {
-      const close = char === "[" ? "]" : char;
-      i++;
-      while (i < sql.length && sql[i] !== close) {
-        i++;
-      }
-      i++;
-      continue;
-    }
-
-    if (char === "'") {
-      chars[i] = " ";
-      i++;
-      while (i < sql.length) {
-        if (sql[i] === "'") {
-          chars[i] = " ";
-          if (sql[i + 1] === "'") {
-            // Escaped quote ('') stays inside the literal
-            chars[i + 1] = " ";
-            i += 2;
-            continue;
-          }
-          i++;
-          break;
-        }
-        chars[i] = " ";
-        i++;
-      }
-      continue;
-    }
-
-    i++;
-  }
-  return chars.join("");
-}
-
-/**
  * Regex-based fallback used when the statement doesn't parse (e.g. mid-edit),
  * so aliases still resolve. Matches `FROM|JOIN <table> [AS] <alias>` forms.
  */
@@ -545,7 +435,7 @@ function finalizeContext(ctx: MutableContext): QueryContext {
  */
 export async function analyzeQueryContext(
   sql: string,
-  parser: SqlParser,
+  parser: SqlParserLike,
   opts: { state: EditorState },
 ): Promise<QueryContext> {
   if (!sql.trim()) {
@@ -597,39 +487,33 @@ export async function analyzeQueryContext(
 }
 
 /**
- * Caching wrapper around {@link analyzeQueryContext}, keyed on statement text.
+ * Caching wrapper around {@link analyzeQueryContext}, keyed on state and SQL.
  * Share one instance between hover/completion sources to avoid re-parsing the
  * same statement.
  */
 export class QueryContextAnalyzer {
-  private parser: SqlParser;
-  private cache = new Map<string, QueryContext>();
-  private readonly MAX_CACHE_SIZE = 20;
+  private parser: SqlParserLike;
+  private cache = new WeakMap<EditorState, Map<string, Promise<QueryContext>>>();
 
-  constructor(parser: SqlParser = new NodeSqlParser()) {
+  constructor(parser: SqlParserLike = new NodeSqlParser()) {
     this.parser = parser;
   }
 
   async getContext(sql: string, opts: { state: EditorState }): Promise<QueryContext> {
-    const cached = this.cache.get(sql);
-    if (cached) {
-      return cached;
+    let stateCache = this.cache.get(opts.state);
+    if (!stateCache) {
+      stateCache = new Map();
+      this.cache.set(opts.state, stateCache);
     }
-
-    const context = await analyzeQueryContext(sql, this.parser, opts);
-    this.cache.set(sql, context);
-
-    if (this.cache.size > this.MAX_CACHE_SIZE) {
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey !== undefined) {
-        this.cache.delete(firstKey);
-      }
+    let context = stateCache.get(sql);
+    if (!context) {
+      context = analyzeQueryContext(sql, this.parser, opts);
+      stateCache.set(sql, context);
     }
-
     return context;
   }
 
   clearCache(): void {
-    this.cache.clear();
+    this.cache = new WeakMap();
   }
 }

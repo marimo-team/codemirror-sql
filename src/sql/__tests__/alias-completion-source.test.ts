@@ -54,7 +54,7 @@ describe("aliasColumnCompletionSource", () => {
     expect(labels(result)).toEqual(["id", "username"]);
   });
 
-  it.each([
+  it.each<{ table: string; schema: SQLNamespace }>([
     {
       table: '"my.db".users',
       schema: { "my.db": { users: ["quoted_column"] }, my: { db: { users: ["other_column"] } } },

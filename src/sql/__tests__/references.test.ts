@@ -1,3 +1,4 @@
+import { required } from "./test-utils.js";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { findReferences, type SqlReferenceResult } from "../references.js";
@@ -37,7 +38,7 @@ describe("findReferences", () => {
       expect(result?.kind).toBe("cte");
       expect(result?.name).toBe("recent");
       expect(result?.definition).toEqual({ from: 5, to: 5 + "recent".length });
-      expect(texts(sql, result!)).toEqual(["recent", "recent", "recent"]);
+      expect(texts(sql, required(result))).toEqual(["recent", "recent", "recent"]);
       expect(result?.references).toHaveLength(3);
     });
 
@@ -81,7 +82,7 @@ describe("findReferences", () => {
       const doc = 'WITH "recent" AS (SELECT 1) SELECT * FROM recent';
       const result = await resolveAt(doc, "recent", 1);
       expect(result?.kind).toBe("cte");
-      expect(doc.slice(result!.definition.from, result!.definition.to)).toBe('"recent"');
+      expect(doc.slice(required(result).definition.from, required(result).definition.to)).toBe('"recent"');
       expect(result?.references).toHaveLength(2);
     });
 
@@ -137,7 +138,7 @@ describe("findReferences", () => {
       const result = await resolveAt(sql, "u.id");
       expect(result?.kind).toBe("table-alias");
       expect(result?.name).toBe("u");
-      expect(sql.slice(result!.definition.from, result!.definition.to)).toBe("u");
+      expect(sql.slice(required(result).definition.from, required(result).definition.to)).toBe("u");
       expect(result?.definition.from).toBe(sql.indexOf("users u") + "users ".length);
       // definition + u.name + u.id
       expect(result?.references).toHaveLength(3);
@@ -247,7 +248,7 @@ describe("findReferences", () => {
       const result = await findReferences(state, secondUse);
       expect(result).toBeTruthy();
       const boundary = sql.indexOf(";");
-      for (const range of result!.references) {
+      for (const range of required(result).references) {
         expect(range.from).toBeGreaterThan(boundary);
       }
     });
@@ -294,4 +295,23 @@ describe("findReferences", () => {
       expect(result?.references).toHaveLength(2);
     });
   });
+});
+
+it.each([
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM users u)",
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM (SELECT 1 AS id) u)",
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM generate_series(1, 3) AS u)",
+  "SELECT * FROM (SELECT u.id FROM users u) a JOIN (SELECT u.id FROM users u) b ON true",
+  "WITH t AS (SELECT 1) SELECT * FROM (WITH t AS (SELECT 2) SELECT * FROM t) x JOIN t ON true",
+  "SELECT id AS label, name AS label FROM users ORDER BY label",
+  "SELECT id AS label, name label FROM users ORDER BY label",
+])("refuses references with multiple declarations: %s", async (doc) => {
+  const state = EditorState.create({ doc });
+  const pos = doc.includes("u.id") ? doc.indexOf("u.id") : doc.includes("WITH") ? doc.indexOf("t AS") : doc.indexOf("label");
+  expect(await findReferences(state, pos)).toBeNull();
+});
+
+it("refuses a CTE whose name is also used as its table alias", async () => {
+  const doc = "WITH t AS (SELECT 1 AS id) SELECT t.id FROM t t";
+  expect(await findReferences(EditorState.create({ doc }), doc.indexOf("t AS"))).toBeNull();
 });

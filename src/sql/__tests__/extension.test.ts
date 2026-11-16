@@ -1,5 +1,8 @@
+import { forceLinting, forEachDiagnostic } from "@codemirror/lint";
+import type { SqlParserLike } from "../types.js";
+import { createTestView } from "./test-utils.js";
 import { EditorState } from "@codemirror/state";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { sqlExtension } from "../extension.js";
 import { sqlSchemaFacet } from "../schema-facet.js";
 
@@ -104,4 +107,32 @@ describe("sqlExtension", () => {
 
     expect(extensions.length).toBeGreaterThan(2);
   });
+});
+
+it("keeps a semantic parser override independent from the syntax parser", async () => {
+  const syntaxParser: SqlParserLike = { parse: async () => ({
+    success: false,
+    errors: [{ message: "unsupported syntax", line: 1, column: 1, severity: "error" }],
+  }) };
+  const semanticParser: SqlParserLike = { parse: async () => ({
+    success: true, errors: [], ast: { type: "select", from: [{ table: "missing" }] },
+  }) };
+  const view = createTestView({
+    doc: "SELECT * FROM missing",
+    extensions: [sqlExtension({
+      parser: syntaxParser,
+      linterConfig: { delay: 0 },
+      semanticLinterConfig: { parser: semanticParser, schema: { users: ["id"] }, delay: 0 },
+      enableGutterMarkers: false,
+      enableHover: false,
+      enableNavigation: false,
+    })],
+  });
+  forceLinting(view);
+  const messages = () => {
+    const result: string[] = [];
+    forEachDiagnostic(view.state, (diagnostic) => result.push(diagnostic.message));
+    return result;
+  };
+  await vi.waitFor(() => expect(messages()).toEqual(["unsupported syntax", "Unknown table 'missing'"]));
 });

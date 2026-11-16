@@ -1,3 +1,4 @@
+import { createTestView } from "./test-utils.js";
 import { type Diagnostic, forceLinting, forEachDiagnostic } from "@codemirror/lint";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -19,9 +20,7 @@ const SCHEMA = {
 };
 
 const createMockView = (content: string, extensions: Extension[] = []) => {
-  return {
-    state: EditorState.create({ doc: content, extensions }),
-  } as EditorView;
+  return createTestView({ doc: content, extensions });
 };
 
 const lint = (content: string, config: SqlSemanticLinterConfig = {}, extensions: Extension[] = []) => {
@@ -56,10 +55,10 @@ describe("sqlSemanticLinter", () => {
         return found;
       });
 
-      expect(diagnostics[0].message).toContain("usres");
-      expect(diagnostics[0].source).toBe("sql-schema");
+      expect(diagnostics[0]?.message).toContain("usres");
+      expect(diagnostics[0]?.source).toBe("sql-schema");
       // Option forwarding: severity override applied
-      expect(diagnostics[0].severity).toBe("error");
+      expect(diagnostics[0]?.severity).toBe("error");
     } finally {
       view.destroy();
     }
@@ -86,7 +85,7 @@ describe("quoted column qualifiers", () => {
       expect(diagnostics).toEqual([]);
     } else {
       expect(diagnostics).toHaveLength(1);
-      expect(diagnostics[0].message).toContain(`Column '${unknownColumn}' not found`);
+      expect(diagnostics[0]?.message).toContain(`Column '${unknownColumn}' not found`);
     }
   });
 });
@@ -97,11 +96,11 @@ describe("unknown tables", () => {
     const diagnostics = await lint(doc, { schema: SCHEMA });
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
-    expect(diagnostics[0].severity).toBe("warning");
-    expect(diagnostics[0].source).toBe("sql-schema");
+    expect(diagnostics[0]?.message).toContain("usres");
+    expect(diagnostics[0]?.severity).toBe("warning");
+    expect(diagnostics[0]?.source).toBe("sql-schema");
     // Positioned on the identifier itself
-    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("usres");
+    expect(doc.slice(diagnostics[0]?.from, diagnostics[0]?.to)).toBe("usres");
   });
 
   it("does not flag known tables", async () => {
@@ -118,7 +117,7 @@ describe("unknown tables", () => {
 
     const diagnostics = await lint("SELECT * FROM mydb.usres", { schema: nested });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("mydb.usres");
+    expect(diagnostics[0]?.message).toContain("mydb.usres");
   });
 
   it("does not flag unqualified references to tables nested deeper in the schema", async () => {
@@ -141,7 +140,7 @@ describe("unknown tables", () => {
     expect(await lint('SELECT u.id FROM "my.table" u', { schema })).toEqual([]);
     const diagnostics = await lint('SELECT u.other_column FROM "my.table" u', { schema });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("Column 'other_column' not found");
+    expect(diagnostics[0]?.message).toContain("Column 'other_column' not found");
   });
 
   it("does not flag CTE names", async () => {
@@ -153,7 +152,7 @@ describe("unknown tables", () => {
     const doc = "WITH t AS (SELECT id FROM usres) SELECT * FROM t";
     const diagnostics = await lint(doc, { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 
   it("does not flag CREATE TABLE targets but flags their source tables", async () => {
@@ -163,7 +162,7 @@ describe("unknown tables", () => {
       schema: SCHEMA,
     });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 
   it("flags unknown DML targets", async () => {
@@ -180,19 +179,19 @@ describe("unknown tables", () => {
       schema: SCHEMA,
     });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("psts");
+    expect(diagnostics[0]?.message).toContain("psts");
   });
 
   it("flags the source table of an INSERT ... SELECT", async () => {
     const diagnostics = await lint("INSERT INTO users SELECT * FROM usres", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 
   it("flags unknown REPLACE targets", async () => {
     const diagnostics = await lint("REPLACE INTO usres (id) VALUES (1)", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 
   it("flags over-qualified table references not present at that depth", async () => {
@@ -200,13 +199,13 @@ describe("unknown tables", () => {
     // deeper match that the schema does not provide
     const diagnostics = await lint("SELECT * FROM wrongschema.users", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("wrongschema.users");
+    expect(diagnostics[0]?.message).toContain("wrongschema.users");
   });
 
   it("checks nested selects reached through non-standard statements (EXPLAIN)", async () => {
     const diagnostics = await lint("EXPLAIN SELECT * FROM usres", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 });
 
@@ -216,9 +215,9 @@ describe("unknown columns", () => {
     const diagnostics = await lint(doc, { schema: SCHEMA });
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
-    expect(diagnostics[0].message).toContain("users");
-    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("nme");
+    expect(diagnostics[0]?.message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("users");
+    expect(doc.slice(diagnostics[0]?.from, diagnostics[0]?.to)).toBe("nme");
   });
 
   it("does not flag known columns, *, or case variants", async () => {
@@ -230,7 +229,7 @@ describe("unknown columns", () => {
 
     const diagnostics = await lint("SELECT u.nme FROM users u", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("nme");
   });
 
   it("checks table-qualified references across joins", async () => {
@@ -268,13 +267,13 @@ describe("unknown columns", () => {
       schema: SCHEMA,
     });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("nme");
   });
 
   it("checks columns inside an unaliased FROM subquery", async () => {
     const diagnostics = await lint("SELECT * FROM (SELECT nme FROM users)", { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("nme");
   });
 
   it("checks fully qualified (db.table.column) column references", async () => {
@@ -283,8 +282,8 @@ describe("unknown columns", () => {
 
     const diagnostics = await lint("SELECT mydb.users.nme FROM mydb.users", { schema: nested });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
-    expect(diagnostics[0].message).toContain("mydb.users");
+    expect(diagnostics[0]?.message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("mydb.users");
   });
 
   it("does not flag unqualified columns when a table is ambiguous across schemas", async () => {
@@ -306,7 +305,7 @@ describe("unknown columns", () => {
       schema: SCHEMA,
     });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("nme");
+    expect(diagnostics[0]?.message).toContain("nme");
   });
 
   it("checks columns referenced inside function calls", async () => {
@@ -326,7 +325,7 @@ describe("unknown columns", () => {
     const doc = "SELECT -- comment\n  nme\nFROM users";
     const diagnostics = await lint(doc, { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("nme");
+    expect(doc.slice(diagnostics[0]?.from, diagnostics[0]?.to)).toBe("nme");
   });
 
   it("supports Completion objects as columns", async () => {
@@ -344,10 +343,10 @@ describe("ambiguous columns", () => {
     const diagnostics = await lint(doc, { schema: SCHEMA });
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("ambiguous");
-    expect(diagnostics[0].message).toContain("users");
-    expect(diagnostics[0].message).toContain("posts");
-    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("id");
+    expect(diagnostics[0]?.message).toContain("ambiguous");
+    expect(diagnostics[0]?.message).toContain("users");
+    expect(diagnostics[0]?.message).toContain("posts");
+    expect(doc.slice(diagnostics[0]?.from, diagnostics[0]?.to)).toBe("id");
   });
 
   it("does not flag qualified references or single-table columns", async () => {
@@ -372,7 +371,7 @@ describe("inertness and gating", () => {
       validateSql: vi.fn(),
       extractTableReferences: vi.fn(),
       extractColumnReferences: vi.fn(),
-    } as unknown as SqlParser;
+    } satisfies SqlParser;
 
     expect(await lint("SELECT * FROM usres", { parser })).toEqual([]);
     expect(parser.parse).not.toHaveBeenCalled();
@@ -394,15 +393,15 @@ describe("inertness and gating", () => {
     const doc = "SELCT * FROM tbl_broken;\nSELECT * FROM tbl_missing;";
     const diagnostics = await lint(doc, { schema: SCHEMA });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].source).toBe("sql-schema");
-    expect(diagnostics[0].message).toContain("tbl_missing");
-    expect(doc.slice(diagnostics[0].from, diagnostics[0].to)).toBe("tbl_missing");
+    expect(diagnostics[0]?.source).toBe("sql-schema");
+    expect(diagnostics[0]?.message).toContain("tbl_missing");
+    expect(doc.slice(diagnostics[0]?.from, diagnostics[0]?.to)).toBe("tbl_missing");
   });
 
   it("reads the schema from sqlSchemaFacet when not configured directly", async () => {
     const diagnostics = await lint("SELECT * FROM usres", {}, [sqlSchemaFacet.of(SCHEMA)]);
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 
   it("prefers the explicit schema over the facet", async () => {
@@ -427,7 +426,7 @@ describe("severity configuration", () => {
       severity: { unknownTable: "error" },
     });
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].severity).toBe("error");
+    expect(diagnostics[0]?.severity).toBe("error");
   });
 
   it("supports turning checks off", async () => {
@@ -464,8 +463,8 @@ describe("severity configuration", () => {
     // Only the unknown table is reported: `nme` cannot be checked because its
     // single source table does not resolve
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].severity).toBe("error");
-    expect(diagnostics[0].message).toContain("usres");
+    expect(diagnostics[0]?.severity).toBe("error");
+    expect(diagnostics[0]?.message).toContain("usres");
   });
 });
 

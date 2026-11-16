@@ -1,3 +1,4 @@
+import { createSqlAnalysis, type SqlAnalysisConfig } from "./analysis.js";
 import type { Extension } from "@codemirror/state";
 import { type SqlLinterConfig, sqlLinter } from "./diagnostics.js";
 import { defaultSqlHoverTheme, type SqlHoverConfig, sqlHover } from "./hover.js";
@@ -9,7 +10,9 @@ import { type SqlGutterConfig, sqlStructureGutter } from "./structure-extension.
 /**
  * Configuration options for the SQL extension
  */
-export interface SqlExtensionConfig {
+export interface SqlExtensionConfig extends SqlAnalysisConfig {
+  /** Refresh linting and gutter analysis when parser configuration changes. */
+  needsRefresh?: (update: import("@codemirror/view").ViewUpdate) => boolean;
   /**
    * Database schema shared by all schema-aware features (hover tooltips and
    * semantic linting), registered via `sqlSchemaFacet`. Per-feature `schema`
@@ -100,54 +103,50 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
     extensions.push(sqlSchemaFacet.of(schema));
   }
 
+  const baseParser = config.parser ?? linterConfig?.parser;
+  const analysis = createSqlAnalysis({
+    parser: baseParser,
+    structureAnalyzer: config.structureAnalyzer ?? linterConfig?.structureAnalyzer,
+    contextAnalyzer: config.contextAnalyzer,
+  });
+  const forFeature = (feature: SqlAnalysisConfig = {}) => {
+    if (feature.parser && feature.parser !== baseParser && feature.parser !== analysis.parser) {
+      return createSqlAnalysis(feature);
+    }
+    return createSqlAnalysis({
+      parser: analysis.parser,
+      structureAnalyzer: feature.structureAnalyzer ?? analysis.structureAnalyzer,
+      contextAnalyzer: feature.contextAnalyzer ?? analysis.contextAnalyzer,
+    });
+  };
+
   if (enableLinting) {
-    extensions.push(sqlLinter(linterConfig));
+    extensions.push(sqlLinter({
+      ...linterConfig,
+      ...forFeature(linterConfig),
+      needsRefresh: linterConfig?.needsRefresh ?? config.needsRefresh,
+    }));
   }
-
   if (enableSemanticLinting) {
-    // Reuse the syntax linter's parser/analyzer so dialect-specific setups
-    // don't have to configure them twice (and semantic checks don't disagree
-    // with the syntax linter about what parses). The linter's analyzer is
-    // only inherited when its parser is too — an analyzer is bound to the
-    // parser it was built with, and mixing it with a different semantic
-    // parser would gate statements with the wrong dialect.
-    const semanticParser = semanticLinterConfig?.parser ?? linterConfig?.parser;
-    const semanticAnalyzer =
-      semanticLinterConfig?.structureAnalyzer ??
-      (semanticLinterConfig?.parser == null ? linterConfig?.structureAnalyzer : undefined);
-    extensions.push(
-      sqlSemanticLinter({
-        ...semanticLinterConfig,
-        parser: semanticParser,
-        structureAnalyzer: semanticAnalyzer,
-      }),
-    );
+    extensions.push(sqlSemanticLinter({
+      ...semanticLinterConfig,
+      ...forFeature(semanticLinterConfig),
+      needsRefresh: semanticLinterConfig?.needsRefresh ?? config.needsRefresh,
+    }));
   }
-
   if (enableGutterMarkers) {
-    extensions.push(sqlStructureGutter(gutterConfig));
+    extensions.push(sqlStructureGutter({
+      ...gutterConfig,
+      ...forFeature(gutterConfig),
+      needsRefresh: gutterConfig?.needsRefresh ?? config.needsRefresh,
+    }));
   }
-
   if (enableHover) {
-    extensions.push(sqlHover(hoverConfig));
+    extensions.push(sqlHover({ ...hoverConfig, ...forFeature(hoverConfig) }));
     extensions.push(hoverConfig?.theme ?? defaultSqlHoverTheme());
   }
-
   if (enableNavigation) {
-    // Inherit the syntax linter's parser/analyzer (same rules as the semantic
-    // linter above) so dialect-specific setups resolve references with the
-    // dialect they lint with
-    const navigationParser = navigationConfig?.parser ?? linterConfig?.parser;
-    const navigationAnalyzer =
-      navigationConfig?.structureAnalyzer ??
-      (navigationConfig?.parser == null ? linterConfig?.structureAnalyzer : undefined);
-    extensions.push(
-      ...sqlNavigation({
-        ...navigationConfig,
-        parser: navigationParser,
-        structureAnalyzer: navigationAnalyzer,
-      }),
-    );
+    extensions.push(...sqlNavigation({ ...navigationConfig, ...forFeature(navigationConfig) }));
   }
 
   return extensions;

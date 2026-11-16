@@ -1,6 +1,6 @@
-import { EditorState, type TransactionSpec } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
-import { describe, expect, it } from "vitest";
+import { createTestView } from "./test-utils.js";
+import { EditorState } from "@codemirror/state";
+import { describe, expect, it, vi } from "vitest";
 import {
   gotoSqlDefinition,
   renameSqlIdentifier,
@@ -15,15 +15,9 @@ import {
  * which only read `state` and call `dispatch`.
  */
 function createFakeView(doc: string, cursor: number) {
-  const dispatched: TransactionSpec[] = [];
-  const view = {
-    state: EditorState.create({ doc, selection: { anchor: cursor } }),
-    dispatch(spec: TransactionSpec) {
-      dispatched.push(spec);
-      this.state = this.state.update(spec).state;
-    },
-  };
-  return { view: view as unknown as EditorView, dispatched, doc: () => view.state.doc.toString() };
+  const view = createTestView({ doc, selection: { anchor: cursor } });
+  const dispatched = vi.spyOn(view, "dispatch").mock.calls;
+  return { view, dispatched, doc: () => view.state.doc.toString() };
 }
 
 describe("extension composition", () => {
@@ -161,4 +155,14 @@ describe("renameSqlIdentifier", () => {
     // Only the edit made inside the prompt was dispatched, no rename
     expect(dispatched).toHaveLength(1);
   });
+});
+
+
+it("leaves shadowed aliases unchanged when rename is requested", async () => {
+  const sql = "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM users u)";
+  const { view } = createFakeView(sql, sql.indexOf("u.id"));
+  const prompt = vi.fn(() => "renamed");
+  expect(await renameSqlIdentifier(view, { prompt })).toBe(false);
+  expect(prompt).not.toHaveBeenCalled();
+  expect(view.state.doc.toString()).toBe(sql);
 });

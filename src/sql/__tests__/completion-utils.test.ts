@@ -1,10 +1,9 @@
-import type { Completion, CompletionContext } from "@codemirror/autocomplete";
+import { CompletionContext, type Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import type { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { columnsOf, findTableColumns, resolveSchema, toCompletion } from "../completion-utils.js";
 import { sqlSchemaFacet } from "../schema-facet.js";
-import { createCompletionContext, createState } from "./test-utils.js";
+import { createCompletionContext, createTestView } from "./test-utils.js";
 
 describe("resolveSchema", () => {
   it("returns an explicitly provided namespace as-is", () => {
@@ -28,7 +27,7 @@ describe("resolveSchema", () => {
 
   it("returns null for a function source when the context has no view", () => {
     // Contexts created without an editor (as in unit tests) get no schema
-    const source = vi.fn(() => ({ users: ["id"] }) as SQLNamespace);
+    const source = vi.fn(() => ({ users: ["id"] }) satisfies SQLNamespace);
     const context = createCompletionContext("SELECT ");
     expect(resolveSchema(source, context)).toBeNull();
     expect(source).not.toHaveBeenCalled();
@@ -36,10 +35,10 @@ describe("resolveSchema", () => {
 
   it("invokes a function source with the view when one is present", () => {
     const schema: SQLNamespace = { users: ["id"] };
-    const view = {} as EditorView;
+    const view = createTestView({ doc: "SELECT " });
     const source = vi.fn(() => schema);
     // Minimal context carrying a view — resolveSchema only reads `state`/`view`
-    const context = { state: createState("SELECT "), view } as unknown as CompletionContext;
+    const context = new CompletionContext(view.state, view.state.doc.length, false, view);
 
     expect(resolveSchema(source, context)).toBe(schema);
     expect(source).toHaveBeenCalledWith(view);
@@ -58,19 +57,19 @@ describe("columnsOf", () => {
 
   it("unwraps the children of a self/children namespace", () => {
     const children = ["id", "name"];
-    const namespace = { self: { label: "users" }, children } as unknown as SQLNamespace;
+    const namespace = { self: { label: "users" }, children } satisfies SQLNamespace;
     expect(columnsOf(namespace)).toBe(children);
   });
 
   it("returns null for an object (non-column) namespace", () => {
-    expect(columnsOf({ users: ["id"] } as SQLNamespace)).toBeNull();
+    expect(columnsOf({ users: ["id"] } satisfies SQLNamespace)).toBeNull();
   });
 
   it("returns null when a self/children node wraps a non-array child", () => {
     const namespace = {
       self: { label: "db" },
       children: { users: ["id"] },
-    } as unknown as SQLNamespace;
+    } satisfies SQLNamespace;
     expect(columnsOf(namespace)).toBeNull();
   });
 });

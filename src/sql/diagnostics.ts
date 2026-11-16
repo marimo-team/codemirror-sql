@@ -1,9 +1,9 @@
+import { createSqlAnalysis } from "./analysis.js";
 import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Extension, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { NodeSqlParser } from "./parser.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParseError, SqlParser } from "./types.js";
+import type { SqlParseError, SqlParserLike } from "./types.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -11,10 +11,12 @@ const DEFAULT_DELAY = 750;
  * Configuration options for the SQL linter
  */
 export interface SqlLinterConfig {
+  /** Re-run analysis when parser configuration changes without a document edit. */
+  needsRefresh?: (update: import("@codemirror/view").ViewUpdate) => boolean;
   /** Delay in milliseconds before running validation (default: 750) */
   delay?: number;
   /** Custom SQL parser instance to use for validation */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Lint each statement in the document separately so every broken statement
    * gets its own diagnostic, instead of stopping at the first parse error (default: true)
@@ -101,20 +103,20 @@ function convertStatementErrorToDiagnostic(
  *
  * const linter = sqlLinter({
  *   delay: 500, // 500ms delay before validation
- *   parser: new SqlParser() // custom parser instance
+ *   parser: customParser // custom parser instance
  * });
  * ```
  */
 export function sqlLinter(config: SqlLinterConfig = {}): Extension {
   return linter(createLintSource(config), {
-    delay: config.delay || DEFAULT_DELAY,
+    delay: config.delay ?? DEFAULT_DELAY,
+    needsRefresh: config.needsRefresh,
   });
 }
 
 function createLintSource(config: SqlLinterConfig = {}) {
-  const parser = config.parser || new NodeSqlParser();
   const perStatement = config.perStatement !== false;
-  const analyzer = config.structureAnalyzer || new SqlStructureAnalyzer(parser);
+  const { parser, structureAnalyzer: analyzer } = createSqlAnalysis(config);
 
   return async (view: EditorView): Promise<Diagnostic[]> => {
     const doc = view.state.doc;

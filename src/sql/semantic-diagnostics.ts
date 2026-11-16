@@ -1,18 +1,17 @@
+import { resolveTable } from "./schema-utils.js";
+import { createSqlAnalysis } from "./analysis.js";
+import { type AstNode, isRecord, isSelectNode, nodes as asArray, record, nameValue, columnName } from "./ast.js";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Extension, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import {
-  findNamespaceItemByEndMatch,
   isArrayNamespace,
   isObjectNamespace,
-  isSelfChildrenNamespace,
-  traverseNamespacePath,
 } from "./namespace-utils.js";
-import { NodeSqlParser } from "./parser.js";
 import { resolveSqlSchema, type SqlSchemaSource } from "./schema-facet.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParser } from "./types.js";
+import type { SqlParserLike } from "./types.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -23,6 +22,8 @@ export type SemanticSeverity = "error" | "warning" | "off";
  * Configuration options for the semantic (schema-aware) SQL linter
  */
 export interface SqlSemanticLinterConfig {
+  /** Re-run analysis when parser configuration changes without a document edit. */
+  needsRefresh?: (update: import("@codemirror/view").ViewUpdate) => boolean;
   /**
    * Database schema to validate queries against. Falls back to the shared
    * `sqlSchemaFacet` when not provided. Without a schema (or with an empty
@@ -33,7 +34,7 @@ export interface SqlSemanticLinterConfig {
    */
   schema?: SqlSchemaSource;
   /** Custom SQL parser instance to use for analysis */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Structure analyzer used to split the document into statements.
    * Pass a shared instance (e.g. the one used by the gutter) to reuse its cache.
@@ -61,22 +62,12 @@ interface SemanticFinding {
   message: string;
 }
 
-/** Loosely-typed node-sql-parser AST node */
-interface AstNode {
-  [key: string]: unknown;
-}
-
 /** A table-like source in a query scope (FROM entry, DML target, CTE, subquery) */
 interface TableSource {
-  /** Identifier segments, preserving dots inside quoted names (empty for subqueries) */
+  kind: "table" | "cte" | "expression";
   path: readonly string[];
-  /** Unqualified table name */
   name: string;
   alias: string | null;
-  /** References a CTE defined in the statement */
-  isCte: boolean;
-  /** Subquery/table-function source whose columns we cannot know */
-  opaque: boolean;
 }
 
 /**
@@ -98,19 +89,6 @@ interface QueryScope {
   hasUsingJoin: boolean;
 }
 
-function isSelectNode(node: unknown): node is AstNode & { type: "select" } {
-  return (
-    typeof node === "object" &&
-    node !== null &&
-    !Array.isArray(node) &&
-    (node as AstNode).type === "select"
-  );
-}
-
-function asArray(value: unknown): AstNode[] {
-  return Array.isArray(value) ? (value as AstNode[]) : [];
-}
-
 function newScope(checkUnqualified: boolean): QueryScope {
   return {
     sources: [],
@@ -129,14 +107,13 @@ function newScope(checkUnqualified: boolean): QueryScope {
 function registerCtes(node: AstNode, ctes: Set<string>, scopes: QueryScope[]): void {
   const withList = asArray(node.with);
   for (const cte of withList) {
-    const name = cte.name as AstNode | string | undefined;
-    const value = typeof name === "string" ? name : name?.value;
+    const value = nameValue(cte.name);
     if (typeof value === "string") {
       ctes.add(value.toLowerCase());
     }
   }
   for (const cte of withList) {
-    const stmt = cte.stmt as AstNode | undefined;
+    const stmt = record(cte.stmt);
     const body = stmt?.ast ?? stmt;
     if (isSelectNode(body)) {
       collectSelect(body, ctes, scopes, false);
@@ -165,7 +142,7 @@ function addTableEntry(
     walkExpr(entry.on, scope, ctes, scopes);
   }
 
-  const expr = entry.expr as AstNode | undefined;
+  const expr = record(entry.expr);
   if (expr != null) {
     const sub = expr.ast ?? expr;
     if (isSelectNode(sub)) {
@@ -175,8 +152,7 @@ function addTableEntry(
       path: [],
       name: "",
       alias: typeof entry.as === "string" ? entry.as : null,
-      isCte: false,
-      opaque: true,
+      kind: "expression",
     });
     return;
   }
@@ -190,8 +166,7 @@ function addTableEntry(
       path: parts,
       name: entry.table,
       alias: typeof entry.as === "string" ? entry.as : null,
-      isCte: parts.length === 1 && ctes.has(entry.table.toLowerCase()),
-      opaque: false,
+      kind: parts.length === 1 && ctes.has(entry.table.toLowerCase()) ? "cte" : "table",
     });
   }
 }
@@ -210,7 +185,8 @@ function walkExpr(value: unknown, scope: QueryScope, ctes: Set<string>, scopes: 
     }
     return;
   }
-  const node = value as AstNode;
+  if (!isRecord(value)) return;
+  const node = value;
   if (node.type === "column_ref") {
     scope.columnRefs.push(node);
     return;
@@ -389,21 +365,6 @@ function collectStatement(node: AstNode, scopes: QueryScope[]): void {
  * Extracts the column name from a column_ref node. Depending on the dialect
  * grammar the column is either a plain string or `{expr: {value}}`.
  */
-function getColumnName(ref: AstNode): string | null {
-  const column = ref.column;
-  if (typeof column === "string") {
-    return column;
-  }
-  if (typeof column === "object" && column !== null) {
-    const expr = (column as AstNode).expr as AstNode | undefined;
-    const value = expr?.value ?? (column as AstNode).value;
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-  return null;
-}
-
 function getColumnQualifier(ref: AstNode): readonly string[] | null {
   if (typeof ref.table !== "string" || ref.table.length === 0) {
     return null;
@@ -413,64 +374,7 @@ function getColumnQualifier(ref: AstNode): readonly string[] | null {
   );
 }
 
-/** Extracts column names when the namespace node is a column array */
-function columnsOf(namespace: SQLNamespace | undefined): string[] | null {
-  if (namespace == null) {
-    return null;
-  }
-  const resolved = isSelfChildrenNamespace(namespace) ? namespace.children : namespace;
-  if (isArrayNamespace(resolved)) {
-    return resolved.map((col) => (typeof col === "string" ? col : col.label));
-  }
-  return null;
-}
-
-interface ResolvedTable {
-  exists: boolean;
-  /** Column names when the table resolves to a column array; null otherwise */
-  columns: string[] | null;
-}
-
-/**
- * Resolves a (possibly qualified) table path against the schema,
- * case-insensitively. An unqualified or partially-qualified name also matches
- * a table nested deeper in the namespace (e.g. `users` matches `mydb.users`)
- * so that under-qualified references are never flagged.
- */
-function resolveTable(schema: SQLNamespace, path: readonly string[]): ResolvedTable {
-  const exact = traverseNamespacePath(schema, path, { caseSensitive: false });
-  if (exact) {
-    return { exists: true, columns: columnsOf(exact.namespace) };
-  }
-
-  const segments = path.map((segment) => segment.toLowerCase());
-  const lastSegment = segments[segments.length - 1];
-  if (!lastSegment) {
-    return { exists: false, columns: null };
-  }
-
-  const matches = findNamespaceItemByEndMatch(schema, lastSegment).filter((item) => {
-    if (columnsOf(item.namespace) === null) {
-      return false; // only table-like matches (nodes holding a column array)
-    }
-    if (item.path.length < segments.length) {
-      return false;
-    }
-    const suffix = item.path.slice(-segments.length).map((segment) => segment.toLowerCase());
-    return segments.every((segment, i) => suffix[i] === segment);
-  });
-
-  if (matches.length === 0) {
-    return { exists: false, columns: null };
-  }
-  // Only trust the column list when the match is unambiguous
-  return {
-    exists: true,
-    columns: matches.length === 1 ? columnsOf(matches[0]?.namespace) : null,
-  };
-}
-
-function includesIgnoreCase(haystack: string[], needle: string): boolean {
+function includesIgnoreCase(haystack: readonly string[], needle: string): boolean {
   const lower = needle.toLowerCase();
   return haystack.some((item) => item.toLowerCase() === lower);
 }
@@ -493,15 +397,17 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
 
   for (const scope of scopes) {
     const resolved = scope.sources.map((source) => {
-      if (source.opaque || source.isCte) {
+      if (source.kind !== "table") {
         return { source, exists: true, columns: null };
       }
       const table = resolveTable(schema, source.path);
-      return { source, exists: table.exists, columns: table.columns };
+      return { source, exists: table.exists, columns: table.columns?.map(
+        (column) => typeof column === "string" ? column : column.label,
+      ) ?? null };
     });
 
     for (const { source, exists } of resolved) {
-      if (!source.opaque && !source.isCte && !exists) {
+      if (source.kind === "table" && !exists) {
         addFinding({
           kind: "unknownTable",
           identifier: source.name,
@@ -511,7 +417,7 @@ function analyzeStatementAst(ast: AstNode, schema: SQLNamespace): SemanticFindin
     }
 
     for (const ref of scope.columnRefs) {
-      const name = getColumnName(ref);
+      const name = columnName(ref);
       if (!name || name === "*") {
         continue;
       }
@@ -631,8 +537,7 @@ function isEmptySchema(schema: SQLNamespace): boolean {
 }
 
 function createSemanticLintSource(config: SqlSemanticLinterConfig = {}) {
-  const parser = config.parser || new NodeSqlParser();
-  const analyzer = config.structureAnalyzer || new SqlStructureAnalyzer(parser);
+  const { parser, structureAnalyzer: analyzer } = createSqlAnalysis(config);
   const severities = {
     unknownTable: config.severity?.unknownTable ?? "warning",
     unknownColumn: config.severity?.unknownColumn ?? "warning",
@@ -659,13 +564,14 @@ function createSemanticLintSource(config: SqlSemanticLinterConfig = {}) {
       if (!stmt.isValid) {
         continue;
       }
-      const result = await parser.parse(stmt.content, { state: view.state });
+      const result = await parser.parse(view.state.sliceDoc(stmt.from, stmt.to), { state: view.state });
       if (!result.success || result.ast == null) {
         continue;
       }
       const asts = Array.isArray(result.ast) ? result.ast : [result.ast];
       for (const ast of asts) {
-        for (const finding of analyzeStatementAst(ast as AstNode, schema)) {
+        if (!isRecord(ast)) continue;
+        for (const finding of analyzeStatementAst(ast, schema)) {
           const severity = severities[finding.kind];
           if (severity === "off") {
             continue;
@@ -702,7 +608,8 @@ function createSemanticLintSource(config: SqlSemanticLinterConfig = {}) {
  */
 export function sqlSemanticLinter(config: SqlSemanticLinterConfig = {}): Extension {
   return linter(createSemanticLintSource(config), {
-    delay: config.delay || DEFAULT_DELAY,
+    delay: config.delay ?? DEFAULT_DELAY,
+    needsRefresh: config.needsRefresh,
   });
 }
 

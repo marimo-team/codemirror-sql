@@ -1,14 +1,14 @@
+import { createSqlAnalysis } from "./analysis.js";
 import type { Completion, CompletionContext, CompletionSource } from "@codemirror/autocomplete";
 import { findTableColumns, resolveSchema, toCompletion } from "./completion-utils.js";
-import { NodeSqlParser } from "./parser.js";
 import {
   maskLiteralsAndComments,
   type QueryContext,
-  QueryContextAnalyzer,
+  type QueryContextAnalyzer,
 } from "./query-context.js";
 import type { SqlSchemaSource } from "./schema-facet.js";
-import { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParser } from "./types.js";
+import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlParserLike } from "./types.js";
 
 /**
  * Configuration for the unqualified column completion source
@@ -20,12 +20,13 @@ export interface ColumnCompletionConfig {
    */
   schema?: SqlSchemaSource;
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Query-context analyzer to reuse (e.g. the one backing hover), so the
    * statement is only analyzed once per edit.
    */
   contextAnalyzer?: QueryContextAnalyzer;
+  structureAnalyzer?: SqlStructureAnalyzer;
 }
 
 /** Slight boost so columns rank just above keyword completions */
@@ -62,9 +63,7 @@ const TABLE_LIST_PATTERN =
 export function unqualifiedColumnCompletionSource(
   config: ColumnCompletionConfig = {},
 ): CompletionSource {
-  const parser = config.parser ?? new NodeSqlParser();
-  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
-  const structureAnalyzer = new SqlStructureAnalyzer(parser);
+  const { contextAnalyzer, structureAnalyzer } = createSqlAnalysis(config);
 
   return async (context: CompletionContext) => {
     const word = context.matchBefore(/[\w$]*/);

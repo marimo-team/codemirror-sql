@@ -1,20 +1,20 @@
+import { createSqlAnalysis } from "./analysis.js";
 import type { Completion, CompletionContext, CompletionSource } from "@codemirror/autocomplete";
-import { NodeSqlParser } from "./parser.js";
 import {
-  QueryContextAnalyzer,
+  type QueryContextAnalyzer,
   type QueryContextCte,
   stripIdentifierQuotes,
 } from "./query-context.js";
 import { statementAt } from "./references.js";
-import { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParser } from "./types.js";
+import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlParserLike } from "./types.js";
 
 /**
  * Configuration for the CTE completion source
  */
 export interface CteCompletionConfig {
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParser;
+  parser?: SqlParserLike;
   /**
    * Query-context analyzer to reuse (e.g. shared with hover and
    * `aliasColumnCompletionSource`), so each statement is only analyzed once.
@@ -67,9 +67,7 @@ function cteColumnCompletions(cte: QueryContextCte): Completion[] {
  * Statements that don't parse (mid-edit) fall back to a regex-based scan.
  */
 export function createCteCompletionSource(config: CteCompletionConfig = {}): CompletionSource {
-  const parser = config.parser ?? new NodeSqlParser();
-  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
-  const structureAnalyzer = config.structureAnalyzer ?? new SqlStructureAnalyzer(parser);
+  const { contextAnalyzer, structureAnalyzer } = createSqlAnalysis(config);
 
   return async (context: CompletionContext) => {
     const word = context.matchBefore(/[\w$]*/);

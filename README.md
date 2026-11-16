@@ -82,6 +82,38 @@ const editor = new EditorView({
 });
 ```
 
+### Shared analysis
+
+`sqlExtension` shares its default parser and analyzers across linting, hover,
+navigation, and gutter markers. To also share them with completion sources:
+
+```ts
+const analysis = createSqlAnalysis({
+  parser: new NodeSqlParser({
+    getParserOptions: (state) => ({ database: getDatabase(state) }),
+  }),
+});
+
+const extensions = [
+  sqlExtension({
+    ...analysis,
+    schema,
+    needsRefresh: (update) => getDatabase(update.startState) !== getDatabase(update.state),
+  }),
+  sqlCompletion({ ...analysis, dialect: PostgreSQL, schema }),
+];
+```
+
+Import `createSqlAnalysis`, `NodeSqlParser`, `sqlExtension`, and `sqlCompletion`
+from `@marimo-team/codemirror-sql`. Parsing is shared for each immutable editor
+state, including concurrent requests. A dialect change creates a new state and
+invalidates cached analysis even when the document text stays the same.
+`needsRefresh` schedules linting and gutter updates for these configuration changes. Per-feature
+parser overrides receive independent default analyzers.
+
+Reference operations refuse identifiers with multiple declarations, including
+aliases shadowed in nested queries, rather than guessing which binding to edit.
+
 ### Schema-aware semantic linting
 
 When a schema is provided (via the top-level `schema` option, the

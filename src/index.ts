@@ -65,4 +65,5 @@ export type { SqlStatement } from "./sql/structure-analyzer.js";
 export { SqlStructureAnalyzer } from "./sql/structure-analyzer.js";
 export type { SqlGutterConfig } from "./sql/structure-extension.js";
 export { sqlStructureGutter } from "./sql/structure-extension.js";
-export type { SqlParseError, SqlParseResult, SqlParser } from "./sql/types.js";
+export type { SqlParseError, SqlParseResult, SqlParser, SqlParserLike } from "./sql/types.js";
+export { createSqlAnalysis, type SqlAnalysis, type SqlAnalysisConfig } from "./sql/analysis.js";
