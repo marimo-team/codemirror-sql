@@ -2,9 +2,6 @@ import { scanSql, stripSqlComments } from "./scanner.js";
 import type { EditorState } from "@codemirror/state";
 import type { SqlParseError, SqlParserLike } from "./types.js";
 
-/**
- * Represents a SQL statement with position information
- */
 export interface SqlStatement {
   /** Start position of the statement in the document */
   from: number;
@@ -14,13 +11,13 @@ export interface SqlStatement {
   lineFrom: number;
   /** Last line number of the statement (1-based) */
   lineTo: number;
-  /** The actual SQL content */
+  /** SQL prepared for display, with comments removed. */
   content: string;
   /** Type of SQL statement */
   type: "select" | "insert" | "update" | "delete" | "create" | "drop" | "alter" | "use" | "other";
   /** Whether this statement is syntactically valid */
   isValid: boolean;
-  /** Parse errors for this statement, with line/column relative to the statement content */
+  /** Parse errors relative to the original statement text at `from`. */
   errors: SqlParseError[];
 }
 
@@ -36,9 +33,6 @@ export class SqlStructureAnalyzer {
     this.parser = parser;
   }
 
-  /**
-   * Analyzes the document and extracts all SQL statements
-   */
   async analyzeDocument(state: EditorState): Promise<SqlStatement[]> {
     const cache = this.cache;
     let statements = cache.get(state);
@@ -50,17 +44,11 @@ export class SqlStructureAnalyzer {
     return statements;
   }
 
-  /**
-   * Gets the SQL statement at a specific cursor position
-   */
   async getStatementAtPosition(state: EditorState, position: number): Promise<SqlStatement | null> {
     const statements = await this.analyzeDocument(state);
     return statements.find((stmt) => position >= stmt.from && position <= stmt.to) || null;
   }
 
-  /**
-   * Gets all SQL statements that intersect with a selection range
-   */
   async getStatementsInRange(
     state: EditorState,
     from: number,
@@ -68,14 +56,13 @@ export class SqlStructureAnalyzer {
   ): Promise<SqlStatement[]> {
     const statements = await this.analyzeDocument(state);
     return statements.filter(
-      (stmt) => stmt.from <= to && stmt.to >= from, // Statements that overlap with the range
+      (stmt) => stmt.from <= to && stmt.to >= from,
     );
   }
 
   private async extractStatements(content: string, state: EditorState): Promise<SqlStatement[]> {
     const statements: SqlStatement[] = [];
 
-    // Split content by semicolons to find potential statement boundaries
     const parts = this.splitByStatementSeparators(content);
     let currentPosition = 0;
 
@@ -92,10 +79,8 @@ export class SqlStructureAnalyzer {
       const fromLine = state.doc.lineAt(from);
       const toLine = state.doc.lineAt(to);
 
-      // Strip comments to detect comment-only parts and determine the type
       const strippedContent = this.stripComments(trimmedPart);
 
-      // Skip if the statement is empty after stripping comments
       if (strippedContent.trim().length === 0 || strippedContent.trim() === ";") {
         currentPosition += part.length;
         continue;
@@ -106,7 +91,6 @@ export class SqlStructureAnalyzer {
       const parseResult = await this.parser.parse(trimmedPart, { state });
       const type = this.determineStatementType(strippedContent);
 
-      // Remove trailing semicolon from content for cleaner display
       const cleanContent = strippedContent.endsWith(";")
         ? strippedContent.slice(0, -1).trim()
         : strippedContent.trim();
@@ -160,9 +144,6 @@ export class SqlStructureAnalyzer {
     return stripSqlComments(sql);
   }
 
-  /**
-   * Clears the internal cache
-   */
   clearCache(): void {
     this.cache = new WeakMap();
   }

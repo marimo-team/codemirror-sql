@@ -1,14 +1,8 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 
-/**
- * Semantic type for SQL namespace items
- */
 export type SemanticType = "database" | "schema" | "table" | "column" | "namespace";
 
-/**
- * Represents a resolved namespace item with its path and metadata
- */
 export interface ResolvedNamespaceItem {
   completion?: Completion;
   value?: string;
@@ -24,9 +18,6 @@ type NamespaceNode = ResolvedNamespaceItem & (
   | { type: "namespace"; completion?: never; value?: never }
 );
 
-/**
- * Configuration for namespace search operations
- */
 export interface NamespaceSearchConfig {
   /** Maximum depth to search (default: 10) */
   maxDepth?: number;
@@ -38,9 +29,6 @@ export interface NamespaceSearchConfig {
   enableFuzzySearch?: boolean;
 }
 
-/**
- * Checks if a namespace node is an object with string keys
- */
 export function isObjectNamespace(
   namespace: SQLNamespace,
 ): namespace is { [name: string]: SQLNamespace } {
@@ -49,9 +37,6 @@ export function isObjectNamespace(
   );
 }
 
-/**
- * Checks if a namespace node has self and children properties
- */
 export function isSelfChildrenNamespace(
   namespace: SQLNamespace,
 ): namespace is { self: Completion; children: SQLNamespace } {
@@ -71,29 +56,20 @@ export function isSelfChildrenNamespace(
   );
 }
 
-/**
- * Checks if a namespace node is an array of completions/strings
- */
 export function isArrayNamespace(
   namespace: SQLNamespace,
 ): namespace is readonly (Completion | string)[] {
   return Array.isArray(namespace);
 }
 
-/**
- * Determines the semantic type of an item based on its position and context
- */
 function determineSemanticType(
   path: string[],
   type: "completion" | "string" | "namespace",
   namespace?: SQLNamespace,
   parentNamespace?: SQLNamespace,
 ): SemanticType {
-  // The semantic depth is the number of namespace levels, not the path length
-  // For self-children structures, the depth should be based on the logical nesting level
   const depth = path.length;
 
-  // For leaf items (strings or completions in arrays), they are always columns
   if (
     type === "string" ||
     (type === "completion" && parentNamespace && isArrayNamespace(parentNamespace))
@@ -101,14 +77,11 @@ function determineSemanticType(
     return "column";
   }
 
-  // For namespace items, determine based on structure
   if (type === "namespace" && namespace) {
     if (isArrayNamespace(namespace)) {
-      // Arrays represent column collections, so the array itself represents a table
       return "table";
     }
 
-    // For object namespaces, check if they contain tables (arrays)
     if (isObjectNamespace(namespace)) {
       const hasTableChildren = Object.values(namespace).some(
         (child) =>
@@ -117,25 +90,20 @@ function determineSemanticType(
       );
 
       if (hasTableChildren) {
-        // This namespace contains tables, so it's a schema or database
         return depth <= 1 ? "database" : "schema";
       } else {
-        // This namespace contains other namespaces
         return depth === 0 ? "database" : "namespace";
       }
     }
   }
 
-  // For completion items with self-children structure
   if (type === "completion" && namespace) {
     if (isArrayNamespace(namespace)) {
-      // This completion has column children, so it's a table
       return "table";
     }
     return depth <= 1 ? "database" : "schema";
   }
 
-  // Fallback based on depth
   switch (depth) {
     case 0:
       return "database";
@@ -146,15 +114,7 @@ function determineSemanticType(
   }
 }
 
-/**
- * Traverses a namespace following a dotted path
- * @param namespace The root namespace to search in
- * @param path The dotted path to traverse (e.g., "db.catalog.table.column"), or
- *   pre-split segments (preserves identifier boundaries when a segment
- *   contains a dot, e.g. a `"my.db"` quoted identifier)
- * @param config Configuration options
- * @returns The resolved item or null if not found
- */
+/** Resolve a path; pre-split segments preserve dots inside quoted identifiers. */
 export function traverseNamespacePath(
   namespace: SQLNamespace,
   path: string | readonly string[],
@@ -163,7 +123,6 @@ export function traverseNamespacePath(
   const { maxDepth = 10 } = config;
   const isEmptyPath = typeof path === "string" ? path === "" : path.length === 0;
 
-  // Handle special case of empty path for self-children namespace
   if (isEmptyPath && isSelfChildrenNamespace(namespace)) {
     const semanticType = determineSemanticType([], "completion", namespace.children);
     return {
@@ -180,7 +139,6 @@ export function traverseNamespacePath(
   );
 
   if (pathParts.length === 0) {
-    // Empty path returns null for non-self-children namespaces
     return null;
   }
 
@@ -191,9 +149,6 @@ export function traverseNamespacePath(
   return traverseNamespaceRecursive(namespace, pathParts, [], config);
 }
 
-/**
- * Recursive helper for namespace traversal
- */
 function traverseNamespaceRecursive(
   namespace: SQLNamespace,
   remainingPath: string[],
@@ -202,7 +157,6 @@ function traverseNamespaceRecursive(
   parentNamespace?: SQLNamespace,
 ): NamespaceNode | null {
   if (remainingPath.length === 0) {
-    // We've reached the end of the path
     if (isSelfChildrenNamespace(namespace)) {
       const semanticType = determineSemanticType(
         currentPath,
@@ -240,7 +194,6 @@ function traverseNamespaceRecursive(
   }
 
   if (isObjectNamespace(namespace)) {
-    // Search through object keys
     const targetKey = caseSensitive
       ? Object.keys(namespace).find((key) => key === currentSegment)
       : Object.keys(namespace).find((key) => key.toLowerCase() === currentSegment.toLowerCase());
@@ -258,8 +211,6 @@ function traverseNamespaceRecursive(
       }
     }
   } else if (isSelfChildrenNamespace(namespace)) {
-    // If this node has self/children, we need to check if the current segment matches the self
-    // and then continue with children for the rest of the path
     return traverseNamespaceRecursive(
       namespace.children,
       remainingPath,
@@ -268,7 +219,6 @@ function traverseNamespaceRecursive(
       namespace,
     );
   } else if (isArrayNamespace(namespace)) {
-    // Check if any item in the array matches
     for (const item of namespace) {
       if (typeof item === "string") {
         const matches = caseSensitive
@@ -290,7 +240,6 @@ function traverseNamespaceRecursive(
           };
         }
       } else {
-        // It's a Completion object
         const matches = caseSensitive
           ? item.label === currentSegment
           : item.label.toLowerCase() === currentSegment.toLowerCase();
@@ -316,13 +265,7 @@ function traverseNamespaceRecursive(
   return null;
 }
 
-/**
- * Finds all possible completions that match a prefix
- * @param namespace The namespace to search in
- * @param prefix The prefix to match (can be dotted like "db.table")
- * @param config Configuration options
- * @returns Array of resolved items that match the prefix
- */
+/** Complete a prefix within its parent namespace, e.g. `db.ta`. */
 export function findNamespaceCompletions(
   namespace: SQLNamespace,
   prefix: string,
@@ -331,28 +274,21 @@ export function findNamespaceCompletions(
   const results: NamespaceNode[] = [];
 
   if (prefix.includes(".")) {
-    // Handle dotted prefixes like "db.table"
     const lastDotIndex = prefix.lastIndexOf(".");
     const basePath = prefix.substring(0, lastDotIndex);
     const finalSegment = prefix.substring(lastDotIndex + 1);
 
-    // First traverse to the base path
     const baseNode = traverseNamespacePath(namespace, basePath, config);
     if (baseNode?.namespace) {
-      // Then find completions in the target namespace
       return findCompletionsInNamespace(baseNode.namespace, finalSegment, baseNode.path, config);
     }
   } else {
-    // Simple prefix, search at root level
     return findCompletionsInNamespace(namespace, prefix, [], config);
   }
 
   return results;
 }
 
-/**
- * Finds completions within a specific namespace node
- */
 function findCompletionsInNamespace(
   namespace: SQLNamespace,
   prefix: string,
@@ -404,7 +340,6 @@ function findCompletionsInNamespace(
       }
     }
   } else if (isSelfChildrenNamespace(namespace)) {
-    // If we have a self node, include it if it matches
     const selfMatches = allowPartialMatch
       ? caseSensitive
         ? namespace.self.label.startsWith(prefix)
@@ -428,7 +363,6 @@ function findCompletionsInNamespace(
       });
     }
 
-    // Also search in children
     results.push(...findCompletionsInNamespace(namespace.children, prefix, basePath, config));
   } else if (isArrayNamespace(namespace)) {
     for (const item of namespace) {
@@ -456,7 +390,6 @@ function findCompletionsInNamespace(
           });
         }
       } else {
-        // It's a Completion object
         const matches = allowPartialMatch
           ? caseSensitive
             ? item.label.startsWith(prefix)
@@ -486,14 +419,7 @@ function findCompletionsInNamespace(
   return results;
 }
 
-/**
- * Performs a fuzzy search for items by searching for exact segment matches in the full schema path
- * This implements the "crawl back up the tree" functionality with exact segment matching
- * @param namespace The namespace to search in
- * @param identifier The identifier to search for
- * @param config Configuration options
- * @returns Array of possible matches ranked by relevance
- */
+/** Match any path segment, ranking final-segment matches first, then shorter paths. */
 export function findNamespaceItemByEndMatch(
   namespace: SQLNamespace,
   identifier: string,
@@ -502,20 +428,15 @@ export function findNamespaceItemByEndMatch(
   const results: NamespaceNode[] = [];
   const { maxDepth = 10 } = config;
 
-  // Recursively search through the namespace
   collectAllItems(namespace, [], results, maxDepth);
 
-  // Filter results that have the identifier as an exact segment match anywhere in the path
   const { caseSensitive = false } = config;
   const matchingResults = results.filter((item) => {
-    // Check if any segment in the path exactly matches the identifier
     return item.path.some((segment) =>
       caseSensitive ? segment === identifier : segment.toLowerCase() === identifier.toLowerCase(),
     );
   });
 
-  // Sort by path length (shorter paths are more specific/relevant)
-  // Also prioritize matches where the identifier is at the end of the path
   return matchingResults.sort((a, b) => {
     const aIsLastSegment = caseSensitive
       ? a.path[a.path.length - 1] === identifier
@@ -524,16 +445,12 @@ export function findNamespaceItemByEndMatch(
       ? b.path[b.path.length - 1] === identifier
       : b.path[b.path.length - 1]?.toLowerCase() === identifier.toLowerCase();
 
-    // Prioritize end matches, then by path length
     if (aIsLastSegment && !bIsLastSegment) return -1;
     if (!aIsLastSegment && bIsLastSegment) return 1;
     return a.path.length - b.path.length;
   });
 }
 
-/**
- * Recursively collects all items from a namespace
- */
 function collectAllItems(
   namespace: SQLNamespace,
   currentPath: string[],
@@ -617,15 +534,7 @@ function collectAllItems(
   }
 }
 
-/**
- * Gets the most relevant namespace item using the preference order:
- * 1. Exact match in SQLNamespace
- * 2. Partial/fuzzy match by end identifier
- * @param namespace The namespace to search in
- * @param identifier The identifier to resolve
- * @param config Configuration options
- * @returns The best matching item or null if none found
- */
+/** Resolve by exact path, then prefix, then optional segment matching. */
 export function resolveNamespaceItem(
   namespace: SQLNamespace,
   identifier: string,
@@ -633,20 +542,16 @@ export function resolveNamespaceItem(
 ): ResolvedNamespaceItem | null {
   const { enableFuzzySearch = false } = config;
 
-  // First try exact path match
   const exactMatch = traverseNamespacePath(namespace, identifier, config);
   if (exactMatch) {
     return exactMatch;
   }
 
-  // Then try prefix completion (for partial typing)
   const completions = findNamespaceCompletions(namespace, identifier, config);
   if (completions.length > 0) {
-    // Return the first completion (should be most relevant)
     return completions[0] || null;
   }
 
-  // Finally try end-match fuzzy search (only if enabled)
   if (enableFuzzySearch) {
     const endMatches = findNamespaceItemByEndMatch(namespace, identifier, config);
     if (endMatches.length > 0) {

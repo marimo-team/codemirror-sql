@@ -29,10 +29,7 @@ export interface SqlLinterConfig {
   structureAnalyzer?: SqlStructureAnalyzer;
 }
 
-/**
- * Extends an error span from `from` to cover the token at that position,
- * so the squiggle covers the offending word instead of a single character.
- */
+/** Underline the offending token rather than a single character. */
 function tokenEndAt(doc: Text, from: number): number {
   if (from >= doc.length) {
     return doc.length;
@@ -42,9 +39,6 @@ function tokenEndAt(doc: Text, from: number): number {
   return match ? from + match[0].length : Math.min(from + 1, doc.length);
 }
 
-/**
- * Converts a SQL parse error (relative to the whole document) to a CodeMirror diagnostic
- */
 function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnostic {
   const line = doc.line(Math.min(error.line, doc.lines));
   const from = Math.min(line.from + Math.max(0, error.column - 1), doc.length);
@@ -58,14 +52,7 @@ function convertToCodeMirrorDiagnostic(error: SqlParseError, doc: Text): Diagnos
   };
 }
 
-/**
- * Converts a SQL parse error whose line/column are relative to a statement's
- * content into a CodeMirror diagnostic positioned in the document.
- *
- * Error line 1 corresponds to the statement's first line, with columns
- * relative to `stmt.from` (the statement content is trimmed, so its first
- * character is exactly at `stmt.from`).
- */
+/** Error line 1 starts at `stmt.from`; later lines use document line boundaries. */
 function convertStatementErrorToDiagnostic(
   error: SqlParseError,
   stmt: SqlStatement,

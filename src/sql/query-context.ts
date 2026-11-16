@@ -152,7 +152,6 @@ function walkAst(value: unknown, ctx: MutableContext, seen: Set<unknown>): void 
   }
   seen.add(value);
 
-  // WITH clauses: register CTE names and output columns
   for (const cte of asArray(value.with)) {
     const name = nameValue(cte.name);
     if (name && !ctx.seenCtes.has(name.toLowerCase())) {
@@ -166,7 +165,6 @@ function walkAst(value: unknown, ctx: MutableContext, seen: Set<unknown>): void 
     }
   }
 
-  // Table sources: FROM lists and DML/DDL targets
   for (const key of ["from", "table"]) {
     for (const entry of asArray(value[key])) {
       recordTableEntry(entry, ctx);
@@ -322,7 +320,7 @@ function extractCtesByRegex(sql: string, ctx: MutableContext): void {
       if (!cteMatch || !rawName || !cteName) {
         break;
       }
-      // Skip past the CTE body, tracking nested parentheses
+
       const bodyStart = pos + cteMatch[0].length;
       let i = bodyStart;
       let depth = 1;

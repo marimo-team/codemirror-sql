@@ -35,8 +35,7 @@ type NodeParseOutcome =
   | { success: false; errors: SqlParseError[]; ast?: never };
 
 /**
- * A SQL parser wrapper around node-sql-parser with enhanced error handling
- * and validation capabilities for CodeMirror integration.
+ * node-sql-parser adapter with dialect preprocessing and error locations.
  *
  * @example Custom dialect
  * ```ts
@@ -44,7 +43,7 @@ type NodeParseOutcome =
  *
  * const myParser = new NodeSqlParser({
  *   getParserOptions: (state) => ({
- *     dialect: getDialect(state),
+ *     database: getDatabase(state),
  *     parseOptions: {
  *       includeLocations: true,
  *     },
@@ -59,9 +58,6 @@ export class NodeSqlParser implements SqlParser {
     this.opts = opts;
   }
 
-  /**
-   * Lazy import of the node-sql-parser package and create a new Parser instance.
-   */
   private getParser = lazy(async () => {
     const module = await import("node-sql-parser");
     // Support for ESM and CJS
@@ -86,7 +82,6 @@ export class NodeSqlParser implements SqlParser {
     try {
       const parser = await this.getParser();
 
-      // Check if this is DuckDB dialect and apply custom processing
       if (parserOptions?.database === "DuckDB") {
         return this.parseWithDuckDBSupport(sanitizedSql, parserOptions, offsetRecord);
       }
@@ -111,10 +106,7 @@ export class NodeSqlParser implements SqlParser {
     return parserOptions?.ignoreBrackets ? replaceBracketsWithQuotes(sql).sql : sql;
   }
 
-  /**
-   * Parse SQL with DuckDB syntax support
-   * This is not robust, we catch main cases.
-   */
+  /** Best-effort DuckDB parsing through PostgreSQL's grammar. */
   private async parseWithDuckDBSupport(
     sql: string,
     parserOptions: Option,
@@ -122,10 +114,9 @@ export class NodeSqlParser implements SqlParser {
   ): Promise<NodeParseOutcome> {
     const parser = await this.getParser();
 
-    // Remove comments and normalize for pattern checking
     const sqlToCheck = removeCommentsFromStart(sql).trimStart().toLowerCase();
 
-    // Handle unsupported DuckDB syntax patterns
+    // Skip syntax the PostgreSQL grammar cannot validate.
     if (sqlToCheck.startsWith("from") || sqlToCheck.includes("macro")) {
       debug("Unsupported DuckDB syntax");
       return { success: true, errors: [] };
@@ -140,7 +131,6 @@ export class NodeSqlParser implements SqlParser {
       modifiedSql = sql.replace(/create or replace table/i, "create table");
     }
 
-    // Try standard parsing with PostgreSQL dialect
     try {
       const postgresOptions = { ...parserOptions, database: "PostgreSQL" };
       const ast = parser.astify(modifiedSql, postgresOptions);
@@ -152,12 +142,6 @@ export class NodeSqlParser implements SqlParser {
     }
   }
 
-  /**
-   * @param error - The error object
-   * @param sql - The SQL string
-   * @param offset - The offset to add to the column position. Default is 0.
-   * @returns The parsed error information
-   */
   private extractErrorInfo(error: unknown, sql: string, offsetRecord: Record<number, number>): SqlParseError {
     let line = 1;
     let column = 1;
@@ -178,20 +162,9 @@ export class NodeSqlParser implements SqlParser {
       column = Number(message.match(/column (\d+)/i)?.[1] ?? 1);
     }
 
-    /**
-     * Map the error column back to the original (pre-replacement) SQL
-     * SELECT {id} FRO users
-     *             ^ error position should be here
-     *
-     * SELECT '{id}' FRO users
-     *                   ^ parser reports this
-     * So in this case, we subtract the offset from the column position.
-     *
-     * offsetRecord keys are absolute offsets into the pre-replacement SQL,
-     * while the parser reports line-relative columns, so only replacements
-     * on the error's own line (and before the error column) shift it.
-     * Replacements never add or remove newlines, so line numbers match.
-     */
+    // Offset keys are absolute positions before preprocessing; parser columns are line-relative.
+    // Only replacements before the error on the same line shift its column.
+    // Preprocessing preserves line numbers.
     const replacements = Object.entries(offsetRecord)
       .map(([position, offset]) => ({ position: parseInt(position, 10), offset }))
       .sort((a, b) => a.position - b.position);
@@ -209,7 +182,6 @@ export class NodeSqlParser implements SqlParser {
       }
     }
 
-    // Ensure we don't exceed the sql length
     if (column > sql.length) {
       column = sql.length;
     }
@@ -236,18 +208,14 @@ export class NodeSqlParser implements SqlParser {
     return result.errors;
   }
 
-  /**
-   * Extracts table references from a SQL query using node-sql-parser
-   * @param sql The SQL query to analyze
-   * @returns Array of table names referenced in the query
-   */
+  /** Return unqualified table names, or an empty list when parsing fails. */
   async extractTableReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
     const parserOptions = opts ? this.opts.getParserOptions?.(opts.state) : undefined;
 
     try {
       const parser = await this.getParser();
       const tableList = parser.tableList(sql, parserOptions);
-      // Clean up table names - node-sql-parser returns format like "select::null::users"
+      // References are encoded as operation::database::name, e.g. "select::null::users".
       return tableList.map((table: string) => {
         const parts = table.split("::");
         return parts[parts.length - 1] || table;
@@ -257,11 +225,7 @@ export class NodeSqlParser implements SqlParser {
     }
   }
 
-  /**
-   * Extracts column references from a SQL query using node-sql-parser
-   * @param sql The SQL query to analyze
-   * @returns Array of column names referenced in the query
-   */
+  /** Return unqualified column names, or an empty list when parsing fails. */
   async extractColumnReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
     const parserOptions = opts?.state ? this.opts.getParserOptions?.(opts.state) : undefined;
 
@@ -269,7 +233,7 @@ export class NodeSqlParser implements SqlParser {
       const parser = await this.getParser();
       const columnList = parser.columnList(sql, parserOptions);
 
-      // Clean up column names - node-sql-parser returns format like "select::null::users"
+      // References are encoded as operation::table::name, e.g. "select::null::id".
       const cleanColumnList = columnList.map((column: string) => {
         const parts = column.split("::");
         return parts[parts.length - 1] || column;
@@ -294,20 +258,7 @@ function removeCommentsFromStart(sql: string, commentTypes: CommentType[] = ["/*
 
 const QUOTE_LENGTH = "''".length;
 
-/**
- * Replaces unquoted curly bracket expressions (e.g., {id}) with quoted strings (e.g., '{id}'),
- * ignoring brackets already inside single or double quotes.
- *
- * Returns the modified SQL and a record mapping the index of each replaced bracket to the
- * number of characters added (for offset tracking).
- *
- * @example
- *   replaceBracketsWithQuotes("SELECT {id}, '{name}' FROM users");
- *   // => {
- *   //   sql: "SELECT '{id}', '{name}' FROM users",
- *   //   offsetRecord: { 7: 2 }
- *   // }
- */
+/** Quote unquoted placeholders and record added characters by original offset. */
 function replaceBracketsWithQuotes(sql: string): {
   sql: string;
   offsetRecord: Record<number, number>;

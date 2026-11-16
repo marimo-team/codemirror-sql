@@ -34,16 +34,13 @@ export function filterSchemaByTableRefs(
     const filtered: { [key: string]: SQLNamespace } = {};
 
     for (const [key, value] of Object.entries(schema)) {
-      // Check if this table is referenced (case-insensitive)
       const isReferenced = Array.from(tableRefs).some(
         (refTable) => refTable.toLowerCase() === key.toLowerCase(),
       );
 
       if (isReferenced) {
-        // This table is referenced in the query
         filtered[key] = value;
       } else if (isObjectNamespace(value)) {
-        // Check if any child tables are referenced
         const filteredChild = filterSchemaByTableRefs(value, tableRefs);
         if (Object.keys(filteredChild).length > 0) {
           filtered[key] = filteredChild;
@@ -58,16 +55,10 @@ export function filterSchemaByTableRefs(
   return schema;
 }
 
-/**
- * SQL schema information for hover tooltips
- */
 export interface SqlSchema {
   [tableName: string]: string[];
 }
 
-/**
- * SQL keyword information
- */
 export interface SqlKeywordInfo {
   description?: string;
   syntax?: string;
@@ -75,9 +66,6 @@ export interface SqlKeywordInfo {
   metadata?: Record<string, string>;
 }
 
-/**
- * Data passed to keyword tooltip renderers
- */
 export interface KeywordTooltipData {
   keyword: string;
   info: SqlKeywordInfo;
@@ -99,9 +87,6 @@ export interface NamespaceTooltipData {
   aliasFor?: string;
 }
 
-/**
- * Internal data structure for passing parsed tooltip information to create function
- */
 type TooltipCreateData =
   | { tooltipType: "keyword"; keywordData: KeywordTooltipData }
   | { tooltipType: "namespace"; namespaceData: NamespaceTooltipData };
@@ -156,9 +141,6 @@ export interface SqlHoverConfig {
   theme?: Extension;
 }
 
-/**
- * Creates the hover source used by the sqlHover extension
- */
 function createHoverSource(
   config: SqlHoverConfig = {},
 ): (view: EditorView, pos: number, side: number) => Promise<Tooltip | null> {
@@ -197,11 +179,10 @@ function createHoverSource(
       resolvedKeywords = {};
     }
 
-    // Find word boundaries (including dots for table.column syntax)
     while (start > from && /[\w.]/.test(text[start - from - 1] ?? "")) start--;
     while (end < to && /[\w.]/.test(text[end - from] ?? "")) end++;
 
-    // Validate pointer position within word
+    // Respect which side of a token boundary the pointer is on.
     if ((start === pos && side < 0) || (end === pos && side > 0)) {
       return null;
     }
@@ -217,12 +198,7 @@ function createHoverSource(
 
     debug(`hover word: '${word}'`);
 
-    // Implement preference order:
-    // 1. Look in keywords if it exists
-    // 2. Look for it in SQLNamespace as is
-    // 3. If neither, look in SQLNamespace and try to guess (fuzzy match)
-
-    // Step 1: If no namespace match, try keywords
+    // Keywords take precedence over schema matches.
     // Own-property check so Object.prototype members don't match
     const keywordInfo = Object.hasOwn(resolvedKeywords, word)
       ? resolvedKeywords[word]
@@ -236,7 +212,6 @@ function createHoverSource(
       };
     }
 
-    // Step 2: Try to resolve directly in SQLNamespace (query-aware)
     if (!createData && (enableTables || enableColumns) && resolvedSchema) {
       // Scope the analysis to the statement containing the hover position, so
       // tables from other statements in a multi-statement doc don't leak in
@@ -265,10 +240,8 @@ function createHoverSource(
 
       const tableRefs = new Set(queryContext.tables.map((table) => table.name.toLowerCase()));
 
-      // Filter schema to only include tables referenced in the current statement
       const filteredSchema = filterSchemaByTableRefs(resolvedSchema, tableRefs);
 
-      // Try to resolve in the filtered schema first (query-aware)
       let namespaceResult = quotedAliasPath
         ? traverseNamespacePath(filteredSchema, quotedAliasPath)
         : resolveNamespaceItem(filteredSchema, lookupWord, { enableFuzzySearch });
@@ -281,8 +254,7 @@ function createHoverSource(
         });
       }
 
-      // Gate by the resolved semantic type so disabling only tables (or only
-      // columns) actually disables that kind of tooltip
+      // Apply feature switches to the resolved item, not the hovered token.
       if (namespaceResult) {
         const { semanticType } = namespaceResult;
         if (
@@ -317,8 +289,6 @@ function createHoverSource(
       }
     }
 
-    // Step 3: Fuzzy matching is handled by resolveNamespaceItem if enableFuzzySearch is true
-
     if (!createData) {
       return null;
     }
@@ -330,7 +300,6 @@ function createHoverSource(
       end,
       above: true,
       create(createView: EditorView) {
-        // Priority 1: Custom tooltipRender function
         if (tooltipRender) {
           const customElement = tooltipRender(word, createView, pos);
           if (customElement) {
@@ -338,7 +307,6 @@ function createHoverSource(
           }
         }
 
-        // Priority 2: Custom renderers and default renderers
         let tooltipContent: string | null = null;
 
         if (tooltipData.tooltipType === "keyword") {
@@ -361,7 +329,6 @@ function createHoverSource(
           ) {
             tooltipContent = tooltipRenderers.namespace(namespaceData);
           } else {
-            // Fallback to default renderer
             tooltipContent = createNamespaceTooltip(namespaceData.item);
             if (namespaceData.aliasFor) {
               // Alias targets come from document text, so escape them
@@ -404,9 +371,6 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/**
- * Creates HTML content for namespace-resolved items
- */
 function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
   const semanticType = escapeHtml(item.semanticType);
   const pathStr = escapeHtml(item.path.join("."));
@@ -416,7 +380,6 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
   let html = `<div class="sql-hover-${semanticType}">`;
   html += `<div class="sql-hover-header"><strong>${name}</strong> <span class="sql-hover-type">${semanticType}</span></div>`;
 
-  // Add semantic-specific descriptions and information
   switch (item.semanticType) {
     case "database":
       html += `<div class="sql-hover-description">Database${detail}</div>`;
@@ -450,7 +413,6 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
         }
       }
 
-      // Show column information for tables
       if (item.namespace && isArrayNamespace(item.namespace)) {
         const columns = item.namespace;
         if (columns.length > 0) {
@@ -492,7 +454,6 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
       break;
   }
 
-  // Add completion-specific info if available
   if (item.completion?.info && typeof item.completion.info === "string") {
     html += `<div class="sql-hover-info">${escapeHtml(item.completion.info)}</div>`;
   }
@@ -501,9 +462,6 @@ function createNamespaceTooltip(item: ResolvedNamespaceItem): string {
   return html;
 }
 
-/**
- * Helper function to count children in a namespace
- */
 function countNamespaceChildren(namespace: SQLNamespace): number {
   if (Array.isArray(namespace)) {
     return namespace.length;
@@ -517,10 +475,6 @@ function countNamespaceChildren(namespace: SQLNamespace): number {
   return 0;
 }
 
-/**
- * Creates HTML content for keyword tooltips
- * Renders metadata as tags if present
- */
 function createKeywordTooltip(opts: { keyword: string; info: SqlKeywordInfo }): string {
   const { keyword, info } = opts;
 
@@ -548,9 +502,6 @@ function createKeywordTooltip(opts: { keyword: string; info: SqlKeywordInfo }): 
   return html;
 }
 
-/**
- * Creates HTML content for table tooltips
- */
 function createTableTooltip(opts: {
   tableName: string;
   columns: string[];
@@ -564,7 +515,7 @@ function createTableTooltip(opts: {
 
   if (columns.length > 0) {
     html += `<div class="sql-hover-columns"><strong>Columns:</strong><br>`;
-    const displayColumns = columns.slice(0, 10); // Show max 10 columns
+    const displayColumns = columns.slice(0, 10);
     html += displayColumns.map((col) => `<code>${escapeHtml(col)}</code>`).join(", ");
 
     if (columns.length > 10) {
@@ -585,9 +536,6 @@ function createTableTooltip(opts: {
   return html;
 }
 
-/**
- * Creates HTML content for column tooltips
- */
 function createColumnTooltip(opts: {
   tableName: string;
   columnName: string;
@@ -605,7 +553,7 @@ function createColumnTooltip(opts: {
     const otherColumns = allColumns.filter((col) => col !== columnName);
     if (otherColumns.length > 0) {
       html += `<div class="sql-hover-related"><strong>Other columns in ${escapeHtml(tableName)}:</strong><br>`;
-      const displayColumns = otherColumns.slice(0, 8); // Show max 8 other columns
+      const displayColumns = otherColumns.slice(0, 8);
       html += displayColumns.map((col) => `<code>${escapeHtml(col)}</code>`).join(", ");
 
       if (otherColumns.length > 8) {

@@ -1,6 +1,5 @@
 import type { Schema } from "./custom-renderers";
 
-// Default SQL content for the demo
 export const defaultSqlDoc = `-- Welcome to the SQL Editor Demo!
 -- Try editing the queries below to see real-time validation
 
@@ -60,9 +59,7 @@ ORDER BY total_amount DESC;
 `;
 
 export const schema: Record<Schema, string[]> = {
-  // Users table
   users: ["id", "name", "email", "active", "status", "created_at", "updated_at", "profile_id"],
-  // Posts table
   posts: [
     "id",
     "title",
@@ -73,7 +70,6 @@ export const schema: Record<Schema, string[]> = {
     "updated_at",
     "category_id",
   ],
-  // Orders table
   orders: [
     "id",
     "customer_id",
@@ -83,10 +79,7 @@ export const schema: Record<Schema, string[]> = {
     "shipping_address",
     "created_at",
   ],
-  // Customers table (additional example)
   customers: ["id", "first_name", "last_name", "email", "phone", "address", "city", "country"],
-  // Categories table
   categories: ["id", "name", "description", "parent_id"],
-  // Users_Posts table
   Users_Posts: ["user_id", "post_id"],
 };

@@ -11,8 +11,7 @@ export function resolveSchema(
     return null;
   }
   if (typeof source === "function") {
-    // Function sources need a view; contexts created without one (e.g. tests)
-    // simply get no schema
+    // Function schema sources require a live editor view.
     return context.view ? source(context.view) : null;
   }
   return source;

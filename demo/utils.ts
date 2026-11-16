@@ -16,7 +16,6 @@ export function parseDemoDialect(value: string): SupportedDialects | undefined {
 }
 
 export function guessSqlDialect(dialect: SupportedDialects): SQLDialect {
-  // Other supported dialects: Cassandra, MSSQL, MariaSQL, MySQL, PLSQL, PostgreSQL
   switch (dialect) {
     case "PostgreSQL":
       return PostgreSQL;

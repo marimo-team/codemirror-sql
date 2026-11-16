@@ -37,10 +37,8 @@ interface SqlGutterState {
   isFocused: boolean;
 }
 
-// State effect for updating SQL statements
 const updateSqlStatementsEffect = StateEffect.define<SqlGutterState>();
 
-// State field to track current SQL statements
 const sqlGutterStateField = StateField.define<SqlGutterState>({
   create(): SqlGutterState {
     return {
@@ -59,27 +57,19 @@ const sqlGutterStateField = StateField.define<SqlGutterState>({
   },
 });
 
-/**
- * Computes the background color and opacity for a gutter marker based on its
- * state and config. Extracted as a pure function so the (many) branches can be
- * unit-tested without constructing an EditorView.
- */
 export function computeMarkerStyle(
   config: SqlGutterConfig,
   state: { isCurrent: boolean; isValid: boolean; isFocused: boolean },
 ): { backgroundColor: string; opacity: string } {
   const { isCurrent, isValid, isFocused } = state;
 
-  // Set background color based on state
   let backgroundColor = config.backgroundColor || "#3b82f6";
   if (!isValid && config.showInvalid !== false) {
     backgroundColor = config.errorBackgroundColor || "#ef4444";
   }
 
-  // Opacity for the "normal" (focused, or focus-agnostic) case
   const normalOpacity = isCurrent ? "1" : (config.inactiveOpacity ?? 0.3).toString();
 
-  // Calculate opacity based on focus state
   let opacity: string;
   if (!isFocused) {
     if (config.unfocusedOpacity !== undefined) {
@@ -87,11 +77,9 @@ export function computeMarkerStyle(
     } else if (config.hideWhenNotFocused) {
       opacity = "0";
     } else {
-      // Default behavior when not focused - use normal opacity
       opacity = normalOpacity;
     }
   } else {
-    // Normal focused behavior
     opacity = normalOpacity;
   }
 
@@ -217,7 +205,6 @@ function createGutterTheme(config: SqlGutterConfig): Extension {
       height: "100%",
       display: "block",
     },
-    // Ensure line numbers have proper spacing when SQL gutter is present
     ".cm-lineNumbers .cm-gutterElement": {
       paddingLeft: "8px",
       paddingRight: "8px",

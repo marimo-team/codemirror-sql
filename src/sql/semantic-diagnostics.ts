@@ -361,10 +361,6 @@ function collectStatement(node: AstNode, scopes: QueryScope[]): void {
   }
 }
 
-/**
- * Extracts the column name from a column_ref node. Depending on the dialect
- * grammar the column is either a plain string or `{expr: {value}}`.
- */
 function getColumnQualifier(ref: AstNode): readonly string[] | null {
   if (typeof ref.table !== "string" || ref.table.length === 0) {
     return null;
