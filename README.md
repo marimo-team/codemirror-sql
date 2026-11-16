@@ -1,94 +1,195 @@
 # codemirror-sql
 
-SQL linting, completion, and navigation for CodeMirror 6. Built by and used in
-[marimo](https://github.com/marimo-team/marimo). [Try the demo](https://marimo-team.github.io/codemirror-sql/).
+A CodeMirror extension for SQL linting and visual gutter indicators. Built by and used in [marimo](https://github.com/marimo-team/marimo).
 
-- Per-statement syntax errors, schema warnings, and gutter indicators
-- Schema and keyword hover tooltips with custom renderers
-- Completion for CTEs, table aliases, and columns from referenced tables
-- Reference highlighting, go-to-definition, and rename
-- Additional dialects for DuckDB, BigQuery, and Dremio
+## Features
+
+- ⚡ **Real-time validation** - Per-statement SQL syntax checking as you type, with detailed error messages for every broken statement
+- 🧠 **Schema-aware linting** - Warns about unknown tables, unknown columns, and ambiguous column references based on your schema
+- 🎨 **Visual gutter** - Color-coded statement indicators and error highlighting
+- 💡 **Hover tooltips** - Schema info, keywords, and column details on hover
+- 🔮 **CTE autocomplete** - Statement-scoped completion of CTE names and their output columns
+- 🏷️ **Alias resolution** - Hover and completion understand table aliases (`SELECT u.name FROM users u`)
+- 📇 **FROM-aware column completion** - Unqualified prefixes complete the columns of the tables in the statement's FROM clause (`SELECT e` -> `email` with `FROM users`), even with many tables in the schema
+- 🧭 **Navigation** - Go-to-definition, reference highlighting, and rename for CTEs and aliases
+- 🎯 **Query-aware resolution** - Context-sensitive schema and column suggestions
+- 🔍 **Additional dialects** - DuckDB, BigQuery, Dremio
+- 🛠️ **Custom renderers** - Customizable tooltip rendering for tables, columns, and keywords
 
 ## Installation
 
 ```bash
-npm install @marimo-team/codemirror-sql @codemirror/lang-sql codemirror
+npm install @marimo-team/codemirror-sql
+# or
+pnpm add @marimo-team/codemirror-sql
 ```
 
-## Quickstart
+## Usage
+
+### Basic Setup
 
 ```ts
-import { MySQL, sql } from "@codemirror/lang-sql";
+import { sql, StandardSQL } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
-import { createSqlAnalysis, sqlCompletion, sqlExtension } from "@marimo-team/codemirror-sql";
+import { sqlExtension, cteCompletionSource, aliasColumnCompletionSource, unqualifiedColumnCompletionSource } from "@marimo-team/codemirror-sql";
 
-const dialect = MySQL;
-const schema = { users: ["id", "name", "email"] };
-const analysis = createSqlAnalysis();
+const schema = {
+  users: ["id", "name", "email", "active"],
+  posts: ["id", "title", "content", "user_id"],
+};
 
-new EditorView({
-  doc: "SELECT u.name FROM users u",
+const editor = new EditorView({
+  doc: "SELECT * FROM users WHERE active = true",
   extensions: [
     basicSetup,
-    sql({ dialect, schema }),
-    sqlCompletion({ ...analysis, dialect, schema }),
-    sqlExtension({ ...analysis, schema }),
+    sql({
+      dialect: StandardSQL,
+      schema: schema,
+      upperCaseKeywords: true,
+    }),
+    StandardSQL.language.data.of({
+      autocomplete: cteCompletionSource,
+    }),
+    StandardSQL.language.data.of({
+      // Complete `u.` -> columns of `users` in `SELECT ... FROM users u`
+      autocomplete: aliasColumnCompletionSource({ schema }),
+    }),
+    StandardSQL.language.data.of({
+      // Complete `SELECT e` -> `email` because `FROM users` is in the statement
+      autocomplete: unqualifiedColumnCompletionSource({ schema }),
+    }),
+    sqlExtension({
+      // Shared by hover tooltips and semantic linting
+      schema: schema,
+      linterConfig: {
+        delay: 250, // Validation delay in ms
+      },
+      gutterConfig: {
+        backgroundColor: "#3b82f6", // Current statement color
+        errorBackgroundColor: "#ef4444", // Error highlight color
+        hideWhenNotFocused: true,
+      },
+      enableHover: true,
+      hoverConfig: {
+        hoverTime: 300,
+        enableKeywords: true,
+        enableTables: true,
+        enableColumns: true,
+      },
+    }),
   ],
-  parent: document.body,
+  parent: document.querySelector("#editor"),
 });
 ```
 
-`sqlExtension` provides linting, hover, gutter indicators, and navigation.
-`sqlCompletion` registers the completion sources. Sharing `analysis` avoids
-duplicate parsing across both bundles.
+### Shared analysis
 
-## Configuration
-
-Providing a `schema` enables warnings for unknown tables, unknown columns, and
-ambiguous columns. Set each check's severity to `"error"`, `"warning"`, or `"off"`:
+`sqlExtension` shares analysis between its features. To share parsing with completions:
 
 ```ts
+import { createSqlAnalysis, sqlCompletion, sqlExtension } from "@marimo-team/codemirror-sql";
+
+const analysis = createSqlAnalysis();
+const extensions = [
+  sqlExtension({ ...analysis, schema }),
+  sqlCompletion({ ...analysis, dialect: StandardSQL, schema }),
+];
+```
+
+For a custom parser, use `createSqlAnalysis({ parser })`. Set `needsRefresh` on
+`sqlExtension` when parser configuration can change without editing SQL.
+
+### Schema-aware semantic linting
+
+When a schema is provided (via the top-level `schema` option, the
+`sqlSchemaFacet`, or `semanticLinterConfig.schema`), queries are validated
+against it: unknown tables, unknown columns, and ambiguous column references
+are reported as warnings (configurable per check). Without a schema the
+semantic linter is inert.
+
+```ts
+import { EditorView } from "codemirror";
+import { sqlSemanticLinter } from "@marimo-team/codemirror-sql";
+
+const editor = new EditorView({
+  extensions: [
+    sqlSemanticLinter({
+      schema: { users: ["id", "name"], posts: ["id", "user_id"] },
+      severity: {
+        unknownTable: "error", // "error" | "warning" | "off" (default: "warning")
+        unknownColumn: "warning",
+        ambiguousColumn: "warning",
+      },
+    }),
+  ],
+  parent: document.querySelector("#editor"),
+});
+```
+
+Checks only run on statements that parse cleanly, and skip anything that
+can't be confidently resolved (CTE outputs, subquery results, aliases from
+outer scopes), preferring under-reporting over false positives. Semantic
+diagnostics carry `source: "sql-schema"`; syntax diagnostics use
+`source: "sql-parser"`. If the schema is provided as a function, it is called
+on every lint pass and should be cheap/memoized.
+
+### Navigation: go-to-definition, highlights, rename
+
+`sqlExtension` includes navigation for statement-local identifiers (CTE names,
+table aliases, select aliases) by default: the references of the identifier
+under the cursor are highlighted, and Mod-click (Cmd/Ctrl-click) on a
+resolvable identifier jumps to its definition. Keybindings (`F12`/`Mod-b` for
+go-to-definition, `F2` for rename) are opt-in:
+
+```ts
+import { renameSqlIdentifier, sqlExtension } from "@marimo-team/codemirror-sql";
+
 sqlExtension({
-  schema,
-  semanticLinterConfig: { severity: { unknownTable: "error" } },
-  navigationConfig: { keymap: true },
+  enableNavigation: true, // default
+  navigationConfig: {
+    keymap: true, // enable F12 / Mod-b / F2
+    // Supply your own rename UI (defaults to window.prompt)
+    prompt: (currentName) => window.prompt(`Rename '${currentName}' to:`, currentName),
+  },
 });
+
+// Rename programmatically: rewrites the definition and all references
+// in a single undo step
+await renameSqlIdentifier(view, { prompt: () => "new_name" });
 ```
 
-Reference highlighting and Cmd/Ctrl-click go-to-definition are enabled by default.
-`navigationConfig.keymap` adds `F12`/`Mod-b` for go-to-definition and `F2` for rename.
-Set `navigationConfig.prompt` to supply your own rename UI. Navigation skips
-ambiguous or shadowed bindings.
+The pieces are also exported individually: `sqlHighlightReferences`,
+`sqlGotoDefinition`, `sqlNavigationKeymap`, `gotoSqlDefinition`, and
+`findReferences`. Rename returns `false` when the identifier can't be
+confidently resolved — it never falls back to text search-and-replace.
 
-For all options, see [`SqlExtensionConfig`](src/sql/extension.ts) and
-[`SqlCompletionConfig`](src/sql/completion-extension.ts).
+## Additional Dialects
 
-### Custom parser
+This extension adds support for additional dialects:
 
-To use DuckDB, replace the quickstart's `dialect` and `analysis` declarations with:
+- **DuckDB**
+- **BigQuery**
+- **Dremio**
 
-```ts
-import { NodeSqlParser } from "@marimo-team/codemirror-sql";
-import { DuckDBDialect } from "@marimo-team/codemirror-sql/dialects";
+## Keyword Completion
 
-const dialect = DuckDBDialect;
-const analysis = createSqlAnalysis({
-  parser: new NodeSqlParser({
-    getParserOptions: () => ({ database: "DuckDB" }),
-  }),
-});
-```
+The extension includes keyword documentation for common **SQL keywords** including used in hover and completion,
+which can be found in the `src/data` directory.
 
-Keep the completion dialect and parser database aligned. If parser options change
-without an edit, set `needsRefresh` on `sqlExtension` to detect that change.
-See [`SqlParser`](src/sql/types.ts) to implement a custom parser.
+## Demo
+
+See the [demo](https://marimo-team.github.io/codemirror-sql/) for a full example.
 
 ## Development
 
 ```bash
+# Install dependencies
 pnpm install
+
+# Run tests
 pnpm test
-pnpm run typecheck
+
+# Run demo
 pnpm dev
 ```
 
