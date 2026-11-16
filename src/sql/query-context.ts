@@ -1,4 +1,4 @@
-import { type AstNode, isRecord, nodes as asArray, nameValue, columnName, values, record } from "./ast.js";
+import { type AstNode, isRecord, nodes as asArray, nameValue, columnName, values, record, readAst } from "./ast.js";
 import { maskLiteralsAndComments } from "./scanner.js";
 export { maskLiteralsAndComments } from "./scanner.js";
 import type { EditorState } from "@codemirror/state";
@@ -442,12 +442,10 @@ export async function analyzeQueryContext(
     return emptyContext();
   }
 
-  let ast: unknown = null;
+  let ast: readonly AstNode[] | null = null;
   try {
-    const result = await parser.parse(sql, opts);
-    if (result.success && result.ast != null) {
-      ast = result.ast;
-    }
+    const result = readAst(await parser.parse(sql, opts));
+    if (result.kind === "parsed") ast = result.statements;
   } catch (error) {
     debug("query-context parse failed", error);
   }
@@ -464,8 +462,7 @@ export async function analyzeQueryContext(
       seenTables: new Set(),
       seenCtes: new Set(),
     };
-    const asts = Array.isArray(ast) ? ast : [ast];
-    for (const node of asts) {
+    for (const node of ast) {
       if (isRecord(node)) {
         collectSelectAliases(node, ctx);
       }

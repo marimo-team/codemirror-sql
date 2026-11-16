@@ -8,7 +8,7 @@ import {
   stripIdentifierQuotes,
 } from "./query-context.js";
 import { SqlStructureAnalyzer, type SqlStatement } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 /** A document range (absolute offsets) */
 export interface SqlRange {
@@ -38,7 +38,7 @@ export interface SqlReferenceResult {
  * pieces are created internally (pass shared instances to avoid re-parsing).
  */
 export interface SqlReferenceConfig {
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   structureAnalyzer?: SqlStructureAnalyzer;
   contextAnalyzer?: QueryContextAnalyzer;
 }

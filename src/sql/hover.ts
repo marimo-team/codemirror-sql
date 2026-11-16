@@ -13,7 +13,7 @@ import {
 import type { QueryContextAnalyzer } from "./query-context.js";
 import { resolveSqlSchema } from "./schema-facet.js";
 import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 /**
  * Creates a filtered namespace that only includes tables referenced in the query
@@ -132,7 +132,7 @@ export interface SqlHoverConfig {
   /** Enable fuzzy search for namespace items (default: false) */
   enableFuzzySearch?: boolean;
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Query-context analyzer to reuse (e.g. shared with
    * `aliasColumnCompletionSource`), so each statement is only analyzed once.

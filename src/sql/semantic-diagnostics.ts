@@ -1,6 +1,6 @@
 import { resolveTable } from "./schema-utils.js";
 import { createSqlAnalysis } from "./analysis.js";
-import { type AstNode, isRecord, isSelectNode, nodes as asArray, record, nameValue, columnName } from "./ast.js";
+import { type AstNode, isRecord, isSelectNode, nodes as asArray, record, nameValue, columnName, readAst } from "./ast.js";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Extension, Text } from "@codemirror/state";
@@ -11,7 +11,7 @@ import {
 } from "./namespace-utils.js";
 import { resolveSqlSchema, type SqlSchemaSource } from "./schema-facet.js";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -34,7 +34,7 @@ export interface SqlSemanticLinterConfig {
    */
   schema?: SqlSchemaSource;
   /** Custom SQL parser instance to use for analysis */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Structure analyzer used to split the document into statements.
    * Pass a shared instance (e.g. the one used by the gutter) to reuse its cache.
@@ -564,13 +564,11 @@ function createSemanticLintSource(config: SqlSemanticLinterConfig = {}) {
       if (!stmt.isValid) {
         continue;
       }
-      const result = await parser.parse(view.state.sliceDoc(stmt.from, stmt.to), { state: view.state });
-      if (!result.success || result.ast == null) {
+      const result = readAst(await parser.parse(view.state.sliceDoc(stmt.from, stmt.to), { state: view.state }));
+      if (result.kind !== "parsed") {
         continue;
       }
-      const asts = Array.isArray(result.ast) ? result.ast : [result.ast];
-      for (const ast of asts) {
-        if (!isRecord(ast)) continue;
+      for (const ast of result.statements) {
         for (const finding of analyzeStatementAst(ast, schema)) {
           const severity = severities[finding.kind];
           if (severity === "off") {

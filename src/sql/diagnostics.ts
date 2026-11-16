@@ -3,7 +3,7 @@ import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Extension, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParseError, SqlParserLike } from "./types.js";
+import type { SqlParseError, SqlParser } from "./types.js";
 
 const DEFAULT_DELAY = 750;
 
@@ -16,7 +16,7 @@ export interface SqlLinterConfig {
   /** Delay in milliseconds before running validation (default: 750) */
   delay?: number;
   /** Custom SQL parser instance to use for validation */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Lint each statement in the document separately so every broken statement
    * gets its own diagnostic, instead of stopping at the first parse error (default: true)

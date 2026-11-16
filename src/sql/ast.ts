@@ -1,4 +1,16 @@
+import type { SqlParseResult } from "./types.js";
+
 export type AstNode = Record<string, unknown>;
+
+type AstParseOutcome =
+  | { kind: "parsed"; statements: readonly AstNode[] }
+  | { kind: "invalid" | "skipped" };
+
+export function readAst(result: SqlParseResult): AstParseOutcome {
+  if (!result.success) return { kind: "invalid" };
+  const statements = Array.isArray(result.ast) ? nodes(result.ast) : nodes([result.ast]);
+  return statements.length > 0 ? { kind: "parsed", statements } : { kind: "skipped" };
+}
 
 export function isRecord(value: unknown): value is AstNode {
   return typeof value === "object" && value !== null && !Array.isArray(value);

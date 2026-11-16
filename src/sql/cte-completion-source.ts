@@ -7,14 +7,14 @@ import {
 } from "./query-context.js";
 import { statementAt } from "./references.js";
 import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 /**
  * Configuration for the CTE completion source
  */
 export interface CteCompletionConfig {
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Query-context analyzer to reuse (e.g. shared with hover and
    * `aliasColumnCompletionSource`), so each statement is only analyzed once.

@@ -9,13 +9,16 @@ export type SemanticType = "database" | "schema" | "table" | "column" | "namespa
 /**
  * Represents a resolved namespace item with its path and metadata
  */
-interface NamespaceItemBase {
+export interface ResolvedNamespaceItem {
+  completion?: Completion;
+  value?: string;
   path: string[];
+  type: "completion" | "string" | "namespace";
   semanticType: SemanticType;
   namespace?: SQLNamespace;
 }
 
-export type ResolvedNamespaceItem = NamespaceItemBase & (
+type NamespaceNode = ResolvedNamespaceItem & (
   | { type: "completion"; completion: Completion; value?: never }
   | { type: "string"; value: string; completion?: never }
   | { type: "namespace"; completion?: never; value?: never }
@@ -197,7 +200,7 @@ function traverseNamespaceRecursive(
   currentPath: string[],
   config: NamespaceSearchConfig,
   parentNamespace?: SQLNamespace,
-): ResolvedNamespaceItem | null {
+): NamespaceNode | null {
   if (remainingPath.length === 0) {
     // We've reached the end of the path
     if (isSelfChildrenNamespace(namespace)) {
@@ -325,7 +328,7 @@ export function findNamespaceCompletions(
   prefix: string,
   config: NamespaceSearchConfig = {},
 ): ResolvedNamespaceItem[] {
-  const results: ResolvedNamespaceItem[] = [];
+  const results: NamespaceNode[] = [];
 
   if (prefix.includes(".")) {
     // Handle dotted prefixes like "db.table"
@@ -355,8 +358,8 @@ function findCompletionsInNamespace(
   prefix: string,
   basePath: string[],
   config: NamespaceSearchConfig,
-): ResolvedNamespaceItem[] {
-  const results: ResolvedNamespaceItem[] = [];
+): NamespaceNode[] {
+  const results: NamespaceNode[] = [];
   const { caseSensitive = false, allowPartialMatch = true } = config;
 
   if (isObjectNamespace(namespace)) {
@@ -496,7 +499,7 @@ export function findNamespaceItemByEndMatch(
   identifier: string,
   config: NamespaceSearchConfig = {},
 ): ResolvedNamespaceItem[] {
-  const results: ResolvedNamespaceItem[] = [];
+  const results: NamespaceNode[] = [];
   const { maxDepth = 10 } = config;
 
   // Recursively search through the namespace
@@ -534,7 +537,7 @@ export function findNamespaceItemByEndMatch(
 function collectAllItems(
   namespace: SQLNamespace,
   currentPath: string[],
-  results: ResolvedNamespaceItem[],
+  results: NamespaceNode[],
   maxDepth: number,
 ): void {
   if (currentPath.length >= maxDepth) {

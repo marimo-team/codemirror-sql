@@ -8,7 +8,7 @@ import {
 } from "./query-context.js";
 import type { SqlSchemaSource } from "./schema-facet.js";
 import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 /**
  * Configuration for the unqualified column completion source
@@ -20,7 +20,7 @@ export interface ColumnCompletionConfig {
    */
   schema?: SqlSchemaSource;
   /** Custom SQL parser instance to use for query analysis */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Query-context analyzer to reuse (e.g. the one backing hover), so the
    * statement is only analyzed once per edit.

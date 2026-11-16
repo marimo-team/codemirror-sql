@@ -1,3 +1,4 @@
+import { createSqlAnalysis } from "../analysis.js";
 import { forceLinting, forEachDiagnostic } from "@codemirror/lint";
 import type { SqlParserLike } from "../types.js";
 import { createTestView } from "./test-utils.js";
@@ -122,7 +123,7 @@ it("keeps a semantic parser override independent from the syntax parser", async 
     extensions: [sqlExtension({
       parser: syntaxParser,
       linterConfig: { delay: 0 },
-      semanticLinterConfig: { parser: semanticParser, schema: { users: ["id"] }, delay: 0 },
+      semanticLinterConfig: { parser: createSqlAnalysis({ parser: semanticParser }).parser, schema: { users: ["id"] }, delay: 0 },
       enableGutterMarkers: false,
       enableHover: false,
       enableNavigation: false,

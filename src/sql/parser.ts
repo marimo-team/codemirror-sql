@@ -26,7 +26,13 @@ export interface NodeSqlParserOptions {
   getParserOptions?: (state: EditorState) => ParserOption;
 }
 
-export type NodeSqlParserResult = SqlParseResult<AST | AST[]>;
+export interface NodeSqlParserResult extends SqlParseResult {
+  ast?: AST | AST[];
+}
+
+type NodeParseOutcome =
+  | { success: true; errors: []; ast?: AST | AST[] }
+  | { success: false; errors: SqlParseError[]; ast?: never };
 
 /**
  * A SQL parser wrapper around node-sql-parser with enhanced error handling
@@ -65,10 +71,18 @@ export class NodeSqlParser implements SqlParser {
 
   async parse(sql: string, opts: { state: EditorState }): Promise<NodeSqlParserResult> {
     const parserOptions = this.opts.getParserOptions?.(opts.state);
-    const { sql: sanitizedSql, offsetRecord } = parserOptions?.ignoreBrackets
-      ? replaceBracketsWithQuotes(sql)
-      : { sql, offsetRecord: {} };
+    const sanitizedSql = await this.sanitizeSql(sql, parserOptions);
+    const builtIn = parserOptions?.ignoreBrackets ? replaceBracketsWithQuotes(sql) : null;
+    // A custom sanitizer may change offsets in ways the built-in mapping cannot describe.
+    const offsetRecord = builtIn?.sql === sanitizedSql ? builtIn.offsetRecord : {};
+    return this.parseSanitizedSql(sanitizedSql, parserOptions, offsetRecord);
+  }
 
+  private async parseSanitizedSql(
+    sanitizedSql: string,
+    parserOptions: ParserOption | undefined,
+    offsetRecord: Record<number, number>,
+  ): Promise<NodeParseOutcome> {
     try {
       const parser = await this.getParser();
 
@@ -105,7 +119,7 @@ export class NodeSqlParser implements SqlParser {
     sql: string,
     parserOptions: Option,
     offsetRecord: Record<number, number>,
-  ): Promise<NodeSqlParserResult> {
+  ): Promise<NodeParseOutcome> {
     const parser = await this.getParser();
 
     // Remove comments and normalize for pattern checking

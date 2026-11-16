@@ -14,15 +14,17 @@ export interface SqlParseError {
   severity: "error" | "warning";
 }
 /**
- * Result of parsing a SQL statement
+ * Public parser result; custom parsers may include warnings or partial ASTs.
  */
 
-export type SqlParseResult<T = unknown> =
-  | { success: true; errors: []; ast?: T }
-  | { success: false; errors: SqlParseError[]; ast?: never };
+export interface SqlParseResult {
+  success: boolean;
+  errors: SqlParseError[];
+  ast?: unknown;
+}
 
-/** Analysis consumers only require parsing; validation can be customized. */
-export type SqlParserLike = Pick<SqlParser, "parse"> & Partial<Pick<SqlParser, "validateSql">>;
+/** Analysis consumers only require parsing; other capabilities are optional. */
+export type SqlParserLike = Pick<SqlParser, "parse"> & Partial<Omit<SqlParser, "parse">>;
 
 export interface SqlParser {
   /**

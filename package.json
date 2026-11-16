@@ -33,8 +33,7 @@
     "@codemirror/autocomplete": "^6",
     "@codemirror/lint": "^6",
     "@codemirror/state": "^6",
-    "@codemirror/view": "^6",
-    "@codemirror/lang-sql": "^6"
+    "@codemirror/view": "^6"
   },
   "devDependencies": {
     "@codemirror/lang-sql": "6.10.0",

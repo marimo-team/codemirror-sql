@@ -84,8 +84,10 @@ const editor = new EditorView({
 
 ### Shared analysis
 
-`sqlExtension` shares its default parser and analyzers across linting, hover,
-navigation, and gutter markers. To also share them with completion sources:
+`sqlExtension` shares its default parser and analyzers across features. Existing
+`linterConfig.parser` settings still apply to syntax linting, semantic linting,
+and navigation; hover and gutter defaults remain independent of that override.
+To opt into sharing a custom parser across all features and completion sources:
 
 ```ts
 const analysis = createSqlAnalysis({

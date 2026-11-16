@@ -55,6 +55,13 @@ describe("built package in Node.js", () => {
     execFileSync("pnpm", ["run", "build"], { cwd: repoRoot, stdio: "pipe" });
   });
 
+  it("type-checks existing consumer patterns against emitted declarations", () => {
+    execFileSync("pnpm", ["exec", "tsc", "-p", "src/__tests__/fixtures/tsconfig.json"], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+  });
+
   it("imports published entry points and parses unsupported DuckDB syntax without Vite", () => {
     execFileSync(process.execPath, ["--input-type=module", "-e", `
       import assert from 'node:assert/strict';

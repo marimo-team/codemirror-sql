@@ -8,5 +8,5 @@
     "types": ["node", "vite/client"]
   },
   "include": ["src", "demo", "vite.config.ts"],
-  "exclude": []
+  "exclude": ["src/__tests__/fixtures"]
 }

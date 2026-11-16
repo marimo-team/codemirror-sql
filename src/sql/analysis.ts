@@ -2,7 +2,7 @@ import type { EditorState } from "@codemirror/state";
 import { NodeSqlParser } from "./parser.js";
 import { QueryContextAnalyzer } from "./query-context.js";
 import { SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParseResult, SqlParserLike } from "./types.js";
+import type { SqlParseResult, SqlParser, SqlParserLike } from "./types.js";
 
 export interface SqlAnalysisConfig {
   parser?: SqlParserLike;
@@ -11,13 +11,13 @@ export interface SqlAnalysisConfig {
 }
 
 export interface SqlAnalysis {
-  parser: Required<SqlParserLike>;
+  parser: SqlParser;
   structureAnalyzer: SqlStructureAnalyzer;
   contextAnalyzer: QueryContextAnalyzer;
 }
 
 /** One immutable editor state owns its pending and completed parse results. */
-class CachedSqlParser implements SqlParserLike {
+class CachedSqlParser implements SqlParser {
   private cache = new WeakMap<EditorState, Map<string, Promise<SqlParseResult>>>();
 
   constructor(private parser: SqlParserLike) {}
@@ -40,6 +40,14 @@ class CachedSqlParser implements SqlParserLike {
     return this.parser.validateSql
       ? this.parser.validateSql(sql, opts)
       : (await this.parse(sql, opts)).errors;
+  }
+
+  async extractTableReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
+    return this.parser.extractTableReferences?.(sql, opts) ?? [];
+  }
+
+  async extractColumnReferences(sql: string, opts?: { state: EditorState }): Promise<string[]> {
+    return this.parser.extractColumnReferences?.(sql, opts) ?? [];
   }
 }
 

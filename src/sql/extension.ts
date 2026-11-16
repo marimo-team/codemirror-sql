@@ -1,4 +1,4 @@
-import { createSqlAnalysis, type SqlAnalysisConfig } from "./analysis.js";
+import { createSqlAnalysis, type SqlAnalysis, type SqlAnalysisConfig } from "./analysis.js";
 import type { Extension } from "@codemirror/state";
 import { type SqlLinterConfig, sqlLinter } from "./diagnostics.js";
 import { defaultSqlHoverTheme, type SqlHoverConfig, sqlHover } from "./hover.js";
@@ -103,34 +103,33 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
     extensions.push(sqlSchemaFacet.of(schema));
   }
 
-  const baseParser = config.parser ?? linterConfig?.parser;
-  const analysis = createSqlAnalysis({
-    parser: baseParser,
-    structureAnalyzer: config.structureAnalyzer ?? linterConfig?.structureAnalyzer,
-    contextAnalyzer: config.contextAnalyzer,
-  });
-  const forFeature = (feature: SqlAnalysisConfig = {}) => {
-    if (feature.parser && feature.parser !== baseParser && feature.parser !== analysis.parser) {
+  const analysis = createSqlAnalysis(config);
+  const forFeature = (feature: SqlAnalysisConfig = {}, fallback: SqlAnalysis = analysis) => {
+    if (feature.parser && feature.parser !== fallback.parser) {
       return createSqlAnalysis(feature);
     }
     return createSqlAnalysis({
-      parser: analysis.parser,
-      structureAnalyzer: feature.structureAnalyzer ?? analysis.structureAnalyzer,
-      contextAnalyzer: feature.contextAnalyzer ?? analysis.contextAnalyzer,
+      parser: fallback.parser,
+      structureAnalyzer: feature.structureAnalyzer ?? fallback.structureAnalyzer,
+      contextAnalyzer: feature.contextAnalyzer ?? fallback.contextAnalyzer,
     });
   };
+  const syntaxAnalysis = forFeature(linterConfig);
+  const hasSharedAnalysis =
+    config.parser != null || config.structureAnalyzer != null || config.contextAnalyzer != null;
+  const inheritedAnalysis = hasSharedAnalysis ? analysis : syntaxAnalysis;
 
   if (enableLinting) {
     extensions.push(sqlLinter({
       ...linterConfig,
-      ...forFeature(linterConfig),
+      ...syntaxAnalysis,
       needsRefresh: linterConfig?.needsRefresh ?? config.needsRefresh,
     }));
   }
   if (enableSemanticLinting) {
     extensions.push(sqlSemanticLinter({
       ...semanticLinterConfig,
-      ...forFeature(semanticLinterConfig),
+      ...forFeature(semanticLinterConfig, inheritedAnalysis),
       needsRefresh: semanticLinterConfig?.needsRefresh ?? config.needsRefresh,
     }));
   }
@@ -146,7 +145,7 @@ export function sqlExtension(config: SqlExtensionConfig = {}): Extension[] {
     extensions.push(hoverConfig?.theme ?? defaultSqlHoverTheme());
   }
   if (enableNavigation) {
-    extensions.push(...sqlNavigation({ ...navigationConfig, ...forFeature(navigationConfig) }));
+    extensions.push(...sqlNavigation({ ...navigationConfig, ...forFeature(navigationConfig, inheritedAnalysis) }));
   }
 
   return extensions;

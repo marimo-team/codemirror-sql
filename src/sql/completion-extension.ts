@@ -7,7 +7,7 @@ import { unqualifiedColumnCompletionSource } from "./column-completion-source.js
 import { createCteCompletionSource } from "./cte-completion-source.js";
 import type { QueryContextAnalyzer } from "./query-context.js";
 import type { SqlSchemaSource } from "./schema-facet.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 /**
  * Configuration for {@link sqlCompletion}, the convenience helper that
@@ -31,7 +31,7 @@ export interface SqlCompletionConfig {
    * `NodeSqlParser`. Pass the same instance used by the linter/hover so
    * dialect-specific setups only configure the parser once.
    */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   /**
    * Query-context analyzer shared by all completion sources, so each edit is
    * analyzed once. Defaults to one built from `parser`.

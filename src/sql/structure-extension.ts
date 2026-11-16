@@ -3,7 +3,7 @@ import { createSqlAnalysis } from "./analysis.js";
 import { type Extension, type Range, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, GutterMarker, gutter, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { type SqlStatement, SqlStructureAnalyzer } from "./structure-analyzer.js";
-import type { SqlParserLike } from "./types.js";
+import type { SqlParser } from "./types.js";
 
 export interface SqlGutterConfig {
   /** Re-run analysis when parser configuration changes without a document edit. */
@@ -27,7 +27,7 @@ export interface SqlGutterConfig {
   /** Opacity when editor is not focused (overrides hideWhenNotFocused if set) */
   unfocusedOpacity?: number;
   /** Custom SQL parser instance to use for analysis */
-  parser?: SqlParserLike;
+  parser?: SqlParser;
   structureAnalyzer?: SqlStructureAnalyzer;
 }
 
