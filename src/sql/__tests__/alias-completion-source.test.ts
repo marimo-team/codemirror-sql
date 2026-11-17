@@ -54,7 +54,15 @@ describe("aliasColumnCompletionSource", () => {
     expect(labels(result)).toEqual(["id", "username"]);
   });
 
-  it.each([
+  it("completes an under-qualified table sharing a name with a namespace", async () => {
+    const result = await complete("SELECT u. FROM users u", {
+      schema: { users: { other: ["x"] }, db: { users: ["id"] } },
+      pos: "SELECT u.".length,
+    });
+    expect(labels(result)).toEqual(["id"]);
+  });
+
+  it.each<{ table: string; schema: SQLNamespace }>([
     {
       table: '"my.db".users',
       schema: { "my.db": { users: ["quoted_column"] }, my: { db: { users: ["other_column"] } } },

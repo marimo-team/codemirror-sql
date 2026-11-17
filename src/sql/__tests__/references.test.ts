@@ -1,3 +1,4 @@
+import { required } from "./test-utils.js";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { findReferences, type SqlReferenceResult } from "../references.js";
@@ -27,6 +28,30 @@ function texts(sql: string, result: SqlReferenceResult): string[] {
   return result.references.map((range) => sql.slice(range.from, range.to));
 }
 
+it("excludes literal and comment occurrences after nested arrays from CTE references", async () => {
+  const sql = "WITH c AS (SELECT ARRAY[[1,2],[3,4]] AS m FROM t) SELECT m, 'copied from c' AS note FROM c -- from c";
+  const result = await resolveAt(sql, "c AS");
+  expect(result?.kind).toBe("cte");
+  expect(result?.references).toEqual([
+    { from: sql.indexOf("c AS"), to: sql.indexOf("c AS") + 1 },
+    { from: sql.indexOf("FROM c") + 5, to: sql.indexOf("FROM c") + 6 },
+  ]);
+});
+
+it("distinguishes CAST type names from select-alias declarations", async () => {
+  const sql = "SELECT CAST(created_at AS DATE) AS date FROM events ORDER BY date";
+  const result = await resolveAt(sql, "date", 1);
+  expect(result?.kind).toBe("select-alias");
+  expect(result?.references.map((range) => range.from)).toEqual([sql.indexOf("date"), sql.lastIndexOf("date")]);
+});
+
+it("distinguishes CAST type names from CTE declarations", async () => {
+  const sql = "WITH date AS (SELECT created_at FROM events) SELECT CAST(created_at AS DATE) FROM date";
+  const result = await resolveAt(sql, "date", 1);
+  expect(result?.kind).toBe("cte");
+  expect(result?.references.map((range) => range.from)).toEqual([sql.indexOf("date"), sql.lastIndexOf("date")]);
+});
+
 describe("findReferences", () => {
   describe("CTE names", () => {
     const sql = "WITH recent AS (SELECT x FROM logs) SELECT r.x FROM recent r JOIN recent r2 ON 1=1";
@@ -37,7 +62,7 @@ describe("findReferences", () => {
       expect(result?.kind).toBe("cte");
       expect(result?.name).toBe("recent");
       expect(result?.definition).toEqual({ from: 5, to: 5 + "recent".length });
-      expect(texts(sql, result!)).toEqual(["recent", "recent", "recent"]);
+      expect(texts(sql, required(result))).toEqual(["recent", "recent", "recent"]);
       expect(result?.references).toHaveLength(3);
     });
 
@@ -81,7 +106,7 @@ describe("findReferences", () => {
       const doc = 'WITH "recent" AS (SELECT 1) SELECT * FROM recent';
       const result = await resolveAt(doc, "recent", 1);
       expect(result?.kind).toBe("cte");
-      expect(doc.slice(result!.definition.from, result!.definition.to)).toBe('"recent"');
+      expect(doc.slice(required(result).definition.from, required(result).definition.to)).toBe('"recent"');
       expect(result?.references).toHaveLength(2);
     });
 
@@ -137,7 +162,7 @@ describe("findReferences", () => {
       const result = await resolveAt(sql, "u.id");
       expect(result?.kind).toBe("table-alias");
       expect(result?.name).toBe("u");
-      expect(sql.slice(result!.definition.from, result!.definition.to)).toBe("u");
+      expect(sql.slice(required(result).definition.from, required(result).definition.to)).toBe("u");
       expect(result?.definition.from).toBe(sql.indexOf("users u") + "users ".length);
       // definition + u.name + u.id
       expect(result?.references).toHaveLength(3);
@@ -247,7 +272,7 @@ describe("findReferences", () => {
       const result = await findReferences(state, secondUse);
       expect(result).toBeTruthy();
       const boundary = sql.indexOf(";");
-      for (const range of result!.references) {
+      for (const range of required(result).references) {
         expect(range.from).toBeGreaterThan(boundary);
       }
     });
@@ -294,4 +319,23 @@ describe("findReferences", () => {
       expect(result?.references).toHaveLength(2);
     });
   });
+});
+
+it.each([
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM users u)",
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM (SELECT 1 AS id) u)",
+  "SELECT u.id FROM users u WHERE EXISTS (SELECT u.id FROM generate_series(1, 3) AS u)",
+  "SELECT * FROM (SELECT u.id FROM users u) a JOIN (SELECT u.id FROM users u) b ON true",
+  "WITH t AS (SELECT 1) SELECT * FROM (WITH t AS (SELECT 2) SELECT * FROM t) x JOIN t ON true",
+  "SELECT id AS label, name AS label FROM users ORDER BY label",
+  "SELECT id AS label, name label FROM users ORDER BY label",
+])("refuses references with multiple declarations: %s", async (doc) => {
+  const state = EditorState.create({ doc });
+  const pos = doc.includes("u.id") ? doc.indexOf("u.id") : doc.includes("WITH") ? doc.indexOf("t AS") : doc.indexOf("label");
+  expect(await findReferences(state, pos)).toBeNull();
+});
+
+it("refuses a CTE whose name is also used as its table alias", async () => {
+  const doc = "WITH t AS (SELECT 1 AS id) SELECT t.id FROM t t";
+  expect(await findReferences(EditorState.create({ doc }), doc.indexOf("t AS"))).toBeNull();
 });

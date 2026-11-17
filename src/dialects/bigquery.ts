@@ -6,7 +6,7 @@ import { PostgreSQL, SQLDialect, type SQLDialectSpec } from "@codemirror/lang-sq
  */
 
 const BigQuery: SQLDialectSpec = {
-  ...PostgreSQL,
+  ...PostgreSQL.spec,
   caseInsensitiveIdentifiers: true, // Case-insensitive completes
   identifierQuotes: "`", // BigQuery uses backticks for identifiers
 };

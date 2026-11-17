@@ -14,19 +14,24 @@ export interface SqlParseError {
   severity: "error" | "warning";
 }
 /**
- * Result of parsing a SQL statement
+ * Public parser result; custom parsers may include warnings or partial ASTs.
  */
 
 export interface SqlParseResult {
-  /** Whether parsing was successful */
   success: boolean;
-  /** Array of parsing errors, if any */
   errors: SqlParseError[];
-  /** The parsed AST if successful */
   ast?: unknown;
 }
 
+/** Analysis consumers only require parsing; other capabilities are optional. */
+export type SqlParserLike = Pick<SqlParser, "parse"> & Partial<Omit<SqlParser, "parse">>;
+
 export interface SqlParser {
+  /**
+   * Identifies parser configuration for reuse across states with the same document.
+   * Return undefined (the default) to cache only within the exact editor state.
+   */
+  getCacheKey?(state: EditorState): unknown;
   /**
    * Parse a SQL statement and return the AST
    * @param sql - The SQL statement to parse

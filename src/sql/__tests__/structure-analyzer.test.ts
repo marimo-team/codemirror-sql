@@ -1,7 +1,19 @@
 import { EditorState } from "@codemirror/state";
 import { beforeEach, describe, expect, it } from "vitest";
-import { NodeSqlParser } from "../parser.js";
+import { NodeSqlParser, type SupportedDialects } from "../parser.js";
 import { SqlStructureAnalyzer } from "../structure-analyzer.js";
+
+it.each<SupportedDialects>(["MySQL", "BigQuery", "Sqlite"])(
+  "keeps statements after comments containing an opening delimiter in %s", async (database) => {
+    const doc = "/* source: gs://bucket/logs/* */\nSELECT * FRO t;\nSELECT 2;";
+    const analyzer = new SqlStructureAnalyzer(new NodeSqlParser({ getParserOptions: () => ({ database }) }));
+    const statements = await analyzer.analyzeDocument(EditorState.create({ doc }));
+    expect(statements).toHaveLength(2);
+    expect(statements[0]?.isValid).toBe(false);
+    expect(statements[0]?.errors).not.toHaveLength(0);
+    expect(statements[1]?.isValid).toBe(true);
+  },
+);
 
 describe("SqlStructureAnalyzer", () => {
   let analyzer: SqlStructureAnalyzer;
@@ -21,11 +33,11 @@ describe("SqlStructureAnalyzer", () => {
       const statements = await analyzer.analyzeDocument(state);
 
       expect(statements).toHaveLength(1);
-      expect(statements[0].content).toBe("SELECT * FROM users WHERE id = 1");
-      expect(statements[0].type).toBe("select");
-      expect(statements[0].isValid).toBe(true);
-      expect(statements[0].lineFrom).toBe(1);
-      expect(statements[0].lineTo).toBe(1);
+      expect(statements[0]?.content).toBe("SELECT * FROM users WHERE id = 1");
+      expect(statements[0]?.type).toBe("select");
+      expect(statements[0]?.isValid).toBe(true);
+      expect(statements[0]?.lineFrom).toBe(1);
+      expect(statements[0]?.lineTo).toBe(1);
     });
 
     it("should identify multiple SQL statements", async () => {
@@ -37,9 +49,9 @@ describe("SqlStructureAnalyzer", () => {
       const statements = await analyzer.analyzeDocument(state);
 
       expect(statements).toHaveLength(3);
-      expect(statements[0].type).toBe("select");
-      expect(statements[1].type).toBe("insert");
-      expect(statements[2].type).toBe("delete");
+      expect(statements[0]?.type).toBe("select");
+      expect(statements[1]?.type).toBe("insert");
+      expect(statements[2]?.type).toBe("delete");
     });
 
     it("should handle statements without semicolons", async () => {
@@ -47,8 +59,8 @@ describe("SqlStructureAnalyzer", () => {
       const statements = await analyzer.analyzeDocument(state);
 
       expect(statements).toHaveLength(1);
-      expect(statements[0].content).toBe("SELECT * FROM users WHERE id = 1");
-      expect(statements[0].type).toBe("select");
+      expect(statements[0]?.content).toBe("SELECT * FROM users WHERE id = 1");
+      expect(statements[0]?.type).toBe("select");
     });
 
     it("should handle semicolons in string literals", async () => {
@@ -56,8 +68,8 @@ describe("SqlStructureAnalyzer", () => {
       const statements = await analyzer.analyzeDocument(state);
 
       expect(statements).toHaveLength(2);
-      expect(statements[0].content).toBe("SELECT 'Hello; World' FROM users");
-      expect(statements[1].content).toBe("UPDATE users SET name = 'Test;'");
+      expect(statements[0]?.content).toBe("SELECT 'Hello; World' FROM users");
+      expect(statements[1]?.content).toBe("UPDATE users SET name = 'Test;'");
     });
 
     it("should determine correct statement types", () => {
@@ -73,11 +85,11 @@ describe("SqlStructureAnalyzer", () => {
         { sql: "SHOW TABLES", expected: "other" },
       ];
 
-      testCases.forEach(async ({ sql, expected }) => {
+      return Promise.all(testCases.map(async ({ sql, expected }) => {
         state = createState(`${sql};`);
         const statements = await analyzer.analyzeDocument(state);
-        expect(statements[0].type).toBe(expected);
-      });
+        expect(statements[0]?.type).toBe(expected);
+      }));
     });
 
     it("should handle invalid SQL statements", async () => {
@@ -85,7 +97,7 @@ describe("SqlStructureAnalyzer", () => {
       const statements = await analyzer.analyzeDocument(state);
 
       expect(statements).toHaveLength(1);
-      expect(statements[0].isValid).toBe(false);
+      expect(statements[0]?.isValid).toBe(false);
     });
 
     it("should cache results for identical content", async () => {
@@ -133,14 +145,14 @@ DELETE FROM users WHERE id = 1;`);
     it("should return statements that intersect with range", async () => {
       const statements = await analyzer.getStatementsInRange(state, 0, 50);
       expect(statements).toHaveLength(2); // SELECT and INSERT
-      expect(statements[0].type).toBe("select");
-      expect(statements[1].type).toBe("insert");
+      expect(statements[0]?.type).toBe("select");
+      expect(statements[1]?.type).toBe("insert");
     });
 
     it("should return single statement when range is within one statement", async () => {
       const statements = await analyzer.getStatementsInRange(state, 5, 10);
       expect(statements).toHaveLength(1);
-      expect(statements[0].type).toBe("select");
+      expect(statements[0]?.type).toBe("select");
     });
 
     it("should return all statements when range covers entire document", async () => {
@@ -176,9 +188,9 @@ WHERE u.active = true
 
       const statements = await analyzer.analyzeDocument(state);
       expect(statements).toHaveLength(1);
-      expect(statements[0].lineFrom).toBe(1);
-      expect(statements[0].lineTo).toBe(6);
-      expect(statements[0].type).toBe("select");
+      expect(statements[0]?.lineFrom).toBe(1);
+      expect(statements[0]?.lineTo).toBe(6);
+      expect(statements[0]?.type).toBe("select");
     });
   });
 
@@ -189,8 +201,8 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users \nWHERE id = 1");
-        expect(statements[0].type).toBe("select");
+        expect(statements[0]?.content).toBe("SELECT * FROM users \nWHERE id = 1");
+        expect(statements[0]?.type).toBe("select");
       });
 
       it("should handle single-line comment at end of statement", async () => {
@@ -198,7 +210,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users WHERE id = 1");
+        expect(statements[0]?.content).toBe("SELECT * FROM users WHERE id = 1");
       });
 
       it("should handle statement that is entirely a comment", async () => {
@@ -206,8 +218,8 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users");
-        expect(statements[0].type).toBe("select");
+        expect(statements[0]?.content).toBe("SELECT * FROM users");
+        expect(statements[0]?.type).toBe("select");
       });
 
       it("should handle multiple single-line comments", async () => {
@@ -220,7 +232,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content.trim()).toBe(
+        expect(statements[0]?.content.trim()).toBe(
           "SELECT * FROM users \n          \n          WHERE id = 1",
         );
       });
@@ -232,8 +244,8 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users  WHERE id = 1");
-        expect(statements[0].type).toBe("select");
+        expect(statements[0]?.content).toBe("SELECT * FROM users  WHERE id = 1");
+        expect(statements[0]?.type).toBe("select");
       });
 
       it("should handle multi-line comments spanning multiple lines", async () => {
@@ -245,15 +257,16 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users  WHERE id = 1");
+        expect(statements[0]?.content).toBe("SELECT * FROM users  WHERE id = 1");
       });
 
-      it("should handle nested-like comment patterns", async () => {
+      it("does not nest block comments", async () => {
         state = createState("SELECT * FROM users /* comment /* nested */ text */ WHERE id = 1;");
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT * FROM users  text */ WHERE id = 1");
+        expect(statements[0]?.content).toBe("SELECT * FROM users  text */ WHERE id = 1");
+        expect(statements[0]?.isValid).toBe(false);
       });
     });
 
@@ -263,7 +276,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT 'This -- is not a comment' FROM users");
+        expect(statements[0]?.content).toBe("SELECT 'This -- is not a comment' FROM users");
       });
 
       it("should not strip multi-line comment patterns inside string literals", async () => {
@@ -271,7 +284,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe("SELECT 'This /* is not */ a comment' FROM users");
+        expect(statements[0]?.content).toBe("SELECT 'This /* is not */ a comment' FROM users");
       });
 
       it("should handle mixed real comments and string literal comment patterns", async () => {
@@ -281,7 +294,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].content).toBe(
+        expect(statements[0]?.content).toBe(
           "SELECT 'Text -- not comment' FROM users \nWHERE id = 1",
         );
       });
@@ -297,10 +310,10 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(2);
-        expect(statements[0].content.trim()).toBe("SELECT * FROM users");
-        expect(statements[0].type).toBe("select");
-        expect(statements[1].content.trim()).toBe("INSERT INTO users (name) VALUES ('John')");
-        expect(statements[1].type).toBe("insert");
+        expect(statements[0]?.content.trim()).toBe("SELECT * FROM users");
+        expect(statements[0]?.type).toBe("select");
+        expect(statements[1]?.content.trim()).toBe("INSERT INTO users (name) VALUES ('John')");
+        expect(statements[1]?.type).toBe("insert");
       });
 
       it("should not create statements from comment-only content", async () => {
@@ -313,7 +326,7 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(1);
-        expect(statements[0].type).toBe("select");
+        expect(statements[0]?.type).toBe("select");
       });
 
       it("should handle semicolons in comments", async () => {
@@ -326,8 +339,8 @@ WHERE u.active = true
         const statements = await analyzer.analyzeDocument(state);
 
         expect(statements).toHaveLength(2);
-        expect(statements[0].type).toBe("select");
-        expect(statements[1].type).toBe("insert");
+        expect(statements[0]?.type).toBe("select");
+        expect(statements[1]?.type).toBe("insert");
       });
     });
   });
@@ -337,11 +350,11 @@ WHERE u.active = true
       // "select Aa" and "select BB" collide under a 31-based 32-bit string hash
       const first = await analyzer.analyzeDocument(createState("select Aa"));
       expect(first).toHaveLength(1);
-      expect(first[0].content).toBe("select Aa");
+      expect(first[0]?.content).toBe("select Aa");
 
       const second = await analyzer.analyzeDocument(createState("select BB"));
       expect(second).toHaveLength(1);
-      expect(second[0].content).toBe("select BB");
+      expect(second[0]?.content).toBe("select BB");
     });
   });
 });

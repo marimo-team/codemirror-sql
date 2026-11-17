@@ -1,3 +1,5 @@
+import { required } from "./test-utils.js";
+import { createTestView } from "./test-utils.js";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -22,7 +24,7 @@ describe("default tooltip text escaping", () => {
     (semanticType) => {
       const dom = renderDom(DefaultSqlTooltipRenders.namespace({
         semanticType,
-        type: "namespace",
+        type: "completion",
         path: [text, "item"],
         completion: { label: text, detail: text, info: text },
         namespace: [text, { label: text }],
@@ -45,7 +47,8 @@ describe("default tooltip text escaping", () => {
   it("escapes fallback names from values and paths", () => {
     for (const value of [text, undefined]) {
       const dom = renderDom(DefaultSqlTooltipRenders.namespace({
-        semanticType: "column", type: "string", path: [text], value,
+        semanticType: "column", path: [text],
+        ...(value === undefined ? { type: "namespace" } : { type: "string", value }),
       }));
       expect(dom.querySelector("strong")?.textContent).toBe(text);
     }
@@ -271,7 +274,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       type: "namespace",
       semanticType: "database",
       // self/children counts as 1 + children length (2) = 3
-      namespace: { self: { label: "t" }, children: ["a", "b"] } as SQLNamespace,
+      namespace: { self: { label: "t" }, children: ["a", "b"] } satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Contains 3 schemas");
@@ -296,7 +299,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: ["mydb", "public", "users"],
       type: "namespace",
       semanticType: "table",
-      namespace: columns as SQLNamespace,
+      namespace: columns satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("<strong>users</strong>"); // name falls back to last path segment
@@ -336,7 +339,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: ["misc"],
       type: "namespace",
       semanticType: "namespace",
-      namespace: ["a", "b", "c"] as SQLNamespace,
+      namespace: ["a", "b", "c"] satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Namespace");
@@ -360,7 +363,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: ["x"],
       type: "namespace",
       semanticType: "namespace",
-      namespace: "not-a-namespace" as unknown as SQLNamespace,
+      namespace: {},
     };
     const html = render(item);
     expect(html).toContain("<strong>x</strong>");
@@ -375,7 +378,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: ["solo"],
       type: "namespace",
       semanticType: "table",
-      namespace: [] as unknown as SQLNamespace,
+      namespace: [] satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("<strong>solo</strong>");
@@ -441,7 +444,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       type: "completion",
       semanticType: "table",
       completion: { label: "t", detail: "a table" },
-      namespace: { self: { label: "t" }, children: ["a"] } as SQLNamespace,
+      namespace: { self: { label: "t" }, children: ["a"] } satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Table: a table");
@@ -466,7 +469,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: ["db"],
       type: "namespace",
       semanticType: "database",
-      namespace: {} as SQLNamespace,
+      namespace: {} satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Database</div>");
@@ -478,7 +481,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: [],
       type: "namespace",
       semanticType: "schema",
-      namespace: {} as SQLNamespace,
+      namespace: {} satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Schema</div>");
@@ -492,7 +495,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       path: [],
       type: "namespace",
       semanticType: "table",
-      namespace: ["id"] as SQLNamespace,
+      namespace: ["id"] satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Table</div>");
@@ -506,7 +509,7 @@ describe("DefaultSqlTooltipRenders.namespace", () => {
       type: "completion",
       semanticType: "namespace",
       completion: { label: "misc", detail: "misc ns" },
-      namespace: { a: ["x"], b: ["y"] } as SQLNamespace,
+      namespace: { a: ["x"], b: ["y"] } satisfies SQLNamespace,
     };
     const html = render(item);
     expect(html).toContain("Namespace: misc ns");
@@ -532,7 +535,7 @@ describe("defaultSqlHoverTheme", () => {
 describe("hover source tooltip DOM creation", () => {
   function mockView(doc: string): EditorView {
     const state = EditorState.create({ doc });
-    return { state } as unknown as EditorView;
+    return createTestView({ state });
   }
 
   const schema: SQLNamespace = {
@@ -556,7 +559,7 @@ describe("hover source tooltip DOM creation", () => {
   it("renders a default table tooltip DOM when hovering a table", async () => {
     const { tooltip, view } = await hoverWord("SELECT id FROM users", "users");
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.className).toBe("cm-sql-hover-tooltip");
     expect(dom.innerHTML).toContain("users");
     expect(dom.innerHTML).toContain("table");
@@ -568,7 +571,7 @@ describe("hover source tooltip DOM creation", () => {
       schema: { users: [kind === "string" ? label : { label }, "id"] },
     });
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.querySelector("img")).toBeNull();
     expect(dom.querySelector(".sql-hover-columns code")?.textContent).toBe(label);
   });
@@ -576,7 +579,7 @@ describe("hover source tooltip DOM creation", () => {
   it("renders a default column tooltip DOM when hovering a column", async () => {
     const { tooltip, view } = await hoverWord("SELECT username FROM users", "username");
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.innerHTML).toContain("username");
     expect(dom.innerHTML).toContain("column");
   });
@@ -586,7 +589,7 @@ describe("hover source tooltip DOM creation", () => {
       keywords: { select: { description: "Selects rows" } },
     });
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.innerHTML).toContain("SELECT");
     expect(dom.innerHTML).toContain("Selects rows");
   });
@@ -597,7 +600,7 @@ describe("hover source tooltip DOM creation", () => {
     const { tooltip, view } = await hoverWord("SELECT id FROM users", "users", {
       tooltipRender: () => custom,
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom).toBe(custom);
   });
 
@@ -605,7 +608,7 @@ describe("hover source tooltip DOM creation", () => {
     const { tooltip, view } = await hoverWord("SELECT id FROM users", "users", {
       tooltipRender: () => null,
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.className).toBe("cm-sql-hover-tooltip");
     expect(dom.innerHTML).toContain("users");
   });
@@ -615,7 +618,7 @@ describe("hover source tooltip DOM creation", () => {
     const { tooltip, view } = await hoverWord("SELECT id FROM users", "users", {
       tooltipRenderers: { table },
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(table).toHaveBeenCalledOnce();
     expect(dom.querySelector("div")?.textContent).toBe("custom table");
   });
@@ -625,7 +628,7 @@ describe("hover source tooltip DOM creation", () => {
     const { tooltip, view } = await hoverWord("SELECT username FROM users", "username", {
       tooltipRenderers: { column },
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(column).toHaveBeenCalledOnce();
     expect(dom.innerHTML).toContain("custom column");
   });
@@ -636,7 +639,7 @@ describe("hover source tooltip DOM creation", () => {
       keywords: { select: { description: "Selects rows" } },
       tooltipRenderers: { keyword },
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(keyword).toHaveBeenCalledOnce();
     expect(dom.innerHTML).toContain("custom keyword");
   });
@@ -645,7 +648,7 @@ describe("hover source tooltip DOM creation", () => {
     const { tooltip, view } = await hoverWord("SELECT id FROM users", "users", {
       tooltipRenderers: { table: () => "" },
     });
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.className).toBe("");
     expect(dom.innerHTML).toBe("");
   });
@@ -663,7 +666,7 @@ describe("hover source tooltip DOM creation", () => {
     // the resolver must fall back to the full schema to still show the table.
     const { tooltip, view } = await hoverWord("users", "users");
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.innerHTML).toContain("users");
   });
 
@@ -696,7 +699,7 @@ describe("hover source tooltip DOM creation", () => {
     const view = mockView(doc);
     const tooltip = await source(view, 2, 1);
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.className).toBe("cm-sql-hover-tooltip");
     expect(dom.innerHTML).toContain("<strong>mydb</strong>");
     expect(dom.innerHTML).toContain("namespace");
@@ -714,7 +717,7 @@ describe("hover source tooltip DOM creation", () => {
     const view = mockView(doc);
     const tooltip = await source(view, 2, 1);
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(namespace).toHaveBeenCalledOnce();
     expect(dom.innerHTML).toContain("custom namespace");
   });
@@ -725,7 +728,7 @@ describe("hover source tooltip DOM creation", () => {
     const view = mockView(doc);
     const tooltip = await source(view, doc.length - 1, 1);
     expect(tooltip).not.toBeNull();
-    const { dom } = tooltip!.create(view);
+    const { dom } = required(tooltip).create(view);
     expect(dom.innerHTML).toContain("sql-hover-alias");
     expect(dom.innerHTML).toContain("is an alias for");
     expect(dom.innerHTML).toContain("<code>u</code>");

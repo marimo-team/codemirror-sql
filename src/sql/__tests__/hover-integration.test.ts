@@ -1,3 +1,6 @@
+import { required } from "./test-utils.js";
+import { isObjectNamespace } from "../namespace-utils.js";
+import { createTestView } from "./test-utils.js";
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
@@ -534,7 +537,7 @@ describe("Custom Tooltip Renderers", () => {
 });
 
 describe("Query-aware hover behavior", () => {
-  const testSchema: SQLNamespace = {
+  const testSchema = {
     users: {
       self: createCompletion("users", "User table"),
       children: [
@@ -716,7 +719,8 @@ describe("Query-aware hover behavior", () => {
       const filtered = filterSchemaByTableRefs(nested, new Set(["orders"]));
 
       expect(filtered).toHaveProperty("mydb");
-      const mydb = (filtered as { mydb: Record<string, unknown> }).mydb;
+      if (!isObjectNamespace(filtered)) throw new Error("Expected an object namespace");
+      const mydb = filtered.mydb;
       expect(mydb).toHaveProperty("orders");
       expect(mydb).not.toHaveProperty("products");
     });
@@ -794,7 +798,7 @@ describe("Query-aware hover behavior", () => {
 });
 
 describe("Query-aware hover behavior - edge cases", () => {
-  const testSchema: SQLNamespace = {
+  const testSchema = {
     users: {
       self: createCompletion("users", "User table"),
       children: [
@@ -848,7 +852,7 @@ describe("Query-aware hover behavior - edge cases", () => {
 
     function createMockView(doc: string): EditorView {
       const state = EditorState.create({ doc });
-      return { state } as unknown as EditorView;
+      return createTestView({ state });
     }
 
     it("only shows hovers for tables when columns are disabled (and vice versa)", async () => {
@@ -1052,13 +1056,13 @@ describe("Query-aware hover behavior - edge cases", () => {
         doc: "SELECT id FROM users",
         extensions: [sqlSchemaFacet.of(schema)],
       });
-      const view = { state } as unknown as EditorView;
+      const view = createTestView({ state });
 
       // No `schema` in config: the source must fall back to the facet value
       const source = createHoverSource({ keywords: {} });
       const tooltip = await source(view, "SELECT id FROM users".indexOf("users") + 2, 1);
       expect(tooltip).not.toBeNull();
-      const html = tooltip!.create(view).dom.innerHTML;
+      const html = required(tooltip).create(view).dom.innerHTML;
       expect(html).toContain("users");
       expect(html).toContain("table");
     });
@@ -1071,12 +1075,12 @@ describe("Query-aware hover behavior - edge cases", () => {
         doc: "SELECT id FROM users",
         extensions: [sqlSchemaFacet.of(facetSchema)],
       });
-      const view = { state } as unknown as EditorView;
+      const view = createTestView({ state });
 
       const source = createHoverSource({ schema: configSchema, keywords: {} });
       const tooltip = await source(view, "SELECT id FROM users".indexOf("users") + 2, 1);
       expect(tooltip).not.toBeNull();
-      expect(tooltip!.create(view).dom.innerHTML).toContain("users");
+      expect(required(tooltip).create(view).dom.innerHTML).toContain("users");
     });
 
     it("resolves a nested database/schema/namespace item via the full-schema fallback", async () => {
@@ -1089,7 +1093,7 @@ describe("Query-aware hover behavior - edge cases", () => {
 
       const tooltip = await source(view, 2, 1);
       expect(tooltip).not.toBeNull();
-      const html = tooltip!.create(view).dom.innerHTML;
+      const html = required(tooltip).create(view).dom.innerHTML;
       expect(html).toContain("<strong>mydb</strong>");
       expect(html).toContain("namespace");
     });

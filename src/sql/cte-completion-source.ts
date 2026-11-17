@@ -1,12 +1,12 @@
+import { createSqlAnalysis } from "./analysis.js";
 import type { Completion, CompletionContext, CompletionSource } from "@codemirror/autocomplete";
-import { NodeSqlParser } from "./parser.js";
 import {
-  QueryContextAnalyzer,
+  type QueryContextAnalyzer,
   type QueryContextCte,
   stripIdentifierQuotes,
 } from "./query-context.js";
 import { statementAt } from "./references.js";
-import { SqlStructureAnalyzer } from "./structure-analyzer.js";
+import type { SqlStructureAnalyzer } from "./structure-analyzer.js";
 import type { SqlParser } from "./types.js";
 
 /**
@@ -27,12 +27,10 @@ export interface CteCompletionConfig {
 /** Matches a (possibly quoted) identifier at the end of the text */
 const QUALIFIER_PATTERN = /([\w$]+|"[^"]+"|`[^`]+`|\[[^\]]+\])$/;
 
-/** True when the cursor is right after FROM/JOIN, i.e. a table-name position */
 function isTableNamePosition(textBefore: string): boolean {
   return /\b(?:from|join)\s+$/i.test(textBefore);
 }
 
-/** True when `name` can be written bare (no quoting needed) */
 function isBareIdentifier(name: string): boolean {
   return /^[A-Za-z_][\w$]*$/.test(name);
 }
@@ -40,9 +38,9 @@ function isBareIdentifier(name: string): boolean {
 function cteNameCompletion(cte: QueryContextCte): Completion {
   return {
     label: cte.name,
-    type: "variable", // CTEs are like temporary tables/variables
+    type: "variable",
     info: `Common Table Expression: ${cte.name}`,
-    boost: 10, // Give CTEs higher priority than regular completions
+    boost: 10,
     ...(isBareIdentifier(cte.name) ? {} : { apply: `"${cte.name}"` }),
   };
 }
@@ -67,9 +65,7 @@ function cteColumnCompletions(cte: QueryContextCte): Completion[] {
  * Statements that don't parse (mid-edit) fall back to a regex-based scan.
  */
 export function createCteCompletionSource(config: CteCompletionConfig = {}): CompletionSource {
-  const parser = config.parser ?? new NodeSqlParser();
-  const contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
-  const structureAnalyzer = config.structureAnalyzer ?? new SqlStructureAnalyzer(parser);
+  const { contextAnalyzer, structureAnalyzer } = createSqlAnalysis(config);
 
   return async (context: CompletionContext) => {
     const word = context.matchBefore(/[\w$]*/);
@@ -99,7 +95,6 @@ export function createCteCompletionSource(config: CteCompletionConfig = {}): Com
     }
 
     if (qualified) {
-      // `<cte>.<partial>` — offer the CTE's output columns
       const line = context.state.doc.lineAt(word.from);
       const prefix = context.state.sliceDoc(line.from, word.from - 1);
       const qualifierMatch = QUALIFIER_PATTERN.exec(prefix);

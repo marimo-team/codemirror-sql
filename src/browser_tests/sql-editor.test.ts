@@ -1,8 +1,11 @@
+import { type Diagnostic, forEachDiagnostic } from "@codemirror/lint";
+import { StateEffect, StateField } from "@codemirror/state";
+import { userEvent } from "vitest/browser";
 import { acceptCompletion, currentCompletions, startCompletion } from "@codemirror/autocomplete";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { basicSetup, EditorView } from "codemirror";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { NodeSqlParser, sqlCompletion, sqlExtension } from "../index.js";
+import { createSqlAnalysis, NodeSqlParser, sqlCompletion, sqlExtension, type SupportedDialects } from "../index.js";
 
 const schema: Record<string, string[]> = {
   users: ["id", "name", "email", "active", "status", "created_at"],
@@ -118,4 +121,97 @@ test("completes a column using the current editor view's schema", async () => {
   expect(container.querySelector(".cm-tooltip-autocomplete")).not.toBeNull();
   await expect.poll(() => acceptCompletion(editor)).toBe(true);
   expect(editor.state.doc.toString()).toBe("SELECT email FROM users");
+});
+
+test("renames an alias through F2 and restores the statement with undo", async () => {
+  const doc = "SELECT u.id, ARRAY[[1,2],[3,4]], 'u.id' AS note FROM users u WHERE u.active -- u.id";
+  const editor = new EditorView({
+    doc,
+    selection: { anchor: doc.indexOf("u.id") },
+    extensions: [basicSetup, sqlExtension({
+      parser: new NodeSqlParser({ getParserOptions: () => ({ database: "PostgreSQL" }) }),
+      enableLinting: false,
+      enableSemanticLinting: false,
+      enableGutterMarkers: false,
+      enableHover: false,
+      navigationConfig: { keymap: true, prompt: () => "account" },
+    })],
+    parent: document.body,
+  });
+  onTestFinished(() => editor.destroy());
+  editor.focus();
+  await userEvent.keyboard("{F2}");
+  await expect.poll(() => editor.state.doc.toString())
+    .toBe("SELECT account.id, ARRAY[[1,2],[3,4]], 'u.id' AS note FROM users account WHERE account.active -- u.id");
+  const modifier = /Mac/.test(navigator.platform) ? "Meta" : "Control";
+  await userEvent.keyboard(`{${modifier}>}z{/${modifier}}`);
+  await expect.poll(() => editor.state.doc.toString()).toBe(doc);
+});
+
+test("updates syntax diagnostics and gutter validity when only the dialect changes", async () => {
+  const setDialect = StateEffect.define<SupportedDialects>();
+  const dialect = StateField.define<SupportedDialects>({
+    create: () => "PostgreSQL",
+    update: (value, transaction) => transaction.effects.find((effect) => effect.is(setDialect))?.value ?? value,
+  });
+  const analysis = createSqlAnalysis({ parser: new NodeSqlParser({
+    getParserOptions: (state) => ({ database: state.field(dialect) }),
+  }) });
+  const doc = "SELECT id FROM users LIMIT 1, 2";
+  const editor = new EditorView({
+    doc,
+    extensions: [basicSetup, dialect, sqlExtension({
+      ...analysis,
+      needsRefresh: (update) => update.startState.field(dialect) !== update.state.field(dialect),
+      linterConfig: { delay: 0 },
+      enableSemanticLinting: false,
+      enableHover: false,
+      enableNavigation: false,
+    })],
+    parent: document.body,
+  });
+  onTestFinished(() => editor.destroy());
+  const diagnostics = () => {
+    const result: Diagnostic[] = [];
+    forEachDiagnostic(editor.state, (diagnostic) => result.push(diagnostic));
+    return result;
+  };
+  const markerColor = () => editor.dom.querySelector<HTMLElement>(".cm-sql-gutter-marker")?.style.background;
+  await expect.poll(diagnostics).toHaveLength(1);
+  await expect.poll(markerColor).toBe("rgb(239, 68, 68)");
+  editor.dispatch({ effects: setDialect.of("MySQL") });
+  await expect.poll(diagnostics).toHaveLength(0);
+  await expect.poll(markerColor).toBe("rgb(59, 130, 246)");
+  expect(editor.state.doc.toString()).toBe(doc);
+});
+
+test("moving the cursor updates reference highlights without reparsing the document", async () => {
+  const parser = new NodeSqlParser({ getParserOptions: () => ({ database: "PostgreSQL" }) });
+  const parse = vi.spyOn(parser, "parse");
+  const doc = Array.from({ length: 10 }, (_, i) => `SELECT u.id FROM users u WHERE u.id = ${i};`).join("\n");
+  const editor = new EditorView({
+    doc,
+    selection: { anchor: doc.indexOf("u.id") },
+    extensions: [basicSetup, sql({ dialect: PostgreSQL }), sqlExtension({
+      parser,
+      schema,
+      linterConfig: { delay: 0 },
+      semanticLinterConfig: { delay: 0 },
+      navigationConfig: { highlightDelay: 0 },
+    })],
+    parent: document.body,
+  });
+  onTestFinished(() => editor.destroy());
+  editor.focus();
+  const highlights = () => editor.dom.querySelectorAll(".cm-sqlReference").length;
+  await expect.poll(highlights).toBe(3);
+  expect(parse).toHaveBeenCalledTimes(10);
+
+  await userEvent.keyboard("{ArrowRight}{ArrowRight}");
+  await expect.poll(highlights).toBe(0);
+  expect(parse).toHaveBeenCalledTimes(10);
+
+  await userEvent.keyboard("{ArrowLeft}");
+  await expect.poll(highlights).toBe(3);
+  expect(parse).toHaveBeenCalledTimes(10);
 });

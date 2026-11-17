@@ -1,3 +1,4 @@
+import { columnsOf } from "../src/sql/completion-utils.js";
 import type { NamespaceTooltipData } from "../src/sql/hover.js";
 
 interface ColumnMetadata {
@@ -33,24 +34,21 @@ interface TableMetadata {
 export type Schema = "users" | "posts" | "orders" | "customers" | "categories" | "Users_Posts";
 
 export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
-  // Show table name, columns, description, primary key, foreign key, index, unique, check, default, comment
   const table = data.item.path.join(".");
-  const columns = data.item.namespace?.[table] ?? [];
+  const columns = (columnsOf(data.item.namespace) ?? []).map(
+    (column) => typeof column === "string" ? column : column.label,
+  );
 
-  // Enhanced table metadata (simulated for demo purposes)
   const tableMetadata = getTableMetadata(table);
 
   let tooltip = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">`;
 
-  // Table header
   tooltip += `<div style="font-weight: 600; font-size: 14px; color: #1f2937; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">📋 Table: ${table}</div>`;
 
-  // Description
   if (tableMetadata.description) {
     tooltip += `<div style="color: #6b7280; font-style: italic; margin-bottom: 12px;">${tableMetadata.description}</div>`;
   }
 
-  // Column details in a table
   if (columns.length > 0) {
     tooltip += `<div style="margin-bottom: 12px;">`;
     tooltip += `<div style="font-weight: 600; color: #374151; margin-bottom: 6px;">📊 Columns</div>`;
@@ -92,7 +90,6 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
     tooltip += `</tbody></table></div>`;
   }
 
-  // Foreign key relationships
   if (tableMetadata.foreignKeys.length > 0) {
     tooltip += `<div style="margin-bottom: 12px;">`;
     tooltip += `<div style="font-weight: 600; color: #374151; margin-bottom: 6px;">🔗 Foreign Keys</div>`;
@@ -112,7 +109,6 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
     tooltip += `</tbody></table></div>`;
   }
 
-  // Indexes
   if (tableMetadata.indexes.length > 0) {
     tooltip += `<div style="margin-bottom: 12px;">`;
     tooltip += `<div style="font-weight: 600; color: #374151; margin-bottom: 6px;">📈 Indexes</div>`;
@@ -134,7 +130,6 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
     tooltip += `</tbody></table></div>`;
   }
 
-  // Table statistics
   tooltip += `<div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 11px;">`;
   tooltip += `📊 ${tableMetadata.rowCount} rows`;
   tooltip += `</div>`;
@@ -144,9 +139,7 @@ export const tableTooltipRenderer = (data: NamespaceTooltipData) => {
   return tooltip;
 };
 
-// Helper function to get enhanced table metadata
-function getTableMetadata(tableName: string): TableMetadata {
-  const metadata: Record<Schema, TableMetadata> = {
+const tableMetadata: Record<Schema, TableMetadata> = {
     users: {
       description: "User accounts and profile information",
       rowCount: "1,234",
@@ -310,10 +303,13 @@ function getTableMetadata(tableName: string): TableMetadata {
       ],
       indexes: [{ name: "idx_users_posts_user", columns: ["user_id"], unique: false }],
     },
-  };
+};
 
+const tableMetadataByName = new Map(Object.entries(tableMetadata));
+
+function getTableMetadata(tableName: string): TableMetadata {
   return (
-    metadata[tableName] || {
+    tableMetadataByName.get(tableName) ?? {
       description: "Table information",
       rowCount: "Unknown",
       columns: {},

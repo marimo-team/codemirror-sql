@@ -7,14 +7,16 @@ import {
   DefaultSqlTooltipRenders,
   defaultSqlHoverTheme,
   NodeSqlParser,
-  QueryContextAnalyzer,
+  createSqlAnalysis,
   type SupportedDialects,
+  type SqlKeywordInfo,
+  type SqlAnalysis,
   sqlCompletion,
   sqlExtension,
 } from "../src/index.js";
 import { tableTooltipRenderer } from "./custom-renderers.js";
 import { defaultSqlDoc, schema } from "./data.js";
-import { guessSqlDialect } from "./utils.js";
+import { guessSqlDialect, parseDemoDialect } from "./utils.js";
 
 let editor: EditorView;
 
@@ -35,16 +37,13 @@ const defaultKeymap = [
   {
     key: "Tab",
     run: (view: EditorView) => {
-      // Try to accept completion first
       if (acceptCompletion(view)) {
         return true;
       }
       // In production, you can use @codemirror/commands.indentWithTab instead of custom logic
-      // If no completion to accept, insert a tab character
       const { state } = view;
       const { selection } = state;
       if (selection.main.empty) {
-        // Insert tab at cursor position
         view.dispatch({
           changes: {
             from: selection.main.from,
@@ -62,8 +61,7 @@ const defaultKeymap = [
   },
 ];
 
-// e.g. lazily load keyword docs
-const getKeywordDocs = async () => {
+const getKeywordDocs = async (): Promise<Record<string, SqlKeywordInfo>> => {
   const keywords = await import("@marimo-team/codemirror-sql/data/common-keywords.json");
   const duckdbKeywords = await import("@marimo-team/codemirror-sql/data/duckdb-keywords.json");
   return {
@@ -85,15 +83,12 @@ const databaseField = StateField.define<SupportedDialects>({
   },
 });
 
-// Allows us to reconfigure the base sql extension without reloading the editor
 const baseSqlCompartment = new Compartment();
 
-const baseSqlExtension = (dialect: SQLDialect) => {
-  return sql({
+const baseSqlExtension = (dialect: SQLDialect, analysis: SqlAnalysis) => {
+  const languageSupport = sql({
     dialect: dialect,
-    // Example schema for autocomplete
     schema: schema,
-    // Enable uppercase keywords for more traditional SQL style
     upperCaseKeywords: true,
     keywordCompletion: (label, _type) => {
       return {
@@ -115,11 +110,10 @@ const baseSqlExtension = (dialect: SQLDialect) => {
       };
     },
   });
+  return [languageSupport, sqlCompletion({ dialect, schema, ...analysis })];
 };
 
-// Initialize the SQL editor
-function initializeEditor() {
-  // Use the same parser
+export function initializeEditor() {
   const parser = new NodeSqlParser({
     getParserOptions: (state: EditorState) => {
       return {
@@ -127,68 +121,51 @@ function initializeEditor() {
       };
     },
   });
-  // Shared between the completion sources so each edit is analyzed once
-  const contextAnalyzer = new QueryContextAnalyzer(parser);
+  const analysis = createSqlAnalysis({ parser });
 
   const extensions = [
     basicSetup,
     EditorView.lineWrapping,
     keymap.of(defaultKeymap),
     databaseField,
-    baseSqlCompartment.of(baseSqlExtension(defaultDialect)),
+    baseSqlCompartment.of(baseSqlExtension(defaultDialect, analysis)),
     sqlExtension({
-      // Shared schema for hover tooltips and schema-aware linting
+      ...analysis,
+      needsRefresh: (update) => getDatabase(update.startState) !== getDatabase(update.state),
       schema: schema,
-      // Linter extension configuration
       linterConfig: {
-        delay: 250, // Delay before running validation
-        parser,
+        delay: 250,
       },
-      // Schema-aware linting (unknown tables/columns, ambiguous columns)
       semanticLinterConfig: {
         delay: 250,
-        parser,
       },
 
-      // Gutter extension configuration
       gutterConfig: {
-        backgroundColor: "#3b82f6", // Blue for current statement
-        errorBackgroundColor: "#ef4444", // Red for invalid statements
-        hideWhenNotFocused: true, // Hide gutter when editor loses focus
-        parser,
+        backgroundColor: "#3b82f6",
+        errorBackgroundColor: "#ef4444",
+        hideWhenNotFocused: true,
       },
-      // Hover extension configuration
-      enableHover: true, // Enable hover tooltips
+      enableHover: true,
       hoverConfig: {
-        schema: schema, // Use the same schema as autocomplete
-        hoverTime: 300, // 300ms hover delay
-        enableKeywords: true, // Show keyword information
-        enableTables: true, // Show table information
-        enableColumns: true, // Show column information
+        schema: schema,
+        hoverTime: 300,
+        enableKeywords: true,
+        enableTables: true,
+        enableColumns: true,
         keywords: async () => {
           const keywords = await getKeywordDocs();
           return keywords;
         },
         tooltipRenderers: {
-          // Custom renderer for tables
           table: tableTooltipRenderer,
         },
         theme: defaultSqlHoverTheme("light"),
-        parser,
       },
-      // Reference highlighting and go-to-definition for CTEs/aliases
       enableNavigation: true,
       navigationConfig: {
         keymap: true, // F12/Mod-b go-to-definition, F2 rename
-        parser,
       },
     }),
-    // Register all schema-aware completion sources at once:
-    // - CTE names and their output columns
-    // - `u.` -> columns of `users` in `SELECT ... FROM users u`
-    // - `SELECT e` -> `email` because `FROM users` is in the statement
-    sqlCompletion({ dialect: defaultDialect, schema, parser, contextAnalyzer }),
-    // Custom theme for better SQL editing
     EditorView.theme({
       "&": {
         fontSize: "14px",
@@ -206,7 +183,6 @@ function initializeEditor() {
       ".cm-scroller": {
         fontFamily: "inherit",
       },
-      // Style for diagnostic errors
       ".cm-diagnostic-error": {
         borderBottom: "2px wavy #dc2626",
       },
@@ -218,7 +194,6 @@ function initializeEditor() {
         color: "#dc2626",
         fontSize: "13px",
       },
-      // Completion kind backgrounds
       ".cm-completionIcon-keyword": {
         backgroundColor: "#e0e7ff", // indigo-100
         ...completionKindStyles,
@@ -260,10 +235,10 @@ function initializeEditor() {
     parent: document.querySelector("#sql-editor") ?? undefined,
   });
 
+  setupDatabaseSelect(analysis);
   return editor;
 }
 
-// Handle example button clicks
 function setupExampleButtons() {
   const buttons = document.querySelectorAll(".example-btn");
 
@@ -272,7 +247,6 @@ function setupExampleButtons() {
       const code = button.querySelector("code");
       if (code && editor) {
         const sql = code.textContent || "";
-        // Replace editor content with the example
         editor.dispatch({
           changes: {
             from: 0,
@@ -280,41 +254,40 @@ function setupExampleButtons() {
             insert: sql,
           },
         });
-        // Focus the editor
         editor.focus();
       }
     });
   });
 }
 
-function getDatabase(state: EditorState): SupportedDialects {
+export function getDatabase(state: EditorState): SupportedDialects {
   return state.field(databaseField);
 }
 
-function setupDatabaseSelect() {
+function setupDatabaseSelect(analysis: SqlAnalysis) {
   const select = document.querySelector("#database-select");
-  if (select) {
-    select.addEventListener("change", (e) => {
-      const value = (e.target as HTMLSelectElement).value as SupportedDialects;
-      updateSqlDialect(editor, guessSqlDialect(value));
-      editor.dispatch({
-        effects: [setDatabase.of(value)],
-      });
+  if (select instanceof HTMLSelectElement) {
+    select.addEventListener("change", () => {
+      const database = parseDemoDialect(select.value);
+      if (database === undefined) return;
+      updateSqlDialect(editor, database, analysis);
     });
   }
 }
 
-function updateSqlDialect(view: EditorView, dialect: SQLDialect) {
+function updateSqlDialect(view: EditorView, database: SupportedDialects, analysis: SqlAnalysis) {
+  const dialect = guessSqlDialect(database);
   view.dispatch({
-    effects: [baseSqlCompartment.reconfigure(baseSqlExtension(dialect))],
+    effects: [
+      setDatabase.of(database),
+      baseSqlCompartment.reconfigure(baseSqlExtension(dialect, analysis)),
+    ],
   });
 }
 
-// Initialize everything when the page loads
 document.addEventListener("DOMContentLoaded", () => {
   initializeEditor();
   setupExampleButtons();
-  setupDatabaseSelect();
 
   console.log("SQL Editor Demo initialized!");
   console.log("Features:");

@@ -8,6 +8,13 @@ const nestedSchema = NESTED_SCHEMA;
 
 const complete = completeWith(unqualifiedColumnCompletionSource);
 
+it.each(["ARRAY[[1,2],[3,4]]", "m[k[1]]"])(
+  "does not complete inside literals after nested brackets: %s", async (expression) => {
+    const doc = `SELECT ${expression} AS m, 'na' FROM users`;
+    expect(await complete(doc, { schema, pos: doc.indexOf("'na'") + 3 })).toBeNull();
+  },
+);
+
 describe("unqualifiedColumnCompletionSource", () => {
   it("offers the FROM table's columns for a bare prefix", async () => {
     const result = await complete("SELECT e FROM users", {

@@ -1,6 +1,9 @@
-import { EditorState, Text } from "@codemirror/state";
+import { createSqlAnalysis } from "../analysis.js";
+import type { SqlParseResult } from "../types.js";
+import { createTestView, required } from "./test-utils.js";
 import { EditorView } from "@codemirror/view";
-import { describe, expect, it } from "vitest";
+import { StateEffect, StateField } from "@codemirror/state";
+import { describe, expect, it, vi } from "vitest";
 import { computeMarkerStyle, sqlStructureGutter } from "../structure-extension.js";
 
 async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -12,26 +15,6 @@ async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
-
-// Type for gutter extension with markers function
-interface GutterExtension {
-  markers: (view: EditorView) => unknown;
-}
-
-// Mock EditorView
-const _createMockView = (content: string, hasFocus = true) => {
-  const doc = Text.of(content.split("\n"));
-  const state = EditorState.create({
-    doc,
-    extensions: [sqlStructureGutter()],
-  });
-
-  return {
-    state,
-    hasFocus,
-    dispatch: () => {},
-  } as EditorView;
-};
 
 describe("computeMarkerStyle", () => {
   const focused = { isCurrent: false, isValid: true, isFocused: true };
@@ -176,53 +159,6 @@ describe("sqlStructureGutter", () => {
     expect(extensions.length).toBe(4);
   });
 
-  it("should handle line deletions gracefully without throwing invalid line number errors", () => {
-    // Create a multi-line SQL document
-    const multiLineSql = `SELECT * FROM users;
-INSERT INTO users (name, email) VALUES ('John', 'john@example.com');
-UPDATE users SET name = 'Jane' WHERE id = 1;
-DELETE FROM users WHERE id = 2;`;
-
-    const doc = Text.of(multiLineSql.split("\n"));
-    // Create initial state (not used but shows the scenario)
-    EditorState.create({
-      doc,
-      extensions: [sqlStructureGutter()],
-    });
-
-    // Simulate a document with fewer lines (like after deletion)
-    const shorterSql = `SELECT * FROM users;`;
-    const shorterDoc = Text.of(shorterSql.split("\n"));
-    const shorterState = EditorState.create({
-      doc: shorterDoc,
-      extensions: [sqlStructureGutter()],
-    });
-
-    // The key test: ensure that accessing the state field doesn't throw errors
-    // even when the cached statements have stale line numbers
-    expect(() => {
-      // This would previously throw "Invalid line number" errors
-      // Now it should handle stale line numbers gracefully
-      const view = {
-        state: shorterState,
-        hasFocus: true,
-        dispatch: () => {},
-      } as EditorView;
-
-      // Trigger the gutter marker creation (this is where the error was occurring)
-      const extensions = sqlStructureGutter();
-      const gutterExtension = extensions.find(
-        (ext) => typeof ext === "object" && ext !== null && "markers" in ext,
-      ) as GutterExtension | undefined;
-
-      if (gutterExtension) {
-        const markersFn = gutterExtension.markers;
-        // This should not throw an error even with stale line numbers
-        expect(() => markersFn(view)).not.toThrow();
-      }
-    }).not.toThrow();
-  });
-
   it("renders gutter markers for pre-filled content without user interaction", async () => {
     const view = new EditorView({
       doc: "SELECT 1;\nSELECT 2;",
@@ -258,4 +194,110 @@ DELETE FROM users WHERE id = 2;`;
       view.destroy();
     }
   });
+});
+
+it("discards a slow analysis after a newer document is rendered", async () => {
+  const pending = new Map<string, (value: SqlParseResult) => void>();
+  const parser = {
+    parse: (sql: string) => new Promise<SqlParseResult>((resolve) => pending.set(sql, resolve)),
+  };
+  const analysis = createSqlAnalysis({ parser });
+  const view = createTestView({ doc: "SELECT 1;\nSELECT 2;", extensions: [sqlStructureGutter(analysis)] });
+  const original = view.state;
+  await vi.waitFor(() => expect(pending.has("SELECT 1;")).toBe(true));
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT 3;" } });
+  await vi.waitFor(() => expect(pending.has("SELECT 3;")).toBe(true));
+  required(pending.get("SELECT 3;"))({ success: true, errors: [] });
+  await vi.waitFor(() => expect(view.dom.querySelectorAll(".cm-sql-gutter-marker")).toHaveLength(1));
+  required(pending.get("SELECT 1;"))({ success: false, errors: [] });
+  await vi.waitFor(() => expect(pending.has("SELECT 2;")).toBe(true));
+  required(pending.get("SELECT 2;"))({ success: false, errors: [] });
+  await analysis.structureAnalyzer.analyzeDocument(original);
+  expect(view.dom.querySelectorAll(".cm-sql-gutter-marker")).toHaveLength(1);
+  expect(view.dom.querySelector<HTMLElement>(".cm-sql-gutter-marker")?.style.background).toBe("rgb(59, 130, 246)");
+});
+
+it("does not dispatch a pending gutter result after destruction", async () => {
+  let finish: ((result: SqlParseResult) => void) | undefined;
+  const analysis = createSqlAnalysis({ parser: {
+    parse: () => new Promise<SqlParseResult>((resolve) => { finish = resolve; }),
+  } });
+  const view = new EditorView({ doc: "SELECT 1", extensions: [sqlStructureGutter(analysis)] });
+  const state = view.state;
+  const dispatch = vi.spyOn(view, "dispatch");
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  view.destroy();
+  required(finish)({ success: true, errors: [] });
+  await analysis.structureAnalyzer.analyzeDocument(state);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
+it("keeps mapped gutter markers visible while asynchronous analysis is pending", async () => {
+  let release: (() => void) | undefined;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let delayed = false;
+  const analysis = createSqlAnalysis({ parser: {
+    parse: async () => {
+      if (delayed) await pending;
+      return { success: !delayed, errors: [] };
+    },
+  } });
+  const view = createTestView({ doc: "SELECT 1;\nSELECT 2;", extensions: [sqlStructureGutter(analysis)] });
+  const markers = () => [...view.dom.querySelectorAll<HTMLElement>(".cm-sql-gutter-marker")];
+  await vi.waitFor(() => expect(markers()).toHaveLength(2));
+
+  delayed = true;
+  view.dispatch({ changes: { from: 0, insert: "\n" } });
+  expect(markers()).toHaveLength(2);
+  view.dispatch({ changes: { from: 0, to: view.state.doc.line(3).from } });
+  expect(markers()).toHaveLength(1);
+
+  required(release)();
+  await vi.waitFor(() => expect(markers().map((marker) => marker.style.background)).toEqual(["rgb(239, 68, 68)"]));
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length } });
+  expect(markers()).toHaveLength(0);
+});
+
+it("reuses gutter analysis on selection and focus changes while refreshing parser configuration", async () => {
+  let release: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  const invalidate = StateEffect.define<boolean>();
+  const invalid = StateField.define<boolean>({
+    create: () => false,
+    update: (value, transaction) => transaction.effects.find((effect) => effect.is(invalidate))?.value ?? value,
+  });
+  const analysis = createSqlAnalysis({ parser: {
+    parse: async (_sql, { state }) => {
+      await ready;
+      return { success: !state.field(invalid), errors: [] };
+    },
+  } });
+  const parse = vi.spyOn(analysis.parser, "parse");
+  const view = createTestView({
+    doc: "SELECT 1;\nSELECT 2;",
+    extensions: [invalid, sqlStructureGutter({
+      ...analysis,
+      needsRefresh: (update) => update.startState.field(invalid) !== update.state.field(invalid),
+    })],
+  });
+  const markers = () => [...view.dom.querySelectorAll<HTMLElement>(".cm-sql-gutter-marker")];
+  await vi.waitFor(() => expect(parse).toHaveBeenCalledTimes(1));
+  view.focus();
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+  required(release)();
+  await vi.waitFor(() => expect(markers()).toHaveLength(2));
+  expect(markers().map((marker) => marker.style.opacity)).toEqual(["0.3", "1"]);
+  expect(parse).toHaveBeenCalledTimes(2);
+
+  view.dispatch({ selection: { anchor: 0 } });
+  await vi.waitFor(() => expect(markers().map((marker) => marker.style.opacity)).toEqual(["1", "0.3"]));
+  expect(parse).toHaveBeenCalledTimes(2);
+
+  view.dispatch({ effects: invalidate.of(true) });
+  await vi.waitFor(() => expect(markers().every((marker) => marker.style.background === "rgb(239, 68, 68)")).toBe(true));
+  expect(parse).toHaveBeenCalledTimes(4);
+
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT 3;" } });
+  await vi.waitFor(() => expect(markers()).toHaveLength(1));
+  expect(parse).toHaveBeenCalledTimes(5);
 });

@@ -1,5 +1,6 @@
+import { scanSql } from "./scanner.js";
+import { createSqlAnalysis } from "./analysis.js";
 import type { EditorState } from "@codemirror/state";
-import { NodeSqlParser } from "./parser.js";
 import {
   maskLiteralsAndComments,
   type QueryContext,
@@ -138,12 +139,12 @@ function scanOccurrences(
 
 /** Paren nesting depth at each character position */
 function parenDepths(text: string): number[] {
-  const depths: number[] = [];
+  const depths = Array<number>(text.length).fill(0);
   let depth = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === ")") depth = Math.max(0, depth - 1);
-    depths[i] = depth;
-    if (text[i] === "(") depth++;
+  for (const token of scanSql(text)) {
+    if (token.kind === "symbol" && token.text === ")") depth = Math.max(0, depth - 1);
+    depths.fill(depth, token.from, token.to);
+    if (token.kind === "symbol" && token.text === "(") depth++;
   }
   return depths;
 }
@@ -213,6 +214,26 @@ function containsRange(ranges: SqlRange[], inner: SqlRange): boolean {
   return ranges.some((range) => range.from <= inner.from && inner.to <= range.to);
 }
 
+function hasAdditionalDeclaration(text: string, name: string, definition: SqlRange): boolean {
+  const tokens = scanSql(text).filter((token) => token.kind !== "comment");
+  const parenContexts: string[] = [];
+  return tokens.some((token, index) => {
+    const previous = tokens[index - 1];
+    if (token.kind === "symbol" && token.text === "(") {
+      parenContexts.push(previous?.kind === "word" ? previous.text.toLowerCase() : "");
+    } else if (token.kind === "symbol" && token.text === ")") {
+      parenContexts.pop();
+    }
+    if (token.from === definition.from) return false;
+    if (token.kind !== "word" && token.kind !== "identifier") return false;
+    if (stripIdentifierQuotes(token.text).toLowerCase() !== name.toLowerCase()) return false;
+    const context = parenContexts[parenContexts.length - 1];
+    if (context === "cast" || context === "try_cast" || context === "safe_cast") return false;
+    return (previous?.kind === "word" && previous.text.toLowerCase() === "as") ||
+      (previous?.kind === "symbol" && previous.text === ")");
+  });
+}
+
 /** Statement-relative resolution; ranges are offsets into `statementText` */
 function resolveInStatement(
   statementText: string,
@@ -228,13 +249,17 @@ function resolveInStatement(
     // A name that is also an alias or select alias binds two distinct things
     // in this statement — refuse rather than mixing them
     const aliasTarget = context.aliases.get(lower);
-    if ((aliasTarget && aliasTarget.toLowerCase() !== lower) || isSelectAlias) {
+    if (aliasTarget || isSelectAlias) {
       return null;
     }
-    if (cte.from < 0) {
+    const declarations = [...masked.matchAll(new RegExp(
+      `${tokenAlternatives(cte.name)}\\s*(?:\\([^)]*\\)\\s*)?AS\\s*\\(`, "gi",
+    ))];
+    if (declarations.length !== 1 || cte.from < 0) {
       return null;
     }
     const definition: SqlRange = { from: cte.from, to: cte.to };
+    if (hasAdditionalDeclaration(statementText, cte.name, definition)) return null;
     // CTE uses are relation positions (`FROM x`, `JOIN x`, FROM-list commas)
     // or qualifiers (`x.col`); a bare same-named identifier elsewhere is a
     // column and is left alone
@@ -268,18 +293,16 @@ function resolveInStatement(
       `${tableToken}\\s+(?:AS\\s+)?(${tokenAlternatives(alias)})`,
       "gi",
     );
-    let match = definitionPattern.exec(masked);
-    // Anchor to the table reference itself, not e.g. a same-shaped expression
-    while (match !== null && !isRelationPosition(masked, match.index)) {
-      match = definitionPattern.exec(masked);
-    }
-    if (!match || match[1] == null) {
-      return null;
-    }
+    const declarations = [...masked.matchAll(definitionPattern)].filter(
+      (match) => isRelationPosition(masked, match.index),
+    );
+    const match = declarations.length === 1 ? declarations[0] : undefined;
+    if (!match || match[1] == null) return null;
     const definition: SqlRange = {
       from: match.index + match[0].length - match[1].length,
       to: match.index + match[0].length,
     };
+    if (hasAdditionalDeclaration(statementText, alias, definition)) return null;
     // Alias uses are qualifier positions (`alias.column`); bare same-named
     // identifiers elsewhere are likely columns and are left alone
     const uses = scanOccurrences(masked, alias, { followedByDot: true });
@@ -292,6 +315,7 @@ function resolveInStatement(
 
   const selectAlias = context.selectAliases.find((a) => a.toLowerCase() === lower);
   if (selectAlias) {
+    if (context.selectAliases.filter((name) => name.toLowerCase() === lower).length !== 1) return null;
     const depths = parenDepths(masked);
     const atTopLevel = (index: number) => depths[index] === 0;
 
@@ -303,14 +327,15 @@ function resolveInStatement(
     while (defMatch !== null) {
       const nameFrom = defMatch.index + defMatch[0].length - (defMatch[1]?.length ?? 0);
       if (atTopLevel(defMatch.index) && nameFrom < selectListEnd) {
+        if (definition) return null;
         definition = { from: nameFrom, to: defMatch.index + defMatch[0].length };
-        break;
       }
       defMatch = definitionPattern.exec(masked);
     }
     if (!definition) {
       return null;
     }
+    if (hasAdditionalDeclaration(statementText, selectAlias, definition)) return null;
 
     // Select aliases are only referenceable from GROUP BY / ORDER BY /
     // HAVING / QUALIFY clauses of the same (top-level) query
@@ -383,9 +408,9 @@ export class SqlReferenceResolver {
   private contextAnalyzer: QueryContextAnalyzer;
 
   constructor(config: SqlReferenceConfig = {}) {
-    const parser = config.parser ?? new NodeSqlParser();
-    this.structureAnalyzer = config.structureAnalyzer ?? new SqlStructureAnalyzer(parser);
-    this.contextAnalyzer = config.contextAnalyzer ?? new QueryContextAnalyzer(parser);
+    const analysis = createSqlAnalysis(config);
+    this.structureAnalyzer = analysis.structureAnalyzer;
+    this.contextAnalyzer = analysis.contextAnalyzer;
   }
 
   async resolve(state: EditorState, pos: number): Promise<SqlReferenceResult | null> {

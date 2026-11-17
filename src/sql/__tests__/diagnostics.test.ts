@@ -1,5 +1,6 @@
-import { EditorState, Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { required } from "./test-utils.js";
+import { createTestView } from "./test-utils.js";
+import { Text } from "@codemirror/state";
 import { describe, expect, it, vi } from "vitest";
 import { exportedForTesting, type SqlLinterConfig, sqlLinter } from "../diagnostics.js";
 import { NodeSqlParser } from "../parser.js";
@@ -8,9 +9,7 @@ import type { SqlParser } from "../types.js";
 const { createLintSource } = exportedForTesting;
 
 const createMockView = (content: string) => {
-  return {
-    state: EditorState.create({ doc: content }),
-  } as EditorView;
+  return createTestView({ doc: content });
 };
 
 const lint = (content: string, config: SqlLinterConfig = {}) => {
@@ -30,9 +29,11 @@ describe("sqlLinter", () => {
 
   it("should use custom parser if provided", () => {
     const mockParser = {
-      validateSql: vi.fn(() => []),
-      parseSql: vi.fn(() => ({ statements: [] })),
-    } as unknown as SqlParser;
+      parse: vi.fn<SqlParser["parse"]>(async () => ({ success: true, errors: [] })),
+      validateSql: vi.fn(async () => []),
+      extractTableReferences: async () => [],
+      extractColumnReferences: async () => [],
+    } satisfies SqlParser;
 
     const linter = sqlLinter({ parser: mockParser });
     expect(linter).toBeDefined();
@@ -77,9 +78,9 @@ describe("lint source", () => {
     expect(diagnostics).toHaveLength(3);
 
     const text = Text.of(doc.split("\n"));
-    expect(text.lineAt(diagnostics[0].from).number).toBe(1);
-    expect(text.lineAt(diagnostics[1].from).number).toBe(2);
-    expect(text.lineAt(diagnostics[2].from).number).toBe(3);
+    expect(text.lineAt(required(diagnostics[0]).from).number).toBe(1);
+    expect(text.lineAt(required(diagnostics[1]).from).number).toBe(2);
+    expect(text.lineAt(required(diagnostics[2]).from).number).toBe(3);
     for (const diagnostic of diagnostics) {
       expect(diagnostic.severity).toBe("error");
       expect(diagnostic.source).toBe("sql-parser");
@@ -92,8 +93,8 @@ describe("lint source", () => {
 
     expect(diagnostics).toHaveLength(1);
     const secondStatementStart = doc.indexOf("SELCT");
-    expect(diagnostics[0].from).toBeGreaterThanOrEqual(secondStatementStart);
-    expect(diagnostics[0].to).toBeLessThanOrEqual(doc.length);
+    expect(diagnostics[0]?.from).toBeGreaterThanOrEqual(secondStatementStart);
+    expect(diagnostics[0]?.to).toBeLessThanOrEqual(doc.length);
   });
 
   it("should not split statements on semicolons inside string literals", async () => {
@@ -101,7 +102,7 @@ describe("lint source", () => {
     const diagnostics = await lint(doc);
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
+    expect(diagnostics[0]?.from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
   });
 
   it("should not split statements on semicolons inside comments", async () => {
@@ -109,7 +110,7 @@ describe("lint source", () => {
     const diagnostics = await lint(doc);
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
+    expect(diagnostics[0]?.from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
   });
 
   it("should widen the diagnostic span to cover the offending token", async () => {
@@ -118,7 +119,7 @@ describe("lint source", () => {
     const diagnostics = await lint(doc);
 
     expect(diagnostics).toHaveLength(1);
-    const { from, to } = diagnostics[0];
+    const { from, to } = required(diagnostics[0]);
     // The span should cover the whole token, not a single character
     expect(doc.slice(from, to)).toBe("users");
   });
@@ -129,7 +130,7 @@ describe("lint source", () => {
     const diagnostics = await lint(doc);
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].to).toBe(diagnostics[0].from + 1);
+    expect(diagnostics[0]?.to).toBe(required(diagnostics[0]).from + 1);
   });
 
   it("should handle statements separated on the same line", async () => {
@@ -137,7 +138,7 @@ describe("lint source", () => {
     const diagnostics = await lint(doc);
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
+    expect(diagnostics[0]?.from).toBeGreaterThanOrEqual(doc.indexOf("SELCT"));
   });
 
   it("should report a single diagnostic when perStatement is disabled", async () => {
@@ -146,7 +147,7 @@ describe("lint source", () => {
 
     expect(diagnostics).toHaveLength(1);
     const text = Text.of(doc.split("\n"));
-    expect(text.lineAt(diagnostics[0].from).number).toBe(1);
+    expect(text.lineAt(required(diagnostics[0]).from).number).toBe(1);
   });
 
   it("should keep diagnostics within statement bounds", async () => {
@@ -176,8 +177,8 @@ describe("lint source", () => {
     expect(diagnostics).toHaveLength(1);
     const text = Text.of(doc.split("\n"));
     // The error is at the "==" operator on line 4, not shifted up by the comment
-    expect(text.lineAt(diagnostics[0].from).number).toBe(4);
-    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+    expect(text.lineAt(required(diagnostics[0]).from).number).toBe(4);
+    expect(diagnostics[0]?.from).toBe(doc.indexOf("==") + 1);
   });
 
   it("should position diagnostics correctly when a multi-line comment precedes the statement", async () => {
@@ -192,8 +193,8 @@ describe("lint source", () => {
 
     expect(diagnostics).toHaveLength(1);
     const text = Text.of(doc.split("\n"));
-    expect(text.lineAt(diagnostics[0].from).number).toBe(5);
-    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+    expect(text.lineAt(required(diagnostics[0]).from).number).toBe(5);
+    expect(diagnostics[0]?.from).toBe(doc.indexOf("==") + 1);
   });
 
   it("should position diagnostics correctly when a comment appears inside the statement", async () => {
@@ -207,8 +208,8 @@ describe("lint source", () => {
 
     expect(diagnostics).toHaveLength(1);
     const text = Text.of(doc.split("\n"));
-    expect(text.lineAt(diagnostics[0].from).number).toBe(4);
-    expect(diagnostics[0].from).toBe(doc.indexOf("==") + 1);
+    expect(text.lineAt(required(diagnostics[0]).from).number).toBe(4);
+    expect(diagnostics[0]?.from).toBe(doc.indexOf("==") + 1);
   });
 
   it("should not report diagnostics for valid statements with comments", async () => {
@@ -242,16 +243,16 @@ describe("lint source", () => {
       validateSql: vi.fn(async () => [
         { message: "unexpected end of input", line: 1, column: 999, severity: "error" as const },
       ]),
-      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      parse: vi.fn<SqlParser["parse"]>(async () => ({ success: false, errors: [] })),
       extractTableReferences: vi.fn(async () => []),
       extractColumnReferences: vi.fn(async () => []),
-    } as unknown as SqlParser;
+    } satisfies SqlParser;
 
     const diagnostics = await lint(doc, { parser, perStatement: false });
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].from).toBe(doc.length);
-    expect(diagnostics[0].to).toBe(doc.length);
+    expect(diagnostics[0]?.from).toBe(doc.length);
+    expect(diagnostics[0]?.to).toBe(doc.length);
   });
 
   it("should preserve warning severity from the parser", async () => {
@@ -259,16 +260,16 @@ describe("lint source", () => {
       validateSql: vi.fn(async () => [
         { message: "deprecated syntax", line: 1, column: 1, severity: "warning" as const },
       ]),
-      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      parse: vi.fn<SqlParser["parse"]>(async () => ({ success: false, errors: [] })),
       extractTableReferences: vi.fn(async () => []),
       extractColumnReferences: vi.fn(async () => []),
-    } as unknown as SqlParser;
+    } satisfies SqlParser;
 
     const diagnostics = await lint("SELECT 1", { parser, perStatement: false });
 
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].severity).toBe("warning");
-    expect(diagnostics[0].message).toBe("deprecated syntax");
+    expect(diagnostics[0]?.severity).toBe("warning");
+    expect(diagnostics[0]?.message).toBe("deprecated syntax");
   });
 
   it("should emit multiple diagnostics from a single statement when the parser returns several", async () => {
@@ -277,10 +278,10 @@ describe("lint source", () => {
         { message: "first", line: 1, column: 1, severity: "error" as const },
         { message: "second", line: 1, column: 8, severity: "error" as const },
       ]),
-      parse: vi.fn(async () => ({ success: false, errors: [] })),
+      parse: vi.fn<SqlParser["parse"]>(async () => ({ success: false, errors: [] })),
       extractTableReferences: vi.fn(async () => []),
       extractColumnReferences: vi.fn(async () => []),
-    } as unknown as SqlParser;
+    } satisfies SqlParser;
 
     const diagnostics = await lint("SELECT badcol", { parser, perStatement: false });
 
@@ -295,13 +296,13 @@ describe("lint source", () => {
     const parser = {
       validateSql: vi.fn(async () => []),
       // The structure analyzer derives per-statement errors from parse().
-      parse: vi.fn(async () => ({
+      parse: vi.fn<SqlParser["parse"]>(async () => ({
         success: false,
         errors: [{ message: "boom", line: 1, column: 999, severity: "error" as const }],
       })),
       extractTableReferences: vi.fn(async () => []),
       extractColumnReferences: vi.fn(async () => []),
-    } as unknown as SqlParser;
+    } satisfies SqlParser;
 
     const diagnostics = await lint(doc, { parser });
 

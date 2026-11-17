@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.check.json",
     "lint": "oxlint --fix",
     "test": "vitest",
     "demo": "vite build",
@@ -39,6 +39,7 @@
     "@codemirror/lang-sql": "6.10.0",
     "@codemirror/view": "6.43.15",
     "@testing-library/dom": "10.4.2",
+    "@types/node": "26.6.6",
     "@vitest/browser-playwright": "5.0.5",
     "@vitest/coverage-v8": "5.0.5",
     "codemirror": "6.0.2",

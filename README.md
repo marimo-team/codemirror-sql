@@ -82,6 +82,25 @@ const editor = new EditorView({
 });
 ```
 
+### Shared analysis
+
+`sqlExtension` shares analysis between its features. To share parsing with completions:
+
+```ts
+import { createSqlAnalysis, sqlCompletion, sqlExtension } from "@marimo-team/codemirror-sql";
+
+const analysis = createSqlAnalysis();
+const extensions = [
+  sqlExtension({ ...analysis, schema }),
+  sqlCompletion({ ...analysis, dialect: StandardSQL, schema }),
+];
+```
+
+For a custom parser, use `createSqlAnalysis({ parser })`. Set `needsRefresh` on
+`sqlExtension` when parser configuration can change without editing SQL.
+Custom parsers can implement `getCacheKey(state)` to reuse analysis across cursor moves;
+see [`SqlParser`](src/sql/types.ts).
+
 ### Schema-aware semantic linting
 
 When a schema is provided (via the top-level `schema` option, the
