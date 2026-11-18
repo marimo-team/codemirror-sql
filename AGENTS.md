@@ -15,4 +15,4 @@ pnpm run demo          # vite build of demo/
 ```
 
 - Browser tests need Playwright browsers installed first: `pnpm exec playwright install`.
-- Release: `pnpm run release` (pnpm version) bumps + tags; pushing a `v*` tag triggers release.yml, which publishes to npm via OIDC.
+- Release: `./scripts/release.sh patch` requests a release PR; see [RELEASING.md](RELEASING.md).
