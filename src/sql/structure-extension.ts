@@ -211,30 +211,26 @@ function createStructurePlugin(analyzer: SqlStructureAnalyzer, config: SqlGutter
   });
 }
 
-function createGutterTheme(config: SqlGutterConfig): Extension {
-  const gutterWidth = config.width || 3;
-
-  return EditorView.baseTheme({
-    ".cm-sql-gutter": {
-      width: `${gutterWidth}px`,
-      minWidth: `${gutterWidth}px`,
-    },
-    ".cm-sql-gutter .cm-gutterElement": {
-      width: `${gutterWidth}px`,
-      padding: "0",
-      margin: "0",
-    },
-    ".cm-sql-gutter-marker": {
-      width: "100%",
-      height: "100%",
-      display: "block",
-    },
-    ".cm-lineNumbers .cm-gutterElement": {
-      paddingLeft: "8px",
-      paddingRight: "8px",
-    },
-  });
-}
+const gutterTheme = EditorView.baseTheme({
+  ".cm-sql-gutter": {
+    width: "var(--cm-sql-gutter-width, 3px)",
+    minWidth: "var(--cm-sql-gutter-width, 3px)",
+  },
+  ".cm-sql-gutter .cm-gutterElement": {
+    width: "var(--cm-sql-gutter-width, 3px)",
+    padding: "0",
+    margin: "0",
+  },
+  ".cm-sql-gutter-marker": {
+    width: "100%",
+    height: "100%",
+    display: "block",
+  },
+  ".cm-lineNumbers .cm-gutterElement": {
+    paddingLeft: "8px",
+    paddingRight: "8px",
+  },
+});
 
 function createSqlGutter(config: SqlGutterConfig): Extension {
   return gutter({
@@ -254,7 +250,12 @@ export function sqlStructureGutter(config: SqlGutterConfig = {}): Extension[] {
   return [
     sqlGutterStateField,
     createStructurePlugin(analyzer, config),
-    createGutterTheme(config),
+    [
+      gutterTheme,
+      EditorView.editorAttributes.of({
+        style: `--cm-sql-gutter-width: ${config.width || 3}px`,
+      }),
+    ],
     createSqlGutter(config),
   ];
 }

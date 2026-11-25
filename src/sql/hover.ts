@@ -586,7 +586,7 @@ export const DefaultSqlTooltipRenders = {
 /**
  * Default CSS styles for hover tooltips
  */
-export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extension => {
+function createSqlHoverTheme(theme: "light" | "dark"): Extension {
   // Theme-dependent color variables
   const lightTheme = {
     tooltipBg: "#ffffff",
@@ -713,4 +713,13 @@ export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extensi
       color: colors.em,
     },
   });
+}
+
+const sqlHoverThemes = {
+  light: createSqlHoverTheme("light"),
+  dark: createSqlHoverTheme("dark"),
 };
+
+/** Default CSS styles for hover tooltips. */
+export const defaultSqlHoverTheme = (theme: "light" | "dark" = "light"): Extension =>
+  sqlHoverThemes[theme];
